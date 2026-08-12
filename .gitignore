@@ -1,0 +1,11 @@
+runs/
+__pycache__/
+*.pyc
+.DS_Store
+checkpoints/*.pt
+checkpoints/vocab.json
+# keep the directory; ignore large/local weight links
+!checkpoints/.gitkeep
+vendor/facade_dsl8
+*.egg-info/
+.venv/

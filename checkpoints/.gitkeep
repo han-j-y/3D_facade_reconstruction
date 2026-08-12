@@ -1,0 +1,6 @@
+# Place structure checkpoint here (not committed — large binary).
+#
+#   ln -s /path/to/best.pt structure_best.pt
+#   ln -s /path/to/vocab.json vocab.json
+#
+# Or pass:  python run.py --structure-ckpt /path/to/best.pt
