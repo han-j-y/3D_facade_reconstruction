@@ -21,10 +21,12 @@ facade_e2e/
 ```bash
 cd facade_e2e
 pip install -r requirements.txt
-# place or symlink a structure checkpoint:
-#   ln -s /path/to/best.pt checkpoints/structure_best.pt
-#   ln -s /path/to/vocab.json checkpoints/vocab.json
+# copy structure weights into checkpoints/ (real files, not symlinks):
+#   cp /path/to/best.pt checkpoints/structure_best.pt
+#   cp /path/to/vocab.json checkpoints/vocab.json
 ```
+
+Weights are large (~300MB) and not committed; without them the run skips structure IR.
 
 ## Run (core — no Blender)
 
