@@ -1,12 +1,6 @@
 # Vendor
 
-- `scripts/` — clustering helpers + optional Blender recovery
-- `window_ast/` — structure model used by the pipeline
+- `scripts/` — clustering helpers used by `run_pipeline.py`
+- `window_ast/` — structure predictor model used for per-window IR + majority vote
 
-Optional Blender compile path: place or symlink `facade_dsl8` here:
-
-```bash
-ln -s ../../facade_dsl8 facade_dsl8
-```
-
-Or keep `../facade_dsl8` as a sibling of this package.
+No renderer / facade_dsl8 code is vendored.

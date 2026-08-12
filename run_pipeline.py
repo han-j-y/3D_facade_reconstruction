@@ -6,19 +6,19 @@ Pipeline
   2. Unitize  — merge adjacent same-floor panes / bay faces
   3. Cluster  — DINOv2 patch-ROI + neighbor Potts prior → window types
   4. Assetize — per-type crops; medoid exemplar
-  5. Structure — predict facade_dsl8 IR per unit; majority-vote within type
+  5. Structure — predict window structure IR per unit; majority-vote within type
   6. DSL       — floor×bay layout + type library (``facade_dsl.json``)
-  7. (opt)     — Blender render via ``recovery_to_blender.py`` → facade_dsl8
 
 Majority vote uses a discrete ``structure_view`` fingerprint (shape + pane
 topology + program ops). Continuous floats are ignored. Ties prefer the
-type medoid. See ``FACADE_E2E.md``.
+type medoid.
+
+This package does **not** depend on facade_dsl8 or Blender.
 
 Examples::
 
   python run.py --facade-id 8 --device cuda
   python run.py --image photo.png --out-dir runs/demo --device cuda
-  python run.py --facade-id 8 --blender-render --device cuda   # optional
 """
 
 from __future__ import annotations
@@ -44,7 +44,6 @@ if str(ROOT) not in sys.path:
 from facade_recovery.paths import (  # noqa: E402
     default_structure_ckpt,
     default_train_up,
-    resolve_blender,
 )
 
 
@@ -84,16 +83,6 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--pca-dim", type=int, default=32)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--k-max", type=int, default=8)
-    ap.add_argument(
-        "--blender-render",
-        action="store_true",
-        help="OPTIONAL: after DSL, render with facade_dsl8 + Blender (skipped if unavailable)",
-    )
-    ap.add_argument(
-        "--blender",
-        default=None,
-        help="Blender binary (optional; default: $BLENDER or blender on PATH)",
-    )
     ap.add_argument("--col-tol", type=float, default=0.04)
     ap.add_argument("--row-tol", type=float, default=0.055)
     ap.add_argument("--spatial-strength", type=float, default=1.8)
@@ -286,7 +275,7 @@ def pick_medoids(feats: np.ndarray, labels: np.ndarray) -> dict[int, int]:
 
 
 class StructurePredictor:
-    """Load window-AST once; predict dsl8 structure IR for crops."""
+    """Load window-AST once; predict structure IR for crops."""
 
     def __init__(
         self,
@@ -533,9 +522,8 @@ def build_facade_dsl(
             "n_types": len(types),
             "notes": (
                 "Recovery DSL from photo: grid is floor×bay with type refs; "
-                "window_types hold one voted facade_dsl8 structure IR per cluster "
-                "(majority over member predictions). "
-                "Render via scripts/recovery_to_blender.py (facade_dsl8)."
+                "window_types hold one voted window structure IR per cluster "
+                "(majority over member predictions on structure_view fingerprints)."
             ),
         },
         "layout": {
@@ -605,27 +593,6 @@ def main() -> None:
         args.train_up = default_train_up()
     if args.structure_ckpt is None:
         args.structure_ckpt = default_structure_ckpt()
-
-    blender_bin: str | None = None
-    if args.blender_render:
-        from facade_recovery.paths import facade_dsl8_root
-
-        blender_bin = resolve_blender(args.blender)
-        dsl8 = facade_dsl8_root()
-        if blender_bin is None:
-            print(
-                "warn: --blender-render requested but Blender not found; "
-                "continuing without render. Set --blender or $BLENDER to enable."
-            )
-            args.blender_render = False
-        elif dsl8 is None:
-            print(
-                "warn: --blender-render requested but facade_dsl8 not found under "
-                "vendor/facade_dsl8; continuing without render."
-            )
-            args.blender_render = False
-        else:
-            args.blender = blender_bin
 
     if args.image is not None:
         facade_path = Path(args.image)
@@ -863,26 +830,6 @@ def main() -> None:
     print(f"  DSL → {dsl_path}")
     print(f"  assets → {types_dir}")
     print(f"  overview → {out_dir / 'overview.png'}")
-
-    if args.blender_render:
-        import subprocess
-
-        blender_out = out_dir / "blender"
-        cmd = [
-            sys.executable,
-            str(ROOT / "scripts" / "recovery_to_blender.py"),
-            "--recovery",
-            str(dsl_path),
-            "--out-dir",
-            str(blender_out),
-            "--blender",
-            str(args.blender),
-            "--render",
-            "--force",
-        ]
-        print(f"facade_dsl8 render → {blender_out}")
-        subprocess.run(cmd, check=True)
-
     print(f"wrote {out_dir}")
 
 
