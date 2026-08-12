@@ -21,7 +21,6 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -102,6 +101,8 @@ def cluster_palette(n: int) -> list[tuple[int, int, int]]:
 
 
 def find_box(fac_rgb: np.ndarray, crop_rgb: np.ndarray) -> tuple[tuple[int, int, int, int] | None, float]:
+    import cv2  # optional: only used by batch overlay scripts, not default e2e
+
     fac_g = cv2.cvtColor(fac_rgb, cv2.COLOR_RGB2GRAY)
     crop_g = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2GRAY)
     if crop_g.shape[0] > fac_g.shape[0] or crop_g.shape[1] > fac_g.shape[1]:
