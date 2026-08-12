@@ -1,0 +1,2 @@
+checkpoints/*.pt filter=lfs diff=lfs merge=lfs -text
+checkpoints/vocab.json filter=lfs diff=lfs merge=lfs -text

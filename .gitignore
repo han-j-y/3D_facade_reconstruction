@@ -2,8 +2,6 @@ runs/
 __pycache__/
 *.pyc
 .DS_Store
-checkpoints/*.pt
-checkpoints/vocab.json
 !checkpoints/.gitkeep
 *.egg-info/
 .venv/
