@@ -1,6 +1,6 @@
 # Vendor
 
-- `scripts/` — clustering helpers used by `run_pipeline.py`
-- `window_ast/` — structure predictor model used for per-window IR + majority vote
+- `scripts/` — clustering helpers + optional `render_facade.py`
+- `window_ast/` — structure predictor for per-window IR + majority vote
 
-No renderer / facade_dsl8 code is vendored.
+Optional Blender compile backend: set `FACADE_COMPILER_ROOT` to a package containing `main.py`, or symlink it as `vendor/window_compiler`.

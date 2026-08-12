@@ -8,17 +8,19 @@ Pipeline
   4. Assetize — per-type crops; medoid exemplar
   5. Structure — predict window structure IR per unit; majority-vote within type
   6. DSL       — floor×bay layout + type library (``facade_dsl.json``)
+  7. (opt)     — Blender façade render via ``scripts/render_facade.py``
 
 Majority vote uses a discrete ``structure_view`` fingerprint (shape + pane
 topology + program ops). Continuous floats are ignored. Ties prefer the
 type medoid.
 
-This package does **not** depend on facade_dsl8 or Blender.
+Blender rendering is optional (``--blender-render``).
 
 Examples::
 
   python run.py --facade-id 8 --device cuda
   python run.py --image photo.png --out-dir runs/demo --device cuda
+  python run.py --facade-id 8 --blender-render --device cuda
 """
 
 from __future__ import annotations
@@ -44,6 +46,8 @@ if str(ROOT) not in sys.path:
 from facade_recovery.paths import (  # noqa: E402
     default_structure_ckpt,
     default_train_up,
+    resolve_blender,
+    resolve_compiler_root,
 )
 
 
@@ -83,6 +87,22 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--pca-dim", type=int, default=32)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--k-max", type=int, default=8)
+    ap.add_argument(
+        "--blender-render",
+        action="store_true",
+        help="OPTIONAL: Blender façade render after DSL (needs Blender + FACADE_COMPILER_ROOT)",
+    )
+    ap.add_argument(
+        "--blender",
+        default=None,
+        help="Blender binary (optional; default: $BLENDER or blender on PATH)",
+    )
+    ap.add_argument(
+        "--compiler-root",
+        type=Path,
+        default=None,
+        help="optional window compiler package with main.py (or set FACADE_COMPILER_ROOT)",
+    )
     ap.add_argument("--col-tol", type=float, default=0.04)
     ap.add_argument("--row-tol", type=float, default=0.055)
     ap.add_argument("--spatial-strength", type=float, default=1.8)
@@ -594,6 +614,26 @@ def main() -> None:
     if args.structure_ckpt is None:
         args.structure_ckpt = default_structure_ckpt()
 
+    if args.blender_render:
+        blender_bin = resolve_blender(args.blender)
+        compiler = resolve_compiler_root(args.compiler_root)
+        if blender_bin is None:
+            print(
+                "warn: --blender-render requested but Blender not found; "
+                "continuing without render. Set --blender or $BLENDER."
+            )
+            args.blender_render = False
+        elif compiler is None:
+            print(
+                "warn: --blender-render requested but window compiler not found; "
+                "set FACADE_COMPILER_ROOT or --compiler-root to a package with main.py. "
+                "Continuing without render."
+            )
+            args.blender_render = False
+        else:
+            args.blender = blender_bin
+            args.compiler_root = compiler
+
     if args.image is not None:
         facade_path = Path(args.image)
         facade_id = args.facade_id or facade_path.stem
@@ -830,6 +870,29 @@ def main() -> None:
     print(f"  DSL → {dsl_path}")
     print(f"  assets → {types_dir}")
     print(f"  overview → {out_dir / 'overview.png'}")
+
+    if args.blender_render:
+        import os
+        import subprocess
+
+        blender_out = out_dir / "blender"
+        env = os.environ.copy()
+        env["FACADE_COMPILER_ROOT"] = str(args.compiler_root)
+        cmd = [
+            sys.executable,
+            str(ROOT / "scripts" / "render_facade.py"),
+            "--recovery",
+            str(dsl_path),
+            "--out-dir",
+            str(blender_out),
+            "--blender",
+            str(args.blender),
+            "--render",
+            "--force",
+        ]
+        print(f"blender render → {blender_out}")
+        subprocess.run(cmd, check=True, env=env)
+
     print(f"wrote {out_dir}")
 
 

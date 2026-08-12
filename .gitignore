@@ -5,5 +5,7 @@ __pycache__/
 checkpoints/*.pt
 checkpoints/vocab.json
 !checkpoints/.gitkeep
+vendor/window_compiler
+window_compiler
 *.egg-info/
 .venv/
