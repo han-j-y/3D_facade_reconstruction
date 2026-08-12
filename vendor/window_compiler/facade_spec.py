@@ -79,9 +79,17 @@ def normalize_facade_spec(
         for j in range(n_bays)
     ]
 
+    # Known type names come from the recovery library, independent of IR unwrap.
+    # Previously placement was gated on successful unwrap (``tok in windows``), which
+    # silently wiped the whole floor×bay map whenever structure_ir was missing.
+    type_names: dict[str, str] = {}
     windows: dict[str, Any] = {}
     for wt in spec.get("window_types") or []:
         name = str(wt.get("name") or f"win_type_{int(wt['type_id']):02d}")
+        type_names[name] = name
+        if wt.get("type_id") is not None:
+            type_names[str(int(wt["type_id"]))] = name
+            type_names[f"win_type_{int(wt['type_id']):02d}"] = name
         ir = unwrap_window_ir(wt.get("structure_ir"))
         if ir is None:
             continue
@@ -91,6 +99,8 @@ def normalize_facade_spec(
         windows[name] = ir
 
     placement: list[list[str | None]] = []
+    dropped = 0
+    missing_ir = 0
     for r in range(n_floors):
         src = placement_src[r] if r < len(placement_src) else []
         row: list[str | None] = []
@@ -98,9 +108,27 @@ def normalize_facade_spec(
             tok = src[c] if c < len(src) else None
             if tok in EMPTY_TOKENS:
                 row.append(None)
-            else:
-                row.append(str(tok) if tok in windows else None)
+                continue
+            key = str(tok)
+            name = type_names.get(key)
+            if name is None:
+                dropped += 1
+                row.append(None)
+                continue
+            if name not in windows:
+                missing_ir += 1
+            row.append(name)
         placement.append(row)
+    if dropped:
+        print(
+            f"warn: normalize_facade_spec dropped {dropped} placement token(s) "
+            f"with unknown type names"
+        )
+    if missing_ir:
+        print(
+            f"warn: normalize_facade_spec kept {missing_ir} placement cell(s) "
+            f"whose window type has no structure_ir (Blender will skip them)"
+        )
 
     type_ratios: dict[str, dict[str, float]] = {}
     iw, ih = (spec.get("meta") or {}).get("image_size") or [1, 1]
