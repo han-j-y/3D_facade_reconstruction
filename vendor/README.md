@@ -1,3 +1,5 @@
 # Vendor
 
-Optional Blender compile backend: set `FACADE_COMPILER_ROOT` to a package containing `main.py`, or place/copy it here as `vendor/window_compiler`.
+- `window_compiler/` — Blender `main.py` + compile/render modules for optional façade rendering.
+
+Override location with `FACADE_COMPILER_ROOT` if you keep the compiler elsewhere.

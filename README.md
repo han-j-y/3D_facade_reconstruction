@@ -11,6 +11,7 @@ facade_e2e/
   facade_recovery/       # path helpers
   window_ast/            # vendored structure model
   scripts/               # clustering helpers + optional render_facade.py
+  vendor/window_compiler/# Blender main.py + compile/render (optional)
   checkpoints/           # structure_best.pt (symlink or copy)
   data/vocab_structure.json
 ```
@@ -43,15 +44,15 @@ Outputs under `runs/facade_e2e_<id>/` (or `--out-dir`):
 
 ## Optional Blender render
 
-Needs a Blender binary **and** a window compiler package with `main.py`:
+Needs a Blender binary on `PATH` (or `$BLENDER`). The repo already ships
+`vendor/window_compiler/main.py`; override with `FACADE_COMPILER_ROOT` only if needed.
 
 ```bash
 export BLENDER=/path/to/blender          # or have `blender` on PATH
-export FACADE_COMPILER_ROOT=/path/to/compiler
 python run.py --facade-id 8 --blender-render --device cuda
 ```
 
-If either is missing, the pipeline still writes `facade_dsl.json` and prints a warning.
+If Blender is missing, the pipeline still writes `facade_dsl.json` and prints a warning.
 
 ## Majority vote
 
@@ -61,6 +62,6 @@ Within each window type, every unit crop is predicted; votes are tallied on a di
 
 **Required:** torch, torchvision, numpy, Pillow, scikit-learn, transformers (SAM3)
 
-**Optional:** Blender ≥ 3.x + window compiler (`FACADE_COMPILER_ROOT`)
+**Optional:** Blender ≥ 3.x (uses vendored `vendor/window_compiler`)
 
 **Downloaded at runtime:** HuggingFace `facebook/sam3`, `torch.hub` DINOv2

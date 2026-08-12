@@ -1,0 +1,59 @@
+{
+  "type": "window",
+  "debug": true,
+  "boundary": {
+    "id": "root",
+    "shape": "rectangle",
+    "params": {
+      "width": 1.0,
+      "height": 1.6
+    }
+  },
+  "frame": {
+    "thickness": {
+      "relative_to": "min_side",
+      "value": 0.06
+    },
+    "depth": 0.08,
+    "material": "painted_wood"
+  },
+  "regions": [
+    {
+      "id": "glass",
+      "from": "root",
+      "operation": "inset",
+      "amount": {
+        "relative_to": "min_side",
+        "value": 0.06
+      }
+    }
+  ],
+  "program": [
+    {
+      "op": "split_vertical",
+      "id": "v_mid",
+      "region": "glass",
+      "x": {
+        "prior": 0.5,
+        "range": [0.45, 0.55]
+      }
+    },
+    {
+      "op": "split_horizontal",
+      "id": "h_mid",
+      "region": "glass",
+      "y": {
+        "prior": 0.5,
+        "range": [0.45, 0.55]
+      }
+    }
+  ],
+  "output": {
+    "muntin_width": {
+      "relative_to": "min_side",
+      "value": 0.025
+    },
+    "muntin_depth": 0.04,
+    "glass_thickness": 0.01
+  }
+}
