@@ -1,0 +1,130 @@
+(*
+  FDSL — façade DSL concrete syntax  (facade_dsl8)
+
+  Authoring language for a wall grid of named window / door types.
+  Parser: parse_fdsl.py
+  Compiles to schema facade_dsl8_facade_v1 JSON consumed by facade_compile.py.
+
+  A façade document *embeds* WDSL (see WDSL.ebnf) for each window type.
+  Doors are primitives (not WDSL).
+
+  Coordinates after compile (Blender):
+    X across the façade (centered at 0), Z vertical (0 at ground),
+    Y depth. First `rows` entry is the TOP band (z sums downward).
+    Camera sits on +Y looking −Y; placement_params.mirror_x (default true)
+    flips X so photo-left columns stay image-left.
+
+  Lexer: same as WDSL — '#' comments, UTF-8, significant indent.
+*)
+
+document         = { comment | nl },
+                   [ "facade", nl ],
+                   [ wall_stmt ],
+                   grid_block,
+                   windows_block,
+                   [ doors_block ],
+                   placement_block,
+                   [ params_block ],
+                   [ "debug", nl ] ;
+
+(* reuse WDSL ident / number / scalar / nl / comment *)
+
+(* ——— wall slab ——— *)
+
+wall_stmt        = "wall", { ws, wall_kv }, nl
+                 | "wall:", nl, { ws, wall_kv, nl } ;
+wall_kv          = "depth", ws, number
+                 | "base_front_y", ws, number
+                 | "material", ws, ident ;
+(* defaults: depth=0.42, base_front_y=0, material=wall *)
+
+(* ——— floor × bay grid ——— *)
+
+grid_block       = "grid:", nl,
+                   ws, "rows", ws, size_list, nl,
+                   ws, "cols", ws, size_list, nl ;
+size_list        = size_item, { ws, size_item } ;
+size_item        = ident, "=", number        (* named: F2=3.0 *)
+                 | number ;                  (* auto-named F0.. / B0.. in listed order *)
+(* first row = TOP storey. sizes are metres. *)
+
+(* ——— window types (each body is a WDSL document) ——— *)
+
+windows_block    = "windows:", nl, { window_def } ;
+window_def       = ws, ident, ws, "=", ws, path, nl
+                 | ws, ident, ":", nl, wdsl_body ;
+path             = { ? non-space char ? } ;   (* .wdsl or .json, relative to this file *)
+wdsl_body        = { line indented strictly deeper than the `name:` line } ;
+(* wdsl_body is dedented and parsed by parse_wdsl. *)
+
+(* ——— door types (panel primitives) ——— *)
+
+doors_block      = "doors:", nl, { door_def } ;
+door_def         = ws, ident, ws, door_shape, { ws, door_kv }, nl
+                 | ws, ident, ":", nl, { ws, door_field, nl } ;
+door_shape       = "rectangle" | "rect" | "flat" | "panel"
+                 | "arched" | "arch" | "panel_arch" ;
+door_kv          = "rise", "=", number
+                 | "arch_rise_ratio", "=", number
+                 | "material", "=", ident ;
+door_field       = "primitive", ws, door_shape
+                 | "shape", ws, door_shape
+                 | "arch_rise_ratio", ws, number
+                 | "rise", ws, number
+                 | "material", ws, ident ;
+(* arched | arch | panel_arch → primitive "arched".  rect|flat|panel → "rectangle". *)
+
+(* ——— placement matrix ——— *)
+
+placement_block  = "placement:", nl, { placement_row } ;
+placement_row    = ws, [ ident, ":" , ws ], token, { ws, token }, nl ;
+token            = ident | empty_tok ;
+empty_tok        = "." | "-" | "_" | "empty" | "spacer" | "s" | "null" ;
+(* If a row starts with a name matching grid.rows[].name, that band is filled.
+   Otherwise rows are taken in listed order (first = top).
+   Each row length must equal the column count.
+   Tokens must name a windows{} or doors{} key, or be empty. *)
+
+(* ——— placement / fit parameters ——— *)
+
+params_block     = ( "params:" | "placement_params:" ), nl, { ws, param_kv, nl } ;
+param_kv         = "width_ratio", ws, number
+                 | "height_ratio", ws, number
+                 | "bottom_margin_ratio", ws, number
+                 | "door_bottom_margin_ratio", ws, number
+                 | "recess", ws, number
+                 | "mirror_x", ws, bool ;
+bool             = "true" | "false" | "1" | "0" | "yes" | "no" ;
+(* defaults: width_ratio=0.55, height_ratio=0.60, bottom_margin_ratio=0.14,
+   door_bottom_margin_ratio=0.02, recess=0.01, mirror_x=true *)
+
+(* ——— compiled JSON IR  schema = facade_dsl8_facade_v1 ———
+
+  {
+    "type": "facade",
+    "schema": "facade_dsl8_facade_v1",
+    "wall": { "depth", "base_front_y"?, "material"? },
+    "grid": {
+      "rows": [ { "name": string, "h": number }, ... ],   // top → bottom
+      "cols": [ { "name": string, "w": number }, ... ]
+    },
+    "placement": [ [ string | null, ... ], ... ],         // same order as rows/cols
+    "windows": { <name>: <window JSON IR>, ... },
+    "doors": {
+      <name>: { "type": "door", "primitive": "rectangle"|"arched",
+                "shape": ..., "arch_rise_ratio"?, "material"? }
+    },
+    "placement_params": { width_ratio, height_ratio, bottom_margin_ratio,
+                          door_bottom_margin_ratio, recess, mirror_x },
+    "meta"?: { type_ratios?: { <name>: { width_ratio, height_ratio } } }
+  }
+
+  Recovery DSL (facade_recovery_dsl_v1) is a *different* concrete JSON used
+  by the photo pipeline. facade_spec.normalize_facade_spec maps:
+
+      layout.floors[].h_norm × layout.bays[].w_norm × layout.placement
+      window_types[].structure_ir → windows{}
+      door_types[]                → doors{}
+
+  onto facade_dsl8_facade_v1. FDSL authors the compiled form directly.
+*)

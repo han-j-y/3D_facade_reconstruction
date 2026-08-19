@@ -1,0 +1,179 @@
+(*
+  WDSL — window DSL concrete syntax  (facade_dsl8)
+
+  Authoring language for a single window. Parser: parse_wdsl.py
+  Compiles to window JSON IR consumed by compiler.py.
+
+  Coordinates: local 2D, x right, y up. Root spans the boundary bbox.
+  Region u,v ∈ [0,1] are normalized to that region's bounding box
+  (u horizontal, v vertical; v=0 bottom, v=1 top).
+
+  Lexer
+    - UTF-8. '#' starts a line comment (to end of line).
+    - Blank lines ignored except as separators.
+    - Keywords are case-sensitive except program op aliases (lowercased).
+    - Blocks `regions:`, `program:`, `output:`, `panes …:` collect subsequent
+      indented lines until the next top-level keyword.
+*)
+
+document      = { comment | nl }, window_line, { nl },
+                [ frame_line, { nl } ],
+                [ regions_block ],
+                [ program_block ],
+                [ panes_block ],
+                [ output_block ],
+                [ "debug", nl ] ;
+
+nl            = ? newline ? ;
+comment       = "#", { ? any char except newline ? } ;
+ident         = letter, { letter | digit | "_" } ;
+letter        = "A".."Z" | "a".."z" ;
+digit         = "0".."9" ;
+number        = [ "-" ], digit, { digit }, [ ".", digit, { digit } ],
+                [ ( "e" | "E" ), [ "+" | "-" ], digit, { digit } ] ;
+rel_base      = "min_side" | "max_side" | "width" | "height" ;
+scalar        = number
+              | number, [ ws ], "*", [ ws ], rel_base ;
+ws            = { " " | "\t" } ;
+
+(* ——— window (root boundary) ——— *)
+
+window_line   = "window", ws, shape_call ;
+shape_call    = shape_name, [ "(", [ arg_list ], ")" ] ;
+shape_name    = "rectangle" | "circle" | "ellipse" | "semicircle"
+              | "quadrant" | "triangle" | "polygon" | "trapezoid"
+              | "trapezoid_head" | "eyebrow" | "segmental_arch"
+              | "head_body" | "arch_head" | "rect_eyebrow"
+              | "springline_arch" ;
+arg_list      = arg, { ",", arg } ;
+arg           = [ ident, "=" ], value ;
+value         = scalar | ident | string ;
+string        = '"', { ? any char except '"' ? }, '"'
+              | "'", { ? any char except "'" ? }, "'" ;
+
+(* Positional / keyword args by shape (parser defaults in parentheses):
+
+     rectangle(width, height)                  (1, 1)   aliases: w, h
+     circle(diameter)                          (1)      aliases: size
+     ellipse(width, height)
+     semicircle(diameter, flat=bottom)                  aliases: size
+     quadrant(radius, corner=bl)                        aliases: size
+     triangle(width, height, kind=iso)         → IR shape trapezoid, top_width=0
+     polygon(sides, width, height)                      aliases: size
+     trapezoid(width, height, top_width)
+     eyebrow / segmental_arch(width, rise)
+     head_body(width, body, head=semicircle, head_height)
+       head ∈ { semicircle, trapezoid, triangle, pointed, pointed_arch }
+       triangle|pointed|pointed_arch → trapezoid head with top_width=0
+     arch_head / rect_eyebrow / springline_arch(width, body, rise)
+*)
+
+(* ——— frame ——— *)
+
+frame_line    = "frame", { ws, frame_kv } ;
+frame_kv      = "thickness", ws, scalar
+              | "depth", ws, scalar
+              | "material", ws, ident ;
+(* defaults: thickness=0.06*min_side, depth=0.08, material=painted_wood *)
+
+(* ——— regions (declarative zone rules) ——— *)
+
+regions_block = "regions:", nl, { ws, region_line, nl } ;
+region_line   = ident, ws, "=", ws, region_rhs ;
+region_rhs    = "inset", "(", parent, ",", scalar, ")"
+              | "crop", "(", parent, ",", crop_spec, ")"
+              | "body", "(", parent, ")"
+              | "head", "(", parent, ")" ;
+parent        = ident ;   (* "root" is the boundary; usually glass = inset(root, …) *)
+crop_spec     = number, ",", number, ",", number, ",", number
+              | crop_kw, { ",", crop_kw } ;
+crop_kw       = ( "u0" | "v0" | "u1" | "v1" | "v" ), "=", number ;
+(* crop positional: u0, v0, u1, v1.  crop(parent, v1=0.72) → [0,0,1,0.72] *)
+
+(* ——— program (muntin ops, in order) ——— *)
+
+program_block = "program:", nl, { ws, program_line, nl } ;
+program_line  = grid_stmt | split_v_stmt | split_h_stmt | seam_stmt
+              | radial_stmt | arc_stmt | lunette_stmt
+              | anchor_stmt | connect_stmt | mirror_stmt ;
+
+grid_stmt     = ( "grid" | "add_grid" ), ws, ident, ws, int, [ ws ], "x", [ ws ], int ;
+split_v_stmt  = ( "split_v" | "split_vertical" ), ws, ident, [ ws, x_pos ] ;
+split_h_stmt  = ( "split_h" | "split_horizontal" ), ws, ident, [ ws, y_pos ] ;
+seam_stmt     = "seam", ws, ident, [ ws, ( "top" | "upper" | "bottom" | "lower" | "base" ) ] ;
+                (* default: y=1 (top of region), except region=head → y=0 *)
+radial_stmt   = ( "split_radial" | "radial" | "fan" ), ws, ident, { ws, radial_opt } ;
+radial_opt    = int
+              | "count", ws, int
+              | "origin", ws, number, ws, number
+              | "from", ws, number, ws, number
+              | "from_arc", ws, ident
+              | "from", ws, ident
+              | "arc", ws, number, ws, number
+              | "angles", { ws, number }
+              | "offset", ws, scalar
+              | "rotate", ws, number ;
+                (* fan defaults: origin 0.5 0, arc 45 135, count 3 *)
+arc_stmt      = "arc", ws, ident, [ ws, ident ], { ws, arc_opt } ;
+arc_opt       = ( "origin" | "center" | "at" ), ws, number, ws, number
+              | "radius", ws, scalar
+              | "rise", ws, scalar
+              | "eyebrow", ws, scalar
+              | "from", ws, number
+              | "to", ws, number
+              | "semicircle" | "half"
+              | "segments", ws, int ;
+lunette_stmt  = "lunette", ws, ident, { ws, lunette_opt } ;
+lunette_opt   = "hub", ws, scalar | "count", ws, int | "arc", ws, number, ws, number ;
+                (* expands to arc hub + fan from_arc hub *)
+anchor_stmt   = "anchor", ws, ident, ws, ident, ws, number, ws, number ;
+                (* anchor <id> <region> <u> <v> *)
+connect_stmt  = "connect", ws, ident, ws, ident, ws, ident, [ ws, ident ] ;
+                (* connect <id> <from> <to> [region=glass] *)
+mirror_stmt   = "mirror", ws, ( "x" | "y" ), [ ws, ident ] ;
+
+x_pos         = number | "left" | "l" | "right" | "r" | "x=", scalar ;
+y_pos         = number | "top" | "bottom" | "y=", scalar ;
+int           = digit, { digit } ;
+
+(* ——— recursive pane grammar ——— *)
+
+panes_block   = "panes", [ ws, ident ], [ ":" ], nl, { ws, pane_line, nl } ;
+                (* default region = glass *)
+pane_line     = "@root", ws, ident
+              | ident, ws, "eps"
+              | ident, ws, "split", "(", ( "v" | "h" ), "=", number, ")", ws, ident, ws, ident
+              | ident, ws, "grid", "(", int, [ ws ], "x", [ ws ], int, ")", { ws, ident } ;
+
+(* split(v=t): vertical split at fraction t; children left, right.
+   split(h=t): horizontal split at fraction t; children bottom, top.
+   eps: leaf (no further muntins).
+   grid(CxR): C vertical bars × R horizontal bars; optional named children. *)
+
+(* ——— output ——— *)
+
+output_block  = "output:", nl, { ws, ident, ws, scalar, nl } ;
+(* recognized keys: muntin_width, muntin_depth, glass_thickness
+   defaults: 0.025*min_side, 0.04, 0.01 *)
+
+(* ——— compiled JSON IR (abstract syntax the compiler actually runs) ———
+
+  WDSL is a subset of the JSON IR. Extra JSON-only program ops exist in
+  operations.py: define_region, inset, insert_shape(line), clip, trim,
+  repeat, delete, merge.
+
+  {
+    "type": "window",
+    "debug": bool,
+    "boundary": { "id": "root", "shape": <shape_name>, "params": { ... } },
+    "frame": { "thickness": <scalar|rel>, "depth": number, "material": string },
+    "regions": [ { "id", "from", "operation": inset|crop|body|head,
+                   "amount"?, "bounds"? } ],
+    "program": [ { "op": add_grid|split_vertical|split_horizontal|split_radial|
+                         insert_shape|define_anchor|connect|mirror|..., ... } ],
+    "panes": { "region", "root", "rules": { <id>: { "op": eps|split|grid, ... } } },
+    "output": { "muntin_width", "muntin_depth", "glass_thickness" }
+  }
+
+  rel scalar JSON: { "relative_to": min_side|max_side|width|height, "value": number }
+*)
