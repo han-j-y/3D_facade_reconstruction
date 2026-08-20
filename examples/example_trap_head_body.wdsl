@@ -1,0 +1,13 @@
+# head_body combination — rectangular body + trapezoid head
+
+window head_body(width=1.0, body=1.3, head=trapezoid, head_height=0.35, top_width=0.6)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01

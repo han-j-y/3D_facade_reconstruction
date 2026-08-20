@@ -1,0 +1,32 @@
+# Custom shaped: head_body with lunette head + double-hung body columns
+
+window head_body(width=1.0, body=1.4, head=semicircle, head_height=0.5)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+  body = body(glass)
+  head = head(glass)
+
+program:
+  arc head hub origin 0.5 0 radius 0.25*width semicircle
+  fan head count 3 arc 0 180 from hub
+
+panes body:
+  @root body
+  # three columns: 25% | 50% | 25% (same as picture double-hung)
+  body split(v=0.25) L REST
+  REST split(v=0.667) C R
+  L split(h=0.5) L_bot L_top
+  R split(h=0.5) R_bot R_top
+  L_bot eps
+  L_top eps
+  C eps
+  R_bot eps
+  R_top eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01

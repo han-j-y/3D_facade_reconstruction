@@ -1,0 +1,42 @@
+{
+  "type": "window",
+  "debug": false,
+  "boundary": {
+    "id": "root",
+    "shape": "polygon",
+    "params": { "sides": 6, "width": 1.032, "height": 1.032 }
+  },
+  "frame": {
+    "thickness": { "relative_to": "min_side", "value": 0.0646 },
+    "depth": 0.0688,
+    "material": "painted_wood"
+  },
+  "regions": [
+    {
+      "id": "glass",
+      "from": "root",
+      "operation": "inset",
+      "amount": { "relative_to": "min_side", "value": 0.0599 }
+    },
+    {
+      "id": "grid_zone",
+      "from": "glass",
+      "operation": "crop",
+      "bounds": { "u0": 0, "v0": 0, "u1": 1, "v1": 0.72 }
+    }
+  ],
+  "program": [
+    {
+      "op": "add_grid",
+      "id": "grid",
+      "region": "grid_zone",
+      "vertical": 2,
+      "horizontal": 3
+    }
+  ],
+  "output": {
+    "muntin_width": { "relative_to": "min_side", "value": 0.0268 },
+    "muntin_depth": 0.0425,
+    "glass_thickness": 0.0148
+  }
+}

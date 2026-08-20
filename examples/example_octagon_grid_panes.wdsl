@@ -1,0 +1,37 @@
+# Same octagon 3×3 — recursive pane rules (⅓ / ⅔ splits)
+
+window polygon(sides=8, size=1.0, orient=flat)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  # three equal columns
+  root split(v=0.333) C1 C23
+  C23 split(v=0.5) C2 C3
+  # column 1 rows
+  C1 split(h=0.333) C1B C1MT
+  C1MT split(h=0.5) C1M C1T
+  # column 2 rows
+  C2 split(h=0.333) C2B C2MT
+  C2MT split(h=0.5) C2M C2T
+  # column 3 rows
+  C3 split(h=0.333) C3B C3MT
+  C3MT split(h=0.5) C3M C3T
+  C1B eps
+  C1M eps
+  C1T eps
+  C2B eps
+  C2M eps
+  C2T eps
+  C3B eps
+  C3M eps
+  C3T eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01

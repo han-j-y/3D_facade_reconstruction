@@ -1,0 +1,1793 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>facade_dsl8 — window catalog</title>
+<style>
+:root {
+  --bg: #f4f4f2; --card: #fff; --ink: #1a1a1a; --muted: #666;
+  --line: #ddd; --accent: #2c5282; --part-bg: #eaeae6;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, sans-serif; background: var(--bg); color: var(--ink); }
+header {
+  position: sticky; top: 0; z-index: 20; background: var(--bg);
+  border-bottom: 1px solid var(--line); padding: .75rem 1.25rem;
+  display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem;
+}
+header h1 { margin: 0; font-size: 1.05rem; }
+header .count { color: var(--muted); font-size: .78rem; }
+.toc { display: flex; flex-wrap: wrap; gap: .35rem; margin-left: auto; }
+.toc a, .toc button {
+  font: inherit; font-size: .74rem; padding: .2rem .55rem;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--card); color: var(--ink); text-decoration: none; cursor: pointer;
+}
+.toc a:hover, .toc button:hover, .toc button.active { border-color: var(--accent); color: var(--accent); }
+main { max-width: 1400px; margin: 0 auto; padding: 0 1.25rem 2.5rem; }
+.part { margin-top: 2rem; }
+.part-header {
+  background: var(--part-bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 1rem 1.15rem; margin-bottom: 1.25rem;
+}
+.part-header h2 { margin: 0 0 .35rem; font-size: 1.25rem; }
+.part-header p { margin: 0; color: var(--muted); font-size: .88rem; max-width: 52rem; }
+.group { margin-bottom: 1.75rem; }
+.group h3 {
+  margin: 0 0 .2rem; font-size: .95rem; font-weight: 600;
+  padding-bottom: .35rem; border-bottom: 2px solid var(--line);
+}
+.group .group-desc { margin: 0 0 .75rem; color: var(--muted); font-size: .8rem; }
+.grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+  gap: .75rem;
+}
+.card {
+  background: var(--card); border: 1px solid var(--line); border-radius: 6px;
+  overflow: hidden; cursor: pointer;
+}
+.card[hidden] { display: none; }
+.card:hover { border-color: var(--accent); }
+.card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.thumb { aspect-ratio: 1; background: #e8e8e6; }
+.thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.thumb .missing { color: var(--muted); font-size: .7rem; padding: .75rem; text-align: center; display: block; }
+.body { padding: .5rem .6rem .65rem; }
+.group-label { font-size: .62rem; color: var(--accent); text-transform: uppercase; letter-spacing: .04em; }
+.body h3 { margin: .1rem 0; font-size: .84rem; }
+.desc { margin: 0; color: var(--muted); font-size: .72rem; line-height: 1.35; }
+.file { font-family: ui-monospace, monospace; font-size: .6rem; color: #aaa; word-break: break-all; margin-top: .3rem; }
+.tags { display: flex; flex-wrap: wrap; gap: .2rem; margin-top: .35rem; }
+.tag { font-size: .62rem; padding: .08rem .35rem; border-radius: 3px; background: #eef2f7; color: #445; }
+.status { font-size: .6rem; margin-top: .2rem; }
+.status.ok { color: #276749; } .status.err { color: #c53030; }
+footer { text-align: center; padding: 0 1rem 1.5rem; color: var(--muted); font-size: .75rem; }
+.modal { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: 1.5rem; }
+.modal[hidden] { display: none; }
+.modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.45); }
+.modal-panel {
+  position: relative; z-index: 1; width: min(960px, 100%); max-height: min(90vh, 900px);
+  background: #12161e; color: #e6edf5; border-radius: 10px;
+  display: grid; grid-template-columns: 280px 1fr; overflow: hidden;
+}
+.modal-header {
+  display: flex; align-items: center; gap: .75rem; padding: .65rem .85rem;
+  border-bottom: 1px solid #2a3344; flex-shrink: 0;
+}
+.modal-header .modal-file { font-family: ui-monospace, monospace; font-size: .78rem; color: #8ab4f8; flex: 1; }
+.modal-header button {
+  font: inherit; font-size: .75rem; padding: .25rem .55rem;
+  border: 1px solid #3a4558; border-radius: 5px; background: #1c2430; color: #e6edf5; cursor: pointer;
+}
+.modal-header button:hover { border-color: #8ab4f8; }
+.modal-preview { background: #e8e8e6; display: flex; align-items: center; justify-content: center; padding: .75rem; }
+.modal-preview img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.modal-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.modal-body { padding: .85rem; overflow: auto; flex: 1; }
+.modal-body pre { margin: 0; }
+.modal-body code {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: .78rem; line-height: 1.45; white-space: pre;
+}
+/* WDSL syntax colors (dark panel) */
+.tok-comment { color: #6a7789; font-style: italic; }
+.tok-section { color: #c792ea; font-weight: 600; }
+.tok-keyword { color: #82aaff; }
+.tok-op { color: #7fdbca; }
+.tok-shape { color: #ffcb6b; }
+.tok-number { color: #f78c6c; }
+.tok-unit { color: #f78c6c; opacity: .75; }
+.tok-string { color: #c3e88d; }
+.tok-region { color: #e6edf5; }
+@media (max-width: 640px) {
+  .modal-panel { grid-template-columns: 1fr; max-height: 95vh; }
+  .modal-preview { max-height: 220px; }
+}
+</style>
+</head>
+<body>
+<header>
+<h1>facade_dsl8 catalog</h1>
+<span class="count">40 examples</span>
+<nav class="toc">
+<a href="#part-silhouettes">Silhouettes</a>
+<a href="#part-muntins">Muntin patterns</a>
+<button type="button" class="active" data-filter="all">All</button>
+</nav></header>
+<main>
+<section class="part" id="part-silhouettes" data-part="silhouettes">
+<div class="part-header">
+<h2>Silhouettes</h2>
+<p>Outer window shapes. Start here — head profile, body profile, and how they combine before adding muntins.</p>
+</div>
+<div class="group" id="group-silhouettes-head" data-part="silhouettes" data-group="head">
+<h3>Head shapes</h3>
+<p class="group-desc">Round-top and arched upper profiles (semicircle, eyebrow, quadrant, trapezoid).</p>
+<div class="grid">
+<article class="card" id="circle_top" data-part="silhouettes" data-group="head" data-file="examples/example_circle_top.wdsl" tabindex="0" role="button" aria-label="Open Semicircle">
+<div class="thumb">
+<img src="images/example_circle_top.png" alt="Semicircle" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Head shapes</div>
+<h3>Semicircle</h3>
+<p class="desc">Full semicircle, flat side down.</p>
+<div class="file">examples/example_circle_top.wdsl</div>
+<div class="tags">
+<span class="tag">semicircle</span>
+</div>
+<div class="status ok">0 segments</div>
+</div>
+<template class="entry-src">
+# Circle-top window: semicircle, flat side down, single fixed pane
+
+window semicircle(size=1.0, flat=bottom)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="eyebrow" data-part="silhouettes" data-group="head" data-file="examples/example_eyebrow.wdsl" tabindex="0" role="button" aria-label="Open Eyebrow">
+<div class="thumb">
+<img src="images/example_eyebrow.png" alt="Eyebrow" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Head shapes</div>
+<h3>Eyebrow</h3>
+<p class="desc">Segmental arch — shallow curve, flat bottom.</p>
+<div class="file">examples/example_eyebrow.wdsl</div>
+<div class="tags">
+<span class="tag">eyebrow</span>
+</div>
+<div class="status ok">0 segments</div>
+</div>
+<template class="entry-src">
+# Eyebrow window: segmental arch (shallow curve), flat bottom
+
+window eyebrow(width=1.0, rise=0.2)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="quarter_arch" data-part="silhouettes" data-group="head" data-file="examples/example_quarter_arch.wdsl" tabindex="0" role="button" aria-label="Open Quarter arch">
+<div class="thumb">
+<img src="images/example_quarter_arch.png" alt="Quarter arch" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Head shapes</div>
+<h3>Quarter arch</h3>
+<p class="desc">Quadrant — flat left, flat bottom, curved top-right.</p>
+<div class="file">examples/example_quarter_arch.wdsl</div>
+<div class="tags">
+<span class="tag">quadrant</span>
+</div>
+<div class="status ok">0 segments</div>
+</div>
+<template class="entry-src">
+# Quarter-arch window (quadrant): flat left + flat bottom + curved top-right
+
+window quadrant(size=1.0, corner=bl)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="trap_head" data-part="silhouettes" data-group="head" data-file="examples/example_trap_head.wdsl" tabindex="0" role="button" aria-label="Open Trapezoid head">
+<div class="thumb">
+<img src="images/example_trap_head.png" alt="Trapezoid head" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Head shapes</div>
+<h3>Trapezoid head</h3>
+<p class="desc">Trapezoid head profile only — flat springline, narrows via top_width.</p>
+<div class="file">examples/example_trap_head.wdsl</div>
+<div class="tags">
+<span class="tag">trapezoid</span>
+</div>
+<div class="status ok">0 segments</div>
+</div>
+<template class="entry-src">
+# Trapezoid head profile only — flat springline, narrows toward top
+
+window trapezoid(width=1.0, height=0.35, top_width=0.6)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+</div></div>
+<div class="group" id="group-silhouettes-body" data-part="silhouettes" data-group="body">
+<h3>Body shapes</h3>
+<p class="group-desc">Rectangular sash — the typical lower portion or standalone window.</p>
+<div class="grid">
+<article class="card" id="rectangle" data-part="silhouettes" data-group="body" data-file="examples/example_rectangle.wdsl" tabindex="0" role="button" aria-label="Open Rectangle">
+<div class="thumb">
+<img src="images/example_rectangle.png" alt="Rectangle" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Body shapes</div>
+<h3>Rectangle</h3>
+<p class="desc">Plain rectangular sash — frame only.</p>
+<div class="file">examples/example_rectangle.wdsl</div>
+<div class="tags">
+<span class="tag">rectangle</span>
+</div>
+<div class="status ok">0 segments</div>
+</div>
+<template class="entry-src">
+# Rectangle body — boundary only (no muntins)
+
+window rectangle(1.0, 1.6)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+</div></div>
+<div class="group" id="group-silhouettes-combination" data-part="silhouettes" data-group="combination">
+<h3>Head + body</h3>
+<p class="group-desc">Composite boundaries with distinct head and body regions (head_body, arch_head).</p>
+<div class="grid">
+<article class="card" id="head_body" data-part="silhouettes" data-group="combination" data-file="examples/example_head_body.wdsl" tabindex="0" role="button" aria-label="Open head_body">
+<div class="thumb">
+<img src="images/example_head_body.png" alt="head_body" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Head + body</div>
+<h3>head_body</h3>
+<p class="desc">Rectangular body + semicircle head — boundary only.</p>
+<div class="file">examples/example_head_body.wdsl</div>
+<div class="tags">
+<span class="tag">head_body</span>
+</div>
+<div class="status ok">0 segments</div>
+</div>
+<template class="entry-src">
+# head_body combination — semicircle head on rectangular body (boundary only)
+
+window head_body(width=1.0, body=1.4, head=semicircle, head_height=0.5)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="trap_head_body" data-part="silhouettes" data-group="combination" data-file="examples/example_trap_head_body.wdsl" tabindex="0" role="button" aria-label="Open Trapezoid head + body">
+<div class="thumb">
+<img src="images/example_trap_head_body.png" alt="Trapezoid head + body" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Head + body</div>
+<h3>Trapezoid head + body</h3>
+<p class="desc">Rectangular body + trapezoid head (head_body with head=trapezoid).</p>
+<div class="file">examples/example_trap_head_body.wdsl</div>
+<div class="tags">
+<span class="tag">head_body</span>
+</div>
+<div class="status ok">0 segments</div>
+</div>
+<template class="entry-src">
+# head_body combination — rectangular body + trapezoid head
+
+window head_body(width=1.0, body=1.3, head=trapezoid, head_height=0.35, top_width=0.6)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="arch_head" data-part="silhouettes" data-group="combination" data-file="examples/example_arch_head.wdsl" tabindex="0" role="button" aria-label="Open arch_head">
+<div class="thumb">
+<img src="images/example_arch_head.png" alt="arch_head" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Head + body</div>
+<h3>arch_head</h3>
+<p class="desc">Rectangular body + eyebrow springline head — boundary only.</p>
+<div class="file">examples/example_arch_head.wdsl</div>
+<div class="tags">
+<span class="tag">arch_head</span>
+</div>
+<div class="status ok">0 segments</div>
+</div>
+<template class="entry-src">
+# arch_head boundary only (rect + eyebrow springline)
+
+window arch_head(width=1.0, body=1.0, rise=0.24)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+</div></div>
+<div class="group" id="group-silhouettes-polygon" data-part="silhouettes" data-group="polygon">
+<h3>Polygon &amp; round</h3>
+<p class="group-desc">Non-rectilinear outer boundaries.</p>
+<div class="grid">
+<article class="card" id="circle" data-part="silhouettes" data-group="polygon" data-file="examples/example_circle.wdsl" tabindex="0" role="button" aria-label="Open Circle">
+<div class="thumb">
+<img src="images/example_circle.png" alt="Circle" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Polygon &amp; round</div>
+<h3>Circle</h3>
+<p class="desc">Full circular boundary.</p>
+<div class="file">examples/example_circle.wdsl</div>
+<div class="tags">
+<span class="tag">circle</span>
+</div>
+<div class="status ok">12 segments</div>
+</div>
+<template class="entry-src">
+# Circular window with 2×2 muntin grid
+
+window circle(size=1.0)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  grid glass 2x2
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="ellipse" data-part="silhouettes" data-group="polygon" data-file="examples/example_ellipse.wdsl" tabindex="0" role="button" aria-label="Open Ellipse">
+<div class="thumb">
+<img src="images/example_ellipse.png" alt="Ellipse" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Polygon &amp; round</div>
+<h3>Ellipse</h3>
+<p class="desc">Elliptical boundary.</p>
+<div class="file">examples/example_ellipse.wdsl</div>
+<div class="tags">
+<span class="tag">ellipse</span>
+</div>
+<div class="status ok">7 segments</div>
+</div>
+<template class="entry-src">
+# Elliptical window with 2×1 muntin grid
+
+window ellipse(width=1.2, height=0.8)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  grid glass 2x1
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="trapezoid_pointed" data-part="silhouettes" data-group="polygon" data-file="examples/example_trapezoid_pointed.wdsl" tabindex="0" role="button" aria-label="Open Triangle (trapezoid)">
+<div class="thumb">
+<img src="images/example_trapezoid_pointed.png" alt="Triangle (trapezoid)" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Polygon &amp; round</div>
+<h3>Triangle (trapezoid)</h3>
+<p class="desc">Pointed profile — trapezoid with top_width=0.</p>
+<div class="file">examples/example_trapezoid_pointed.wdsl</div>
+<div class="tags">
+<span class="tag">trapezoid</span>
+</div>
+<div class="status ok">1 segments</div>
+</div>
+<template class="entry-src">
+# Pointed profile — trapezoid with top_width=0
+
+window trapezoid(width=1.0, height=1.2, top_width=0)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  split_h glass 0.45
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="hexagon" data-part="silhouettes" data-group="polygon" data-file="examples/example_hexagon.wdsl" tabindex="0" role="button" aria-label="Open Hexagon">
+<div class="thumb">
+<img src="images/example_hexagon.png" alt="Hexagon" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Polygon &amp; round</div>
+<h3>Hexagon</h3>
+<p class="desc">Regular hexagon boundary.</p>
+<div class="file">examples/example_hexagon.wdsl</div>
+<div class="tags">
+<span class="tag">polygon</span>
+</div>
+<div class="status ok">4 segments</div>
+</div>
+<template class="entry-src">
+# Hexagonal window with cross muntins
+
+window polygon(sides=6, width=1.0, height=1.0)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  grid glass 1x1
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="octagon" data-part="silhouettes" data-group="polygon" data-file="examples/example_octagon.wdsl" tabindex="0" role="button" aria-label="Open Octagon">
+<div class="thumb">
+<img src="images/example_octagon.png" alt="Octagon" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Polygon &amp; round</div>
+<h3>Octagon</h3>
+<p class="desc">Regular octagon boundary.</p>
+<div class="file">examples/example_octagon.wdsl</div>
+<div class="tags">
+<span class="tag">polygon</span>
+</div>
+<div class="status ok">4 segments</div>
+</div>
+<template class="entry-src">
+# Octagonal window with cross muntins
+
+window polygon(sides=8, width=1.0, height=1.0)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  split_v glass 0.5
+  split_h glass 0.5
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+</div></div>
+</section>
+<section class="part" id="part-muntins" data-part="muntins">
+<div class="part-header">
+<h2>Muntin patterns</h2>
+<p>Operations inside a boundary — splits, grids, curves, pane grammar, and recipes that combine them.</p>
+</div>
+<div class="group" id="group-muntins-split" data-part="muntins" data-group="split">
+<h3>Splits</h3>
+<p class="group-desc">split_v, split_h — divide a region with straight muntins.</p>
+<div class="grid">
+<article class="card" id="grid" data-part="muntins" data-group="split" data-file="examples/example_grid.wdsl" tabindex="0" role="button" aria-label="Open Cross split">
+<div class="thumb">
+<img src="images/example_grid.png" alt="Cross split" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Splits</div>
+<h3>Cross split</h3>
+<p class="desc">One vertical + one horizontal split (four panes).</p>
+<div class="file">examples/example_grid.wdsl</div>
+<div class="tags">
+<span class="tag">split_v</span>
+<span class="tag">split_h</span>
+</div>
+<div class="status ok">4 segments</div>
+</div>
+<template class="entry-src">
+# Cross muntins on a rectangle
+
+window rectangle(1.0, 1.6)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  split_v glass 0.5
+  split_h glass 0.5
+
+output:
+  muntin_width 0.025*min_side
+  muntin_depth 0.04
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="transom" data-part="muntins" data-group="split" data-file="examples/example_transom.wdsl" tabindex="0" role="button" aria-label="Open Transom">
+<div class="thumb">
+<img src="images/example_transom.png" alt="Transom" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Splits</div>
+<h3>Transom</h3>
+<p class="desc">Single horizontal split — tall upper pane + sill band.</p>
+<div class="file">examples/example_transom.wdsl</div>
+<div class="tags">
+<span class="tag">split_h</span>
+</div>
+<div class="status ok">1 segments</div>
+</div>
+<template class="entry-src">
+# Tall window: large upper pane + short sill/transom band
+
+window rectangle(1.0, 1.6)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  split_h glass 0.17
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="six_pane_simple" data-part="muntins" data-group="split" data-file="examples/example_six_pane_simple.wdsl" tabindex="0" role="button" aria-label="Open Six pane (splits)">
+<div class="thumb">
+<img src="images/example_six_pane_simple.png" alt="Six pane (splits)" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Splits</div>
+<h3>Six pane (splits)</h3>
+<p class="desc">2 columns × 3 rows via program splits.</p>
+<div class="file">examples/example_six_pane_simple.wdsl</div>
+<div class="tags">
+<span class="tag">split_v</span>
+<span class="tag">split_h</span>
+</div>
+<div class="status ok">7 segments</div>
+</div>
+<template class="entry-src">
+# Same six-pane layout using flat splits (simpler equivalent)
+
+window rectangle(1.0, 1.6)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  split_v glass 0.5
+  split_h glass 0.17
+  split_h glass 0.83
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="circle_cross" data-part="muntins" data-group="split" data-file="examples/example_circle_cross.wdsl" tabindex="0" role="button" aria-label="Open Circle cross">
+<div class="thumb">
+<img src="images/example_circle_cross.png" alt="Circle cross" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Splits</div>
+<h3>Circle cross</h3>
+<p class="desc">Cross splits on a circular boundary.</p>
+<div class="file">examples/example_circle_cross.wdsl</div>
+<div class="tags">
+<span class="tag">split_v</span>
+<span class="tag">split_h</span>
+</div>
+<div class="status ok">4 segments</div>
+</div>
+<template class="entry-src">
+# Round window with cross muntins (four quadrant panes)
+
+window circle(size=1.0)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  split_v glass 0.5
+  split_h glass 0.5
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+</div></div>
+<div class="group" id="group-muntins-grid" data-part="muntins" data-group="grid">
+<h3>Grids</h3>
+<p class="group-desc">Regular row/column grids, including cropped zones.</p>
+<div class="grid">
+<article class="card" id="octagon_grid" data-part="muntins" data-group="grid" data-file="examples/example_octagon_grid.wdsl" tabindex="0" role="button" aria-label="Open Octagon 3×3">
+<div class="thumb">
+<img src="images/example_octagon_grid.png" alt="Octagon 3×3" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Grids</div>
+<h3>Octagon 3×3</h3>
+<p class="desc">Regular grid; corner panes clip to triangles.</p>
+<div class="file">examples/example_octagon_grid.wdsl</div>
+<div class="tags">
+<span class="tag">grid</span>
+</div>
+<div class="status ok">12 segments</div>
+</div>
+<template class="entry-src">
+# Octagonal window with 3×3 muntin grid
+# Corner panes clip to triangles; center stays square (octagon does the rest).
+
+window polygon(sides=8, size=1.0, orient=pointy)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  grid glass 2x2
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="hex_grid_body" data-part="muntins" data-group="grid" data-file="examples/example_hex_grid_body.wdsl" tabindex="0" role="button" aria-label="Open Hex grid (crop)">
+<div class="thumb">
+<img src="images/example_hex_grid_body.png" alt="Hex grid (crop)" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Grids</div>
+<h3>Hex grid (crop)</h3>
+<p class="desc">Grid in lower body crop zone with seam at crop top edge.</p>
+<div class="file">examples/example_hex_grid_body.wdsl</div>
+<div class="tags">
+<span class="tag">crop</span>
+<span class="tag">seam</span>
+<span class="tag">grid</span>
+</div>
+<div class="status ok">20 segments</div>
+</div>
+<template class="entry-src">
+# Hexagon — grid only in lower body (crop zone)
+
+window polygon(sides=6, size=1.032)
+
+frame thickness 0.0646*min_side depth 0.0688 material painted_wood
+
+regions:
+  glass = inset(root, 0.0599*min_side)
+  body = crop(glass, v1=0.72)
+
+program:
+  seam body
+  grid body 2x3
+
+output:
+  muntin_width 0.0268*min_side
+  muntin_depth 0.0425
+  glass_thickness 0.0148
+
+</template>
+</article>
+<article class="card" id="head_arch" data-part="muntins" data-group="grid" data-file="examples/example_head_arch.wdsl" tabindex="0" role="button" aria-label="Open Body grid">
+<div class="thumb">
+<img src="images/example_head_arch.png" alt="Body grid" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Grids</div>
+<h3>Body grid</h3>
+<p class="desc">head_body silhouette with seam transom and 2×1 grid in body.</p>
+<div class="file">examples/example_head_arch.wdsl</div>
+<div class="tags">
+<span class="tag">body</span>
+<span class="tag">seam</span>
+<span class="tag">grid</span>
+</div>
+<div class="status ok">10 segments</div>
+</div>
+<template class="entry-src">
+# Round-arch head + rectangular body
+
+window head_body(width=1.0, body=1.2, head=semicircle, head_height=0.5)
+
+frame thickness 0.07*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.07*min_side)
+  body = body(glass)
+
+program:
+  seam body
+  grid body 2x1
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+</div></div>
+<div class="group" id="group-muntins-panes" data-part="muntins" data-group="panes">
+<h3>Pane grammar</h3>
+<p class="group-desc">Recursive pane rules (panes block) for sash layouts.</p>
+<div class="grid">
+<article class="card" id="recursive_panes" data-part="muntins" data-group="panes" data-file="examples/example_recursive_panes.wdsl" tabindex="0" role="button" aria-label="Open Recursive panes">
+<div class="thumb">
+<img src="images/example_recursive_panes.png" alt="Recursive panes" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Pane grammar</div>
+<h3>Recursive panes</h3>
+<p class="desc">Binary split tree via pane rules.</p>
+<div class="file">examples/example_recursive_panes.wdsl</div>
+<div class="tags">
+<span class="tag">panes</span>
+</div>
+<div class="status ok">7 segments</div>
+</div>
+<template class="entry-src">
+# Recursive binary splits (rule-based pane grammar)
+
+window rectangle(1.6, 1)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  root split(v=0.5) A B
+  A split(v=0.5) A_1 A_2
+  A_1 split(h=0.5) A_11 A_12
+  B split(v=0.5) B_1 B_2
+  B_2 split(h=0.5) B_21 B_22
+  A_11 eps
+  A_12 eps
+  A_2 eps
+  B_1 eps
+  B_21 eps
+  B_22 eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="four_pane" data-part="muntins" data-group="panes" data-file="examples/example_four_pane.wdsl" tabindex="0" role="button" aria-label="Open Four pane">
+<div class="thumb">
+<img src="images/example_four_pane.png" alt="Four pane" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Pane grammar</div>
+<h3>Four pane</h3>
+<p class="desc">Equal 2×2 via pane grammar.</p>
+<div class="file">examples/example_four_pane.wdsl</div>
+<div class="tags">
+<span class="tag">panes</span>
+</div>
+<div class="status ok">4 segments</div>
+</div>
+<template class="entry-src">
+# Four-pane: equal 2×2 via pane grammar
+
+window rectangle(1.0, 1.2)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  root split(v=0.5) L R
+  L split(h=0.5) L_bot L_top
+  R split(h=0.5) R_bot R_top
+  L_bot eps
+  L_top eps
+  R_bot eps
+  R_top eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="t_muntin" data-part="muntins" data-group="panes" data-file="examples/example_t_muntin.wdsl" tabindex="0" role="button" aria-label="Open T muntin">
+<div class="thumb">
+<img src="images/example_t_muntin.png" alt="T muntin" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Pane grammar</div>
+<h3>T muntin</h3>
+<p class="desc">Full horizontal bar; vertical stem only in the lower half.</p>
+<div class="file">examples/example_t_muntin.wdsl</div>
+<div class="tags">
+<span class="tag">panes</span>
+</div>
+<div class="status ok">3 segments</div>
+</div>
+<template class="entry-src">
+# T muntin: full horizontal bar + vertical stem in the lower pane only
+
+window rectangle(1.0, 1.4)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  root split(h=0.55) BOT TOP
+  TOP eps
+  BOT split(v=0.5) L R
+  L eps
+  R eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="t_muntin_inv" data-part="muntins" data-group="panes" data-file="examples/example_t_muntin_inv.wdsl" tabindex="0" role="button" aria-label="Open Inverted T">
+<div class="thumb">
+<img src="images/example_t_muntin_inv.png" alt="Inverted T" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Pane grammar</div>
+<h3>Inverted T</h3>
+<p class="desc">Full horizontal bar; vertical stem only in the upper half.</p>
+<div class="file">examples/example_t_muntin_inv.wdsl</div>
+<div class="tags">
+<span class="tag">panes</span>
+</div>
+<div class="status ok">3 segments</div>
+</div>
+<template class="entry-src">
+# Inverted T: full horizontal bar + vertical stem in the upper pane only
+
+window rectangle(1.0, 1.4)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  root split(h=0.45) BOT TOP
+  BOT eps
+  TOP split(v=0.5) L R
+  L eps
+  R eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="t_muntin_side" data-part="muntins" data-group="panes" data-file="examples/example_t_muntin_side.wdsl" tabindex="0" role="button" aria-label="Open Sideways T">
+<div class="thumb">
+<img src="images/example_t_muntin_side.png" alt="Sideways T" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Pane grammar</div>
+<h3>Sideways T</h3>
+<p class="desc">Full vertical stile; horizontal rail only on one side.</p>
+<div class="file">examples/example_t_muntin_side.wdsl</div>
+<div class="tags">
+<span class="tag">panes</span>
+</div>
+<div class="status ok">3 segments</div>
+</div>
+<template class="entry-src">
+# Sideways T (⊢): full vertical stile + horizontal rail in the right pane only
+
+window rectangle(1.2, 1.2)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  root split(v=0.5) L R
+  L eps
+  R split(h=0.5) R_bot R_top
+  R_bot eps
+  R_top eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="double_hung" data-part="muntins" data-group="panes" data-file="examples/example_double_hung.wdsl" tabindex="0" role="button" aria-label="Open Double-hung">
+<div class="thumb">
+<img src="images/example_double_hung.png" alt="Double-hung" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Pane grammar</div>
+<h3>Double-hung</h3>
+<p class="desc">Two equal columns, each top/bottom sash.</p>
+<div class="file">examples/example_double_hung.wdsl</div>
+<div class="tags">
+<span class="tag">panes</span>
+</div>
+<div class="status ok">4 segments</div>
+</div>
+<template class="entry-src">
+# Classic double-hung: two equal columns, each top/bottom sash
+
+window rectangle(1.0, 1.5)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  root split(v=0.5) L R
+  L split(h=0.5) L_bot L_top
+  R split(h=0.5) R_bot R_top
+  L_bot eps
+  L_top eps
+  R_bot eps
+  R_top eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="double_hung_unequal" data-part="muntins" data-group="panes" data-file="examples/example_double_hung_unequal.wdsl" tabindex="0" role="button" aria-label="Open Double-hung (unequal)">
+<div class="thumb">
+<img src="images/example_double_hung_unequal.png" alt="Double-hung (unequal)" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Pane grammar</div>
+<h3>Double-hung (unequal)</h3>
+<p class="desc">Meeting rail below mid — larger lower sash.</p>
+<div class="file">examples/example_double_hung_unequal.wdsl</div>
+<div class="tags">
+<span class="tag">panes</span>
+</div>
+<div class="status ok">4 segments</div>
+</div>
+<template class="entry-src">
+# Unequal double-hung: lower sash larger than upper (meeting rail low)
+
+window rectangle(1.0, 1.5)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  root split(v=0.5) L R
+  L split(h=0.55) L_bot L_top
+  R split(h=0.55) R_bot R_top
+  L_bot eps
+  L_top eps
+  R_bot eps
+  R_top eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="six_pane" data-part="muntins" data-group="panes" data-file="examples/example_six_pane.wdsl" tabindex="0" role="button" aria-label="Open Six pane (panes)">
+<div class="thumb">
+<img src="images/example_six_pane.png" alt="Six pane (panes)" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Pane grammar</div>
+<h3>Six pane (panes)</h3>
+<p class="desc">Same 2×3 layout expressed as pane grammar.</p>
+<div class="file">examples/example_six_pane.wdsl</div>
+<div class="tags">
+<span class="tag">panes</span>
+</div>
+<div class="status ok">7 segments</div>
+</div>
+<template class="entry-src">
+# Six-pane window: 2 equal columns, 3 rows (short / tall / short)
+# Matches a typical transom + picture + sill layout.
+
+window rectangle(1.0, 1.6)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  # center vertical
+  root split(v=0.5) L R
+  # bottom band ~17%, then split middle (~66%) from top (~17%)
+  L split(h=0.17) L_bot L_rest
+  L_rest split(h=0.80) L_mid L_top
+  R split(h=0.17) R_bot R_rest
+  R_rest split(h=0.80) R_mid R_top
+  L_bot eps
+  L_mid eps
+  L_top eps
+  R_bot eps
+  R_mid eps
+  R_top eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="picture_double_hung" data-part="muntins" data-group="panes" data-file="examples/example_picture_double_hung.wdsl" tabindex="0" role="button" aria-label="Open Picture + double-hung">
+<div class="thumb">
+<img src="images/example_picture_double_hung.png" alt="Picture + double-hung" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Pane grammar</div>
+<h3>Picture + double-hung</h3>
+<p class="desc">1:2:1 columns; center fixed, flanks split top/bottom.</p>
+<div class="file">examples/example_picture_double_hung.wdsl</div>
+<div class="tags">
+<span class="tag">panes</span>
+</div>
+<div class="status ok">6 segments</div>
+</div>
+<template class="entry-src">
+# Picture window with double-hung flanks (1 : 2 : 1 columns)
+# Center = fixed picture pane; left/right = top/bottom sashes each.
+
+window rectangle(1.6, 1.0)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  # three columns: 25% | 50% | 25%
+  root split(v=0.25) L REST
+  REST split(v=0.667) C R
+  # double-hung on flanks only
+  L split(h=0.5) L_bot L_top
+  R split(h=0.5) R_bot R_top
+  L_bot eps
+  L_top eps
+  C eps
+  R_bot eps
+  R_top eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="center_double_hung" data-part="muntins" data-group="panes" data-file="examples/example_center_double_hung.wdsl" tabindex="0" role="button" aria-label="Open Center double-hung">
+<div class="thumb">
+<img src="images/example_center_double_hung.png" alt="Center double-hung" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Pane grammar</div>
+<h3>Center double-hung</h3>
+<p class="desc">1:2:1 columns; center sash hung, flanks fixed.</p>
+<div class="file">examples/example_center_double_hung.wdsl</div>
+<div class="tags">
+<span class="tag">panes</span>
+</div>
+<div class="status ok">5 segments</div>
+</div>
+<template class="entry-src">
+# Inverse picture: 1:2:1 columns; center double-hung, flanks fixed
+
+window rectangle(1.6, 1.0)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  root split(v=0.25) L REST
+  REST split(v=0.667) C R
+  C split(h=0.5) C_bot C_top
+  L eps
+  C_bot eps
+  C_top eps
+  R eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="transom_double_hung" data-part="muntins" data-group="panes" data-file="examples/example_transom_double_hung.wdsl" tabindex="0" role="button" aria-label="Open Transom + double-hung">
+<div class="thumb">
+<img src="images/example_transom_double_hung.png" alt="Transom + double-hung" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Pane grammar</div>
+<h3>Transom + double-hung</h3>
+<p class="desc">Short top transom over classic double-hung below.</p>
+<div class="file">examples/example_transom_double_hung.wdsl</div>
+<div class="tags">
+<span class="tag">panes</span>
+</div>
+<div class="status ok">6 segments</div>
+</div>
+<template class="entry-src">
+# Transom over double-hung: short top band, then two columns with sashes
+
+window rectangle(1.0, 1.7)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  root split(h=0.82) LOWER TRANS
+  TRANS eps
+  LOWER split(v=0.5) L R
+  L split(h=0.5) L_bot L_top
+  R split(h=0.5) R_bot R_top
+  L_bot eps
+  L_top eps
+  R_bot eps
+  R_top eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="octagon_grid_panes" data-part="muntins" data-group="panes" data-file="examples/example_octagon_grid_panes.wdsl" tabindex="0" role="button" aria-label="Open Octagon grid (panes)">
+<div class="thumb">
+<img src="images/example_octagon_grid_panes.png" alt="Octagon grid (panes)" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Pane grammar</div>
+<h3>Octagon grid (panes)</h3>
+<p class="desc">3×3 octagon layout as recursive pane rules.</p>
+<div class="file">examples/example_octagon_grid_panes.wdsl</div>
+<div class="tags">
+<span class="tag">panes</span>
+</div>
+<div class="status ok">12 segments</div>
+</div>
+<template class="entry-src">
+# Same octagon 3×3 — recursive pane rules (⅓ / ⅔ splits)
+
+window polygon(sides=8, size=1.0, orient=flat)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  # three equal columns
+  root split(v=0.333) C1 C23
+  C23 split(v=0.5) C2 C3
+  # column 1 rows
+  C1 split(h=0.333) C1B C1MT
+  C1MT split(h=0.5) C1M C1T
+  # column 2 rows
+  C2 split(h=0.333) C2B C2MT
+  C2MT split(h=0.5) C2M C2T
+  # column 3 rows
+  C3 split(h=0.333) C3B C3MT
+  C3MT split(h=0.5) C3M C3T
+  C1B eps
+  C1M eps
+  C1T eps
+  C2B eps
+  C2M eps
+  C2T eps
+  C3B eps
+  C3M eps
+  C3T eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+</div></div>
+<div class="group" id="group-muntins-arc" data-part="muntins" data-group="arc">
+<h3>Arc</h3>
+<p class="group-desc">Curved muntin arcs (hub, eyebrow, semicircle).</p>
+<div class="grid">
+<article class="card" id="arc" data-part="muntins" data-group="arc" data-file="examples/example_arc.wdsl" tabindex="0" role="button" aria-label="Open Hub arc">
+<div class="thumb">
+<img src="images/example_arc.png" alt="Hub arc" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Arc</div>
+<h3>Hub arc</h3>
+<p class="desc">Semicircular hub arc muntin at the springline.</p>
+<div class="file">examples/example_arc.wdsl</div>
+<div class="tags">
+<span class="tag">arc</span>
+</div>
+<div class="status ok">16 segments</div>
+</div>
+<template class="entry-src">
+# Hub arc muntin on a semicircle (no fan)
+
+window semicircle(size=1.0, flat=bottom)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  arc glass hub origin 0.5 0 radius 0.26*min_side semicircle
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+</div></div>
+<div class="group" id="group-muntins-fan" data-part="muntins" data-group="fan">
+<h3>Fan</h3>
+<p class="group-desc">Radial spokes from a hub or bottom center.</p>
+<div class="grid">
+<article class="card" id="circle_top_fan" data-part="muntins" data-group="fan" data-file="examples/example_circle_top_fan.wdsl" tabindex="0" role="button" aria-label="Open Fan (45–135°)">
+<div class="thumb">
+<img src="images/example_circle_top_fan.png" alt="Fan (45–135°)" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Fan</div>
+<h3>Fan (45–135°)</h3>
+<p class="desc">Three radials from bottom center on a semicircle.</p>
+<div class="file">examples/example_circle_top_fan.wdsl</div>
+<div class="tags">
+<span class="tag">fan</span>
+</div>
+<div class="status ok">3 segments</div>
+</div>
+<template class="entry-src">
+# Circle-top window with fan muntins from bottom center (4 wedge panes)
+
+window semicircle(size=1.0, flat=bottom)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  fan glass
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="quarter_arch_radial" data-part="muntins" data-group="fan" data-file="examples/example_quarter_arch_radial.wdsl" tabindex="0" role="button" aria-label="Open Quarter-arch radial">
+<div class="thumb">
+<img src="images/example_quarter_arch_radial.png" alt="Quarter-arch radial" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Fan</div>
+<h3>Quarter-arch radial</h3>
+<p class="desc">Radial fan from the square corner on a quadrant (no hub arc).</p>
+<div class="file">examples/example_quarter_arch_radial.wdsl</div>
+<div class="tags">
+<span class="tag">fan</span>
+</div>
+<div class="status ok">3 segments</div>
+</div>
+<template class="entry-src">
+# Quarter-arch (quadrant) with radial fan only — no hub arc.
+# Spokes from the square corner across the 90° glass.
+
+window quadrant(size=1.0, corner=bl)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  fan glass 3 origin 0 0 arc 15 75
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+</div></div>
+<div class="group" id="group-muntins-combined" data-part="muntins" data-group="combined">
+<h3>Combinations</h3>
+<p class="group-desc">Real windows built from multiple ops (arc + fan + grid + panes + seam).</p>
+<div class="grid">
+<article class="card" id="lunette" data-part="muntins" data-group="combined" data-file="examples/example_lunette.wdsl" tabindex="0" role="button" aria-label="Open Lunette">
+<div class="thumb">
+<img src="images/example_lunette.png" alt="Lunette" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Combinations</div>
+<h3>Lunette</h3>
+<p class="desc">Hub arc + fan radials starting at the hub.</p>
+<div class="file">examples/example_lunette.wdsl</div>
+<div class="tags">
+<span class="tag">arc</span>
+<span class="tag">fan</span>
+</div>
+<div class="status ok">19 segments</div>
+</div>
+<template class="entry-src">
+# Lunette window: hub arc muntin + fan radials starting at the hub (5 panes)
+
+window semicircle(size=1.0, flat=bottom)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  arc glass hub origin 0.5 0 radius 0.26*min_side semicircle
+  fan glass from hub
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="quarter_arch_fan" data-part="muntins" data-group="combined" data-file="examples/example_quarter_arch_fan.wdsl" tabindex="0" role="button" aria-label="Open Quarter-arch fan">
+<div class="thumb">
+<img src="images/example_quarter_arch_fan.png" alt="Quarter-arch fan" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Combinations</div>
+<h3>Quarter-arch fan</h3>
+<p class="desc">Quadrant — hub quarter-arc + fan from the square corner.</p>
+<div class="file">examples/example_quarter_arch_fan.wdsl</div>
+<div class="tags">
+<span class="tag">arc</span>
+<span class="tag">fan</span>
+</div>
+<div class="status ok">19 segments</div>
+</div>
+<template class="entry-src">
+# Quarter-arch (quadrant) with hub arc + radial fan from the square corner.
+# corner=bl → origin at bottom-left; arcs sweep 0°→90°.
+
+window quadrant(size=1.0, corner=bl)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  arc glass hub origin 0 0 radius 0.32*min_side from 0 to 90
+  fan glass 3 from hub origin 0 0 arc 15 75
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="arched_shapes" data-part="muntins" data-group="combined" data-file="examples/example_arched_shapes.wdsl" tabindex="0" role="button" aria-label="Open Arched shapes">
+<div class="thumb">
+<img src="images/example_arched_shapes.png" alt="Arched shapes" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Combinations</div>
+<h3>Arched shapes</h3>
+<p class="desc">head_body — body 1×3 grid, seam transom, lunette head.</p>
+<div class="file">examples/example_arched_shapes.wdsl</div>
+<div class="tags">
+<span class="tag">seam</span>
+<span class="tag">grid</span>
+<span class="tag">arc</span>
+<span class="tag">fan</span>
+</div>
+<div class="status ok">33 segments</div>
+</div>
+<template class="entry-src">
+# Arched shapes: body grid + lunette head, with transom at head/body junction
+
+window head_body(width=1.0, body=1.6, head=semicircle, head_height=0.5)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+  body = body(glass)
+  head = head(glass)
+
+program:
+  seam body
+  grid body 1x3
+  arc head hub origin 0.5 0 radius 0.24*min_side semicircle
+  fan head from hub
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="custom_shaped" data-part="muntins" data-group="combined" data-file="examples/example_custom_shaped.wdsl" tabindex="0" role="button" aria-label="Open Custom shaped">
+<div class="thumb">
+<img src="images/example_custom_shaped.png" alt="Custom shaped" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Combinations</div>
+<h3>Custom shaped</h3>
+<p class="desc">head_body — lunette head + double-hung body columns.</p>
+<div class="file">examples/example_custom_shaped.wdsl</div>
+<div class="tags">
+<span class="tag">arc</span>
+<span class="tag">fan</span>
+<span class="tag">panes</span>
+</div>
+<div class="status ok">26 segments</div>
+</div>
+<template class="entry-src">
+# Custom shaped: head_body with lunette head + double-hung body columns
+
+window head_body(width=1.0, body=1.4, head=semicircle, head_height=0.5)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+  body = body(glass)
+  head = head(glass)
+
+program:
+  arc head hub origin 0.5 0 radius 0.25*width semicircle
+  fan head count 3 arc 0 180 from hub
+
+panes body:
+  @root body
+  # three columns: 25% | 50% | 25% (same as picture double-hung)
+  body split(v=0.25) L REST
+  REST split(v=0.667) C R
+  L split(h=0.5) L_bot L_top
+  R split(h=0.5) R_bot R_top
+  L_bot eps
+  L_top eps
+  C eps
+  R_bot eps
+  R_top eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+<article class="card" id="fixed_window" data-part="muntins" data-group="combined" data-file="examples/example_fixed_window.wdsl" tabindex="0" role="button" aria-label="Open Fixed window">
+<div class="thumb">
+<img src="images/example_fixed_window.png" alt="Fixed window" loading="lazy">
+</div>
+<div class="body">
+<div class="group-label">Combinations</div>
+<h3>Fixed window</h3>
+<p class="desc">arch_head — eyebrow inner arc, center splits, springline seam.</p>
+<div class="file">examples/example_fixed_window.wdsl</div>
+<div class="tags">
+<span class="tag">seam</span>
+<span class="tag">arc</span>
+<span class="tag">split_v</span>
+<span class="tag">split_h</span>
+</div>
+<div class="status ok">35 segments</div>
+</div>
+<template class="entry-src">
+# Fixed window: rect body + eyebrow springline head
+
+window arch_head(width=1.0, body=1.0, rise=0.24)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+  body = body(glass)
+  head = head(glass)
+  center_low = crop(body, 0.333, 0, 0.667, 0.5)
+  center_mid = crop(body, 0.333, 0.5, 0.667, 1)
+  center_head = crop(head, 0.333, 0, 0.667, 1)
+
+program:
+  split_h glass 0.333
+  split_v glass 0.333
+  split_v glass 0.667
+  seam body
+  split_v center_low 0.5
+  arc center_mid hub origin 0.5 0 eyebrow 0.10*min_side
+  split_v center_head 0.5
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
+
+</template>
+</article>
+</div></div>
+</section>
+</main>
+<div id="wdsl-modal" class="modal" hidden>
+<div class="modal-backdrop" data-close></div>
+<div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-file">
+<div class="modal-preview"><img id="modal-img" alt=""></div>
+<div class="modal-main">
+<div class="modal-header">
+<span class="modal-file" id="modal-file"></span>
+<button type="button" id="modal-copy">Copy</button>
+<button type="button" data-close>Close</button>
+</div>
+<div class="modal-body"><pre><code id="modal-code"></code></pre></div>
+</div>
+</div></div>
+<footer>Rebuild: python3 build_catalog.py --render · click a card to view image + source</footer>
+<script>
+const filterBtns = document.querySelectorAll('.toc button[data-filter]');
+const partLinks = document.querySelectorAll('.toc a');
+const cards = document.querySelectorAll('.card');
+const groups = document.querySelectorAll('.group');
+filterBtns.forEach(btn => btn.addEventListener('click', () => {
+  filterBtns.forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const f = btn.dataset.filter;
+  cards.forEach(c => { c.hidden = f !== 'all' && c.dataset.part !== f; });
+  groups.forEach(g => {
+    const visible = g.querySelectorAll('.card:not([hidden])').length;
+    g.hidden = visible === 0;
+  });
+}));
+partLinks.forEach(a => a.addEventListener('click', () => {
+  filterBtns.forEach(b => b.classList.remove('active'));
+  const all = document.querySelector('.toc button[data-filter="all"]');
+  if (all) all.classList.add('active');
+  cards.forEach(c => c.hidden = false);
+  groups.forEach(g => g.hidden = false);
+}));
+function highlightWDSL(src) {
+  const esc = src.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const re = new RegExp([
+    '(#[^\\n]*)',                                                    // 1 comment
+    '(^[ \\t]*(?:regions:|program:|output:|panes\\b[^\\n]*:?)|@root\\b)',  // 2 section
+    '(\\b(?:window|frame)\\b)',                                    // 3 top-level
+    '(\\b(?:split_v|split_h|split_radial|seam|fan|arc|grid|inset|crop|split|eps|mirror|connect|clip|trim|body|head)\\b)', // 4 op
+    '(\\b(?:rectangle|semicircle|head_body|arch_head|rect_eyebrow|eyebrow|segmental_arch|trapezoid|circle|ellipse|polygon|quadrant|triangle|spline|composite)\\b)', // 5 shape
+    '(\\b(?:thickness|depth|material|origin|radius|rise|count|from|to|hub|angles|offset|rotate|chord|segments|muntin_width|muntin_depth|glass_thickness|width|height|size|sides|orient|flat|corner|head_height|top_width|head_top_width|vertical|horizontal|bottom|top|left|right)\\b)', // 6 keyword
+    '(\\b\\d+(?:\\.\\d+)?(?:\\*(?:min_side|width|height))?)', // 7 number
+    '(&quot;[^&]*&quot;|"[^"]*")'                                   // 8 string
+  ].join('|'), 'gm');
+  return esc.replace(re, (m, com, sec, top, op, shape, kw, num, str) => {
+    if (com) return '<span class="tok-comment">' + com + '</span>';
+    if (sec) return '<span class="tok-section">' + sec + '</span>';
+    if (top) return '<span class="tok-section">' + top + '</span>';
+    if (op) return '<span class="tok-op">' + op + '</span>';
+    if (shape) return '<span class="tok-shape">' + shape + '</span>';
+    if (kw) return '<span class="tok-keyword">' + kw + '</span>';
+    if (num) {
+      const parts = num.split('*');
+      if (parts.length === 2) return '<span class="tok-number">' + parts[0] + '</span><span class="tok-unit">*' + parts[1] + '</span>';
+      return '<span class="tok-number">' + num + '</span>';
+    }
+    if (str) return '<span class="tok-string">' + str + '</span>';
+    return m;
+  });
+}
+const modal = document.getElementById('wdsl-modal');
+const modalFile = document.getElementById('modal-file');
+const modalCode = document.getElementById('modal-code');
+const modalCopy = document.getElementById('modal-copy');
+const modalImg = document.getElementById('modal-img');
+let modalSource = '';
+function openModal(card) {
+  const tpl = card.querySelector('.entry-src');
+  if (!tpl) return;
+  modalSource = tpl.content ? tpl.content.textContent : tpl.textContent;
+  modalFile.textContent = card.dataset.file || '';
+  modalCode.innerHTML = highlightWDSL(modalSource);
+  const img = card.querySelector('.thumb img');
+  if (img) { modalImg.src = img.src; modalImg.alt = img.alt; modalImg.hidden = false; }
+  else { modalImg.hidden = true; }
+  modal.hidden = false;
+  document.body.style.overflow = 'hidden';
+}
+function closeModal() {
+  modal.hidden = true;
+  document.body.style.overflow = '';
+}
+cards.forEach(card => {
+  card.addEventListener('click', () => openModal(card));
+  card.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openModal(card); }
+  });
+});
+modal.querySelectorAll('[data-close]').forEach(el => el.addEventListener('click', closeModal));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !modal.hidden) closeModal(); });
+modalCopy.addEventListener('click', async () => {
+  try {
+    await navigator.clipboard.writeText(modalSource);
+    modalCopy.textContent = 'Copied';
+    setTimeout(() => { modalCopy.textContent = 'Copy'; }, 1200);
+  } catch (_) {}
+});
+</script>
+</body></html>

@@ -1,0 +1,28 @@
+# Picture window with double-hung flanks (1 : 2 : 1 columns)
+# Center = fixed picture pane; left/right = top/bottom sashes each.
+
+window rectangle(1.6, 1.0)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  # three columns: 25% | 50% | 25%
+  root split(v=0.25) L REST
+  REST split(v=0.667) C R
+  # double-hung on flanks only
+  L split(h=0.5) L_bot L_top
+  R split(h=0.5) R_bot R_top
+  L_bot eps
+  L_top eps
+  C eps
+  R_bot eps
+  R_top eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01

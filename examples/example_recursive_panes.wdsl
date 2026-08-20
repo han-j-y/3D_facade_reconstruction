@@ -1,0 +1,27 @@
+# Recursive binary splits (rule-based pane grammar)
+
+window rectangle(1.6, 1)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  root split(v=0.5) A B
+  A split(v=0.5) A_1 A_2
+  A_1 split(h=0.5) A_11 A_12
+  B split(v=0.5) B_1 B_2
+  B_2 split(h=0.5) B_21 B_22
+  A_11 eps
+  A_12 eps
+  A_2 eps
+  B_1 eps
+  B_21 eps
+  B_22 eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01

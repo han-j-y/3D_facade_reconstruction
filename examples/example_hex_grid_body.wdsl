@@ -1,0 +1,18 @@
+# Hexagon — grid only in lower body (crop zone)
+
+window polygon(sides=6, size=1.032)
+
+frame thickness 0.0646*min_side depth 0.0688 material painted_wood
+
+regions:
+  glass = inset(root, 0.0599*min_side)
+  body = crop(glass, v1=0.72)
+
+program:
+  seam body
+  grid body 2x3
+
+output:
+  muntin_width 0.0268*min_side
+  muntin_depth 0.0425
+  glass_thickness 0.0148

@@ -1,0 +1,16 @@
+# Arch head with grid on full glass — muntins span head + body
+
+window arch_head(width=1.0, body=1.1, rise=0.22)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  grid glass 2x1
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01

@@ -1,0 +1,13 @@
+# Trapezoid head profile only — flat springline, narrows toward top
+
+window trapezoid(width=1.0, height=0.35, top_width=0.6)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01

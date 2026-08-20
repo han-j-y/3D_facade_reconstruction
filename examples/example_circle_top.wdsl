@@ -1,0 +1,13 @@
+# Circle-top window: semicircle, flat side down, single fixed pane
+
+window semicircle(size=1.0, flat=bottom)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01

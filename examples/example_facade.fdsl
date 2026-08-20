@@ -1,0 +1,44 @@
+# 3-bay, 3-storey façade. First grid row is the TOP band.
+
+facade
+
+wall depth 0.42 material wall
+
+grid:
+  rows F2=3.0 F1=3.2 F0=3.6
+  cols B0=2.4 B1=2.6 B2=2.4
+
+windows:
+  six_pane:
+    window rectangle(1.0, 1.6)
+    frame thickness 0.06*min_side depth 0.08 material painted_wood
+    regions:
+      glass = inset(root, 0.06*min_side)
+    program:
+      grid glass 1x2
+    output:
+      muntin_width 0.022*min_side
+      muntin_depth 0.035
+      glass_thickness 0.01
+
+  picture:
+    window rectangle(1.2, 1.4)
+    frame thickness 0.06*min_side depth 0.08
+    regions:
+      glass = inset(root, 0.06*min_side)
+
+doors:
+  entry arched rise=0.18
+
+placement:
+  F2: six_pane six_pane six_pane
+  F1: six_pane picture six_pane
+  F0: . entry .
+
+params:
+  width_ratio 0.55
+  height_ratio 0.60
+  bottom_margin_ratio 0.12
+  door_bottom_margin_ratio 0.02
+  recess 0.01
+  mirror_x true
