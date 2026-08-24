@@ -154,6 +154,31 @@ def normalize_facade_spec(
             "height_ratio": float(sum(p[1] for p in pairs) / len(pairs)),
         }
 
+    floor_id_to_row = {int(floors[i]["id"]): i for i in range(n_floors)}
+    bay_id_to_col = {int(bays[j]["id"]): j for j in range(n_bays)}
+    balcony_lib: dict[str, Any] = {}
+    for bt in spec.get("balcony_types") or []:
+        bname = str(bt.get("name") or f"balc_type_{int(bt.get('type_id', 0)):02d}")
+        bir = bt.get("structure_ir")
+        if isinstance(bir, dict):
+            balcony_lib[bname] = copy.deepcopy(bir)
+    balcony_placement: list[dict[str, Any]] = []
+    for rec in (spec.get("layout") or {}).get("balconies") or []:
+        bname = str(rec.get("type") or "")
+        if bname not in balcony_lib:
+            continue
+        try:
+            rr = floor_id_to_row[int(rec["floor"])]
+            cc0 = bay_id_to_col[int(rec["bay_start"])]
+            cc1 = bay_id_to_col[int(rec["bay_end"])]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if cc1 < cc0:
+            cc0, cc1 = cc1, cc0
+        balcony_placement.append(
+            {"row": rr, "col0": cc0, "col1": cc1, "type": bname}
+        )
+
     return {
         "type": "facade",
         "schema": "window_compiler_facade_v1",
@@ -171,6 +196,8 @@ def normalize_facade_spec(
         "grid": {"rows": rows, "cols": cols},
         "placement": placement,
         "windows": windows,
+        "balconies": balcony_lib,
+        "balcony_placement": balcony_placement,
         "placement_params": {
             "width_ratio": 0.55,
             "height_ratio": 0.60,

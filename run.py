@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Facade photo → window types → structure IR → recovery DSL.
 
-Blender rendering is optional (``--blender-render``).
+Optional ``--with-balconies`` runs balcony_pipeline after the window DSL
+(does not change window stages). Blender rendering is optional (``--blender-render``).
 
 Examples
 --------
   python run.py --image /path/to/facade.png --device cuda
+  python run.py --image /path/to/facade.png --device cuda --with-balconies --blender-render
   python run.py --facade-id 8 --device cuda
   python run.py --facade-id 8 --blender-render --device cuda
 """

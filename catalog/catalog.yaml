@@ -1,0 +1,394 @@
+# Window muntin catalog for facade_dsl8.
+# Build: python3 build_catalog.py [--render]
+
+parts:
+  - id: silhouettes
+    title: Silhouettes
+    description: >
+      Outer window shapes. Start here — head profile, body profile,
+      and how they combine before adding muntins.
+
+    groups:
+      - id: head
+        title: Head shapes
+        description: Round-top and arched upper profiles (semicircle, eyebrow, quadrant, trapezoid).
+
+      - id: body
+        title: Body shapes
+        description: Rectangular sash — the typical lower portion or standalone window.
+
+      - id: combination
+        title: Head + body
+        description: Composite boundaries with distinct head and body regions (head_body, arch_head).
+
+      - id: polygon
+        title: Polygon & round
+        description: Non-rectilinear outer boundaries.
+
+  - id: muntins
+    title: Muntin patterns
+    description: >
+      Operations inside a boundary — splits, grids, curves, pane grammar,
+      and recipes that combine them.
+
+    groups:
+      - id: split
+        title: Splits
+        description: split_v, split_h — divide a region with straight muntins.
+
+      - id: grid
+        title: Grids
+        description: Regular row/column grids, including cropped zones.
+
+      - id: panes
+        title: Pane grammar
+        description: Recursive pane rules (panes block) for sash layouts.
+
+      - id: arc
+        title: Arc
+        description: Curved muntin arcs (hub, eyebrow, semicircle).
+
+      - id: fan
+        title: Fan
+        description: Radial spokes from a hub or bottom center.
+
+      - id: combined
+        title: Combinations
+        description: Real windows built from multiple ops (arc + fan + grid + panes + seam).
+
+entries:
+  # ── Part 1: Silhouettes ──────────────────────────────────────────────
+
+  # Head shapes
+  - id: circle_top
+    part: silhouettes
+    group: head
+    file: examples/example_circle_top.wdsl
+    title: Semicircle
+    description: Full semicircle, flat side down.
+    boundary: semicircle
+
+  - id: eyebrow
+    part: silhouettes
+    group: head
+    file: examples/example_eyebrow.wdsl
+    title: Eyebrow
+    description: Segmental arch — shallow curve, flat bottom.
+    boundary: eyebrow
+
+  - id: quarter_arch
+    part: silhouettes
+    group: head
+    file: examples/example_quarter_arch.wdsl
+    title: Quarter arch
+    description: Quadrant — flat left, flat bottom, curved top-right.
+    boundary: quadrant
+
+  - id: trap_head
+    part: silhouettes
+    group: head
+    file: examples/example_trap_head.wdsl
+    title: Trapezoid head
+    description: Trapezoid head profile only — flat springline, narrows via top_width.
+    boundary: trapezoid
+
+  # Body shapes
+  - id: rectangle
+    part: silhouettes
+    group: body
+    file: examples/example_rectangle.wdsl
+    title: Rectangle
+    description: Plain rectangular sash — frame only.
+    boundary: rectangle
+
+  # Head + body combinations
+  - id: head_body
+    part: silhouettes
+    group: combination
+    file: examples/example_head_body.wdsl
+    title: head_body
+    description: Rectangular body + semicircle head — boundary only.
+    boundary: head_body
+
+  - id: trap_head_body
+    part: silhouettes
+    group: combination
+    file: examples/example_trap_head_body.wdsl
+    title: Trapezoid head + body
+    description: Rectangular body + trapezoid head (head_body with head=trapezoid).
+    boundary: head_body
+
+  - id: arch_head
+    part: silhouettes
+    group: combination
+    file: examples/example_arch_head.wdsl
+    title: arch_head
+    description: Rectangular body + eyebrow springline head — boundary only.
+    boundary: arch_head
+
+  # Polygon & round
+  - id: circle
+    part: silhouettes
+    group: polygon
+    file: examples/example_circle.wdsl
+    title: Circle
+    description: Full circular boundary.
+    boundary: circle
+
+  - id: ellipse
+    part: silhouettes
+    group: polygon
+    file: examples/example_ellipse.wdsl
+    title: Ellipse
+    description: Elliptical boundary.
+    boundary: ellipse
+
+  - id: trapezoid_pointed
+    part: silhouettes
+    group: polygon
+    file: examples/example_trapezoid_pointed.wdsl
+    title: Triangle (trapezoid)
+    description: Pointed profile — trapezoid with top_width=0.
+    boundary: trapezoid
+
+  - id: hexagon
+    part: silhouettes
+    group: polygon
+    file: examples/example_hexagon.wdsl
+    title: Hexagon
+    description: Regular hexagon boundary.
+    boundary: polygon
+
+  - id: octagon
+    part: silhouettes
+    group: polygon
+    file: examples/example_octagon.wdsl
+    title: Octagon
+    description: Regular octagon boundary.
+    boundary: polygon
+
+  # ── Part 2: Muntin patterns ──────────────────────────────────────────
+
+  # Splits
+  - id: grid
+    part: muntins
+    group: split
+    file: examples/example_grid.wdsl
+    title: Cross split
+    description: One vertical + one horizontal split (four panes).
+    ops: [split_v, split_h]
+
+  - id: transom
+    part: muntins
+    group: split
+    file: examples/example_transom.wdsl
+    title: Transom
+    description: Single horizontal split — tall upper pane + sill band.
+    ops: [split_h]
+
+  - id: six_pane_simple
+    part: muntins
+    group: split
+    file: examples/example_six_pane_simple.wdsl
+    title: Six pane (splits)
+    description: 2 columns × 3 rows via program splits.
+    ops: [split_v, split_h]
+
+  - id: circle_cross
+    part: muntins
+    group: split
+    file: examples/example_circle_cross.wdsl
+    title: Circle cross
+    description: Cross splits on a circular boundary.
+    ops: [split_v, split_h]
+
+  # Grids
+  - id: octagon_grid
+    part: muntins
+    group: grid
+    file: examples/example_octagon_grid.wdsl
+    title: Octagon 3×3
+    description: Regular grid; corner panes clip to triangles.
+    ops: [grid]
+
+  - id: hex_grid_body
+    part: muntins
+    group: grid
+    file: examples/example_hex_grid_body.wdsl
+    title: Hex grid (crop)
+    description: Grid in lower body crop zone with seam at crop top edge.
+    ops: [crop, seam, grid]
+
+  - id: head_arch
+    part: muntins
+    group: grid
+    file: examples/example_head_arch.wdsl
+    title: Body grid
+    description: head_body silhouette with seam transom and 2×1 grid in body.
+    ops: [body, seam, grid]
+
+  # Pane grammar
+  - id: recursive_panes
+    part: muntins
+    group: panes
+    file: examples/example_recursive_panes.wdsl
+    title: Recursive panes
+    description: Binary split tree via pane rules.
+    ops: [panes]
+
+  - id: four_pane
+    part: muntins
+    group: panes
+    file: examples/example_four_pane.wdsl
+    title: Four pane
+    description: Equal 2×2 via pane grammar.
+    ops: [panes]
+
+  - id: t_muntin
+    part: muntins
+    group: panes
+    file: examples/example_t_muntin.wdsl
+    title: T muntin
+    description: Full horizontal bar; vertical stem only in the lower half.
+    ops: [panes]
+
+  - id: t_muntin_inv
+    part: muntins
+    group: panes
+    file: examples/example_t_muntin_inv.wdsl
+    title: Inverted T
+    description: Full horizontal bar; vertical stem only in the upper half.
+    ops: [panes]
+
+  - id: t_muntin_side
+    part: muntins
+    group: panes
+    file: examples/example_t_muntin_side.wdsl
+    title: Sideways T
+    description: Full vertical stile; horizontal rail only on one side.
+    ops: [panes]
+
+  - id: double_hung
+    part: muntins
+    group: panes
+    file: examples/example_double_hung.wdsl
+    title: Double-hung
+    description: Two equal columns, each top/bottom sash.
+    ops: [panes]
+
+  - id: double_hung_unequal
+    part: muntins
+    group: panes
+    file: examples/example_double_hung_unequal.wdsl
+    title: Double-hung (unequal)
+    description: Meeting rail below mid — larger lower sash.
+    ops: [panes]
+
+  - id: six_pane
+    part: muntins
+    group: panes
+    file: examples/example_six_pane.wdsl
+    title: Six pane (panes)
+    description: Same 2×3 layout expressed as pane grammar.
+    ops: [panes]
+
+  - id: picture_double_hung
+    part: muntins
+    group: panes
+    file: examples/example_picture_double_hung.wdsl
+    title: Picture + double-hung
+    description: 1:2:1 columns; center fixed, flanks split top/bottom.
+    ops: [panes]
+
+  - id: center_double_hung
+    part: muntins
+    group: panes
+    file: examples/example_center_double_hung.wdsl
+    title: Center double-hung
+    description: 1:2:1 columns; center sash hung, flanks fixed.
+    ops: [panes]
+
+  - id: transom_double_hung
+    part: muntins
+    group: panes
+    file: examples/example_transom_double_hung.wdsl
+    title: Transom + double-hung
+    description: Short top transom over classic double-hung below.
+    ops: [panes]
+
+  - id: octagon_grid_panes
+    part: muntins
+    group: panes
+    file: examples/example_octagon_grid_panes.wdsl
+    title: Octagon grid (panes)
+    description: 3×3 octagon layout as recursive pane rules.
+    ops: [panes]
+
+  # Arc
+  - id: arc
+    part: muntins
+    group: arc
+    file: examples/example_arc.wdsl
+    title: Hub arc
+    description: Semicircular hub arc muntin at the springline.
+    ops: [arc]
+
+  # Fan
+  - id: circle_top_fan
+    part: muntins
+    group: fan
+    file: examples/example_circle_top_fan.wdsl
+    title: Fan (45–135°)
+    description: Three radials from bottom center on a semicircle.
+    ops: [fan]
+
+  - id: quarter_arch_radial
+    part: muntins
+    group: fan
+    file: examples/example_quarter_arch_radial.wdsl
+    title: Quarter-arch radial
+    description: Radial fan from the square corner on a quadrant (no hub arc).
+    ops: [fan]
+    boundary: quadrant
+
+  # Combinations
+  - id: lunette
+    part: muntins
+    group: combined
+    file: examples/example_lunette.wdsl
+    title: Lunette
+    description: Hub arc + fan radials starting at the hub.
+    ops: [arc, fan]
+
+  - id: quarter_arch_fan
+    part: muntins
+    group: combined
+    file: examples/example_quarter_arch_fan.wdsl
+    title: Quarter-arch fan
+    description: Quadrant — hub quarter-arc + fan from the square corner.
+    ops: [arc, fan]
+    boundary: quadrant
+
+  - id: arched_shapes
+    part: muntins
+    group: combined
+    file: examples/example_arched_shapes.wdsl
+    title: Arched shapes
+    description: head_body — body 1×3 grid, seam transom, lunette head.
+    ops: [seam, grid, arc, fan]
+
+  - id: custom_shaped
+    part: muntins
+    group: combined
+    file: examples/example_custom_shaped.wdsl
+    title: Custom shaped
+    description: head_body — lunette head + double-hung body columns.
+    ops: [arc, fan, panes]
+
+  - id: fixed_window
+    part: muntins
+    group: combined
+    file: examples/example_fixed_window.wdsl
+    title: Fixed window
+    description: arch_head — eyebrow inner arc, center splits, springline seam.
+    ops: [seam, arc, split_v, split_h]

@@ -1,12 +1,15 @@
 (*
   FDSL — façade DSL concrete syntax  (facade_dsl8)
 
-  Authoring language for a wall grid of named window / door types.
+  Authoring language for a wall grid of named window / door / balcony types.
   Parser: parse_fdsl.py
   Compiles to schema facade_dsl8_facade_v1 JSON consumed by facade_compile.py.
 
-  A façade document *embeds* WDSL (see WDSL.ebnf) for each window type.
+  A façade document *embeds* WDSL (see WDSL.ebnf) for each window type
+  and BDSL (see BDSL.ebnf) for each balcony type.
   Doors are primitives (not WDSL).
+  Floor×bay grid is shared; balcony instances may span several bays
+  (`balcony_placement`) and must not reuse the window `placement` matrix.
 
   Coordinates after compile (Blender):
     X across the façade (centered at 0), Z vertical (0 at ground),
@@ -23,7 +26,9 @@ document         = { comment | nl },
                    grid_block,
                    windows_block,
                    [ doors_block ],
+                   [ balconies_block ],
                    placement_block,
+                   [ balcony_placement_block ],
                    [ params_block ],
                    [ "debug", nl ] ;
 
@@ -74,6 +79,14 @@ door_field       = "primitive", ws, door_shape
                  | "material", ws, ident ;
 (* arched | arch | panel_arch → primitive "arched".  rect|flat|panel → "rectangle". *)
 
+(* ——— balcony types (each body is a BDSL document) ——— *)
+
+balconies_block  = "balconies:", nl, { balcony_def } ;
+balcony_def      = ws, ident, ws, "=", ws, path, nl
+                 | ws, ident, ":", nl, bdsl_body ;
+bdsl_body        = { line indented strictly deeper than the `name:` line } ;
+(* bdsl_body is dedented and parsed by parse_bdsl. path: .bdsl or balcony JSON *)
+
 (* ——— placement matrix ——— *)
 
 placement_block  = "placement:", nl, { placement_row } ;
@@ -83,7 +96,21 @@ empty_tok        = "." | "-" | "_" | "empty" | "spacer" | "s" | "null" ;
 (* If a row starts with a name matching grid.rows[].name, that band is filled.
    Otherwise rows are taken in listed order (first = top).
    Each row length must equal the column count.
-   Tokens must name a windows{} or doors{} key, or be empty. *)
+   Tokens must name a windows{} or doors{} key, or be empty.
+   Do not put balcony type names here. *)
+
+(* ——— balcony placement (spans on the same grid) ——— *)
+
+balcony_placement_block = "balcony_placement:", nl, { balcony_place_line } ;
+balcony_place_line      = ws, row_ref, ws, col_span, ws, ident, nl ;
+row_ref                 = ident ;          (* grid.rows[].name, e.g. F2 *)
+col_span                = ident            (* single bay: B1 *)
+                        | ident, "-", ident ;  (* inclusive span: B2-B5 *)
+(* ident after the span must name a balconies{} key.
+   Width of the instance = sum of col widths in the span.
+   Depth comes from the balcony IR (floor.params.depth).
+   Wall opening (door vs window) is the window/door token in placement
+   for the same floor×bay cells — not a BDSL field. *)
 
 (* ——— placement / fit parameters ——— *)
 
@@ -114,6 +141,10 @@ bool             = "true" | "false" | "1" | "0" | "yes" | "no" ;
       <name>: { "type": "door", "primitive": "rectangle"|"arched",
                 "shape": ..., "arch_rise_ratio"?, "material"? }
     },
+    "balconies": { <name>: <balcony JSON IR>, ... },
+    "balcony_placement": [
+      { "row": string, "col0": string, "col1": string, "type": string }, ...
+    ],
     "placement_params": { width_ratio, height_ratio, bottom_margin_ratio,
                           door_bottom_margin_ratio, recess, mirror_x },
     "meta"?: { type_ratios?: { <name>: { width_ratio, height_ratio } } }
@@ -125,6 +156,8 @@ bool             = "true" | "false" | "1" | "0" | "yes" | "no" ;
       layout.floors[].h_norm × layout.bays[].w_norm × layout.placement
       window_types[].structure_ir → windows{}
       door_types[]                → doors{}
+      balcony_types[].structure_ir → balconies{}
+      layout.balconies[] (floor, bay_start, bay_end, type) → balcony_placement
 
   onto facade_dsl8_facade_v1. FDSL authors the compiled form directly.
 *)

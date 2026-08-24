@@ -6,6 +6,7 @@ from typing import Any
 
 import bpy
 
+from balcony_compile import add_balcony_meshes
 from blender_scene import build_blender_scene
 from compiler import compile_spec
 from facade_spec import (
@@ -202,13 +203,19 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
         n_placed += 1
         n_segments += len(p["ctx"].segments)
 
+    n_balc = add_balcony_meshes(
+        spec, wall_obj, facade_coll, cut_opening=_cut_opening
+    )
+
     bounds = (-total_w / 2.0, total_w / 2.0, 0.0, total_h)
     print(
-        f"compiled façade: {n_placed} windows, {n_segments} muntin segments, "
-        f"size={total_w:.2f}×{total_h:.2f}m"
+        f"compiled façade: {n_placed} windows, {n_balc} balconies, "
+        f"{n_segments} muntin segments, "
+        f"size={total_w:.2f}x{total_h:.2f}m"
     )
     return {
         "n_windows": n_placed,
+        "n_balconies": n_balc,
         "n_segments": n_segments,
         "total_w": total_w,
         "total_h": total_h,

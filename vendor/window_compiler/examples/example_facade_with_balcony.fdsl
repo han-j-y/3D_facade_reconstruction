@@ -1,0 +1,29 @@
+# Tiny façade using WDSL + BDSL on one grid.
+# Window placement is per cell; balcony_placement may span bays.
+
+facade
+
+wall depth 0.42 material wall
+
+grid:
+  rows F2=3.2 F1=3.2 F0=3.4
+  cols B0=2.4 B1=2.4 B2=2.4 B3=2.4
+
+windows:
+  win_a = example_double_hung.wdsl
+
+doors:
+  entry rectangle material painted_wood
+
+balconies:
+  open_rect = example_balcony_projecting.bdsl
+  loggia = example_balcony_enclosed.bdsl
+
+placement:
+  F2: win_a win_a win_a win_a
+  F1: win_a win_a win_a win_a
+  F0: entry .     .     .
+
+balcony_placement:
+  F2 B0 open_rect
+  F1 B1-B3 loggia

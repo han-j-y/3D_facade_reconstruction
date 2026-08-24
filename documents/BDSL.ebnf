@@ -1,0 +1,158 @@
+(*
+  BDSL — balcony DSL concrete syntax  (facade_dsl8)
+
+  Authoring language for a single balcony *type* (sibling of WDSL).
+  Parser: parse_bdsl.py. Compiles to balcony JSON IR.
+
+  Photo recovery emits the same JSON IR via tokens (like window structure IR),
+  not this text. Humans author .bdsl; the pipeline votes IR fingerprints.
+
+  A façade document *embeds* BDSL (see FDSL.ebnf) in `balconies:`.
+  Multi-bay span is *placement* (FDSL balcony_placement), not part of BDSL.
+
+  Coordinates: local 3D after compile — width along façade X, depth along +Y
+  (outward), height along Z. Floor shape is the slab plan (looking down).
+  width/depth on `balcony` are default type size; an instance may be scaled
+  to the span of cols[col0..col1].
+
+  Lexer: same as WDSL — '#' comments, UTF-8, indent for blocks
+  (`floor:`, `railing:`, `supports:`, `glazing:`, `output:`).
+*)
+
+document        = { comment | nl }, balcony_line, { nl },
+                  [ structure_line, { nl } ],
+                  [ enclosure_line, { nl } ],
+                  [ floor_block ],
+                  [ railing_line, { nl } ],
+                  [ railing_block ],
+                  [ supports_block ],
+                  [ opening_line, { nl } ],
+                  [ glazing_block ],
+                  [ output_block ],
+                  [ "debug", nl ] ;
+
+(* reuse WDSL: nl, comment, ident, letter, digit, number, rel_base, scalar, ws *)
+
+(* ——— slab plan (required) ——— *)
+
+balcony_line    = "balcony", ws, floor_call ;
+floor_call      = floor_shape, [ "(", [ arg_list ], ")" ] ;
+floor_shape     = "rectangle" | "circle" | "triangle" ;
+arg_list        = arg, { ",", arg } ;
+arg             = [ ident, "=" ], value ;
+value           = scalar | ident | string ;
+string          = '"', { ? any char except '"' ? }, '"'
+                | "'", { ? any char except "'" ? }, "'" ;
+
+(* Args by plan (parser defaults in parentheses):
+
+     rectangle(width, depth)              (1.0, 0.8)   aliases: w, d
+     rectangle(width, depth, height=2.5)  height = inset void (floor to ceiling)
+     circle(diameter, depth)              (1.0, 0.8)   plan ≈ semicircle; depth = projection
+     triangle(width, depth)               (1.0, 0.8)
+
+   Extra plan flags may go in floor_block (e.g. triangle kind).
+*)
+
+(* ——— structure: how the slab meets the wall ——— *)
+
+structure_line  = "structure", ws, struct_name ;
+struct_name     = "projecting" | "inset" | "composite" | "free_standing" ;
+(* default: projecting
+   projecting     — cantilever in front of the wall
+   inset          — loggia: void into the volume, inner side walls + ceiling,
+                    railing on the front lip only
+   composite      — inset loggia (no lip rail) + projecting slab and 3-sided rail
+   free_standing  — posts at slab corners (rectangle: 4) from grade to soffit
+*)
+
+(* ——— enclosure ——— *)
+
+enclosure_line  = "enclosure", ws, enclosure_name ;
+enclosure_name  = "open" | "enclosed" ;
+(* default: open.  enclosed — 3-sided glass box (no railing), 1 m mullions,
+   ceiling slab matches floor thickness. Nested WDSL glazing is optional
+   and not used for this mesh. *)
+
+(* ——— extra floor params (optional; shape already on balcony_line) ——— *)
+
+floor_block     = "floor:", nl, { ws, floor_kv, nl } ;
+floor_kv        = "shape", ws, floor_shape
+                | "width", ws, scalar
+                | "depth", ws, scalar
+                | "height", ws, scalar
+                | "kind", ws, ident ;
+
+(* ——— railing ——— *)
+
+railing_line    = "railing", ws, rail_kind, { ws, railing_kv } ;
+railing_block   = "railing:", nl, { ws, railing_field, nl } ;
+rail_kind       = "baluster" | "solid" | "glass" ;
+railing_kv      = "height", ws, scalar
+                | "material", ws, ident ;
+railing_field   = "kind", ws, rail_kind
+                | "height", ws, scalar
+                | "material", ws, ident ;
+(* default: baluster, height=1.1.  height is continuous (dropped from vote fingerprint)
+   baluster — ~20 mm Ø rods at ~100 mm spacing, 50 mm Ø top pipe
+   solid    — 200 mm parapet (rectangle: 3-sided U, open at the wall)
+   glass    — 10 mm translucent panels (rectangle: 3-sided U, open at the wall)
+*)
+
+(* ——— supports (free_standing) ——— *)
+
+supports_block  = "supports:", nl, { ws, support_kv, nl } ;
+support_kv      = "count", ws, int
+                | "style", ws, ident
+                | "spacing", ws, scalar ;
+int             = digit, { digit } ;
+(* default: count=0 (compiler uses 4 corner posts for a rectangle) *)
+
+(* ——— wall opening is FDSL, not a BDSL axis ——— *)
+
+opening_line    = "opening", ws, opening_kind ;
+opening_kind    = "door" | "window" | "none" ;
+(* Optional / legacy. Wall door-or-window lives on the shared floor×bay
+   grid from the window pipeline (FDSL placement). Balcony bind is
+   balcony_placement (row + col span). Do not vote on opening. *)
+
+(* ——— enclosed glazing: nested WDSL (see WDSL.ebnf) ——— *)
+
+glazing_block   = "glazing:", nl, wdsl_body ;
+wdsl_body       = { line indented strictly deeper than the `glazing:` line } ;
+(* Dedented and parsed by parse_wdsl.  Ignored unless enclosure=enclosed. *)
+
+(* ——— output (continuous finish) ——— *)
+
+output_block    = "output:", nl, { ws, ident, ws, scalar, nl } ;
+(* recognized keys: slab_thickness, railing_thickness
+   defaults: slab_thickness=0.12, railing_thickness=0.04
+             (solid parapet 0.20, glass panel 0.01 unless authored;
+              enclosed floor/ceiling uses authored slab_thickness, typically 0.20) *)
+
+(* ——— compiled JSON IR ———
+
+  BDSL is a subset of this JSON. Photo majority-vote uses a discrete
+  fingerprint: structure, enclosure, floor.shape, railing.kind
+  (omit railing when enclosure=enclosed), supports.count,
+  plus structure_view(glazing) if present.
+  Floor×bay and wall window/door come from the window FDSL grid.
+  Floats (width, depth, height, thicknesses) and opening are dropped.
+
+  {
+    "type": "balcony",
+    "debug": bool,
+    "structure": "projecting"|"inset"|"composite"|"free_standing",
+    "enclosure": "open"|"enclosed",
+    "floor": { "shape": "rectangle"|"circle"|"triangle",
+               "params": { "width": <scalar>, "depth": <scalar>, "height"? } },
+    "railing": { "kind": "baluster"|"solid"|"glass", "height": <scalar>,
+                 "material"? },
+    "supports": { "count": int, "style"?, "spacing"? },
+    "opening": "door"|"window"|"none",
+    "glazing": null | <window JSON IR>,
+    "output": { "slab_thickness"?, "railing_thickness"? }
+  }
+
+  rel scalar JSON: { "relative_to": min_side|max_side|width|height, "value": number }
+*)

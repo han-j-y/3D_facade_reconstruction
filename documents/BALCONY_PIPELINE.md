@@ -1,0 +1,93 @@
+# Balcony pipeline — changed vs added
+
+Window-only `python run.py` is unchanged unless you pass `--with-balconies`.
+
+## Changed (existing files)
+
+### `run.py`
+Docstring only: documents `--with-balconies`.
+
+### `run_pipeline.py`
+- New flag `--with-balconies`.
+- After writing `facade_dsl.json`, optionally calls `balcony_pipeline.run()`.
+- Copies `facade_dsl_with_balconies.json` into the window `out-dir`.
+- With `--blender-render`, uses the merged DSL when the balcony track succeeded.
+- Window stages (detect, unitize, cluster, structure vote, `build_facade_dsl`) are not modified.
+
+### Compiler (`vendor/window_compiler/`)
+- `facade_spec.normalize_facade_spec` maps `balcony_types` + `layout.balconies` onto `balconies` / `balcony_placement` (floor×bay span from the window grid).
+- `balcony_compile.py` matches the balcony catalog: plan shapes, baluster / 200 mm solid / 10 mm glass, enclosed glass box.
+- `facade_compile.compile_facade_scene` calls that pass (window-only JSON still compiles as before).
+
+### `documents/FDSL.ebnf`
+- `balconies:` type library (each body is BDSL).
+- `balcony_placement:` spans on the existing floor×bay grid (e.g. `F1 B1-B3 loggia`).
+- Window `placement:` must not list balcony type names.
+
+### `balcony_pipeline/run_balcony.py`
+- `run()` entry for the window hook.
+- Unitize uses `merge_adjacent_boxes(..., mode="balcony")` (IoU/containment only; no gap merge).
+- ASCII `->` in console output (Windows cp1252).
+
+### `scripts/overlay_facade_merge_boxes.py`
+- `MERGE_PROFILES["window"|"balcony"]` and `mode=` on `merge_adjacent_boxes`.
+- Window callers keep default `mode="window"` (unchanged).
+
+## Added
+
+### Language
+- `documents/BDSL.ebnf` — one balcony type (sibling of WDSL). Catalog axes:
+  structure, enclosure, floor shape, railing (baluster / solid / glass).
+  Enclosed is a glass box (no railing). Wall opening is the window FDSL grid.
+- `vendor/window_compiler/examples/example_balcony_projecting.bdsl`
+- `vendor/window_compiler/examples/example_balcony_enclosed.bdsl` (glass box; no nested WDSL mesh)
+- `vendor/window_compiler/examples/example_facade_with_balcony.fdsl`
+
+### Code (`balcony_pipeline/`)
+Standalone track; does not edit window e2e internals.
+
+| File | Role |
+|------|------|
+| `run_balcony.py` | CLI + `run()` |
+| `snap.py` | Snap boxes to **window** floors/bays |
+| `cluster.py` | DINOv2 ROI + spectral + Potts (balcony boxes only) |
+| `heuristic_ir.py` | Per-crop BDSL JSON IR + `balcony_view` fingerprint (no `opening`) |
+| `vote.py` | Majority vote (same algorithm as windows, balcony key) |
+| `merge_dsl.py` | Copy window DSL; append `balcony_types` + `layout.balconies` |
+| `draw.py` | Stage overlays |
+
+Same **methods** as windows: SAM3 detect, box merge, DINO cluster, cosine medoid, majority vote. Floor/bay are **not** re-clustered; they come from the window DSL (`layout.floors` / `layout.bays`). Instance width is the spanned bay widths. Wall door vs window is the window `placement` token on those cells, not a BDSL `opening` field.
+
+Vote fingerprint (`balcony_view`): `structure`, `enclosure`, `floor.shape`, `railing.kind` (omitted if enclosed), `supports.count`. `metal` is an alias of `baluster`. Floats and `opening` are not voted.
+
+IR is heuristic (no `structure_best.pt` for balconies). Meshes compile in `balcony_compile.py` (catalog rules: baluster rods, 200 mm solid parapet, 10 mm glass, enclosed 1 m mullions + matching ceiling slab).
+
+## How to run
+
+Window only (unchanged):
+
+```text
+python run.py --image PHOTO.png --out-dir runs/demo --device cuda
+```
+
+Window then balcony:
+
+```text
+python run.py --image PHOTO.png --out-dir runs/demo --device cuda --with-balconies --blender-render
+```
+
+Balcony track only (needs an existing window `facade_dsl.json`):
+
+```text
+python balcony_pipeline/run_balcony.py --image PHOTO.png --windows-dsl path/to/facade_dsl.json --out-dir runs/balcony_demo --device cuda
+```
+
+Use `pipeline_preview/.venv` if the system Python has no torch.
+
+## Test (2026-08-19)
+
+On `pipeline_preview/input_cmp_b0168.png` + `facade_dsl_input_cmp_b0168.json` (CUDA, preview venv):
+
+- SAM3: 8 raw → 6 after size filter → 4 units
+- 2 types; votes 2/2 and 2/2
+- Wrote `runs/balcony_demo/facade_dsl_with_balconies.json` (`layout.balconies`, `balcony_types`)

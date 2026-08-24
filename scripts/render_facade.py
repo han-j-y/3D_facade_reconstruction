@@ -339,6 +339,74 @@ def write_photo_compare(
     return out_path
 
 
+def resolve_balcony_cluster_png(recovery_path: Path, recovery: dict) -> Path | None:
+    """Locate balcony_pipeline s3 cluster overlay next to the e2e out-dir."""
+    meta = recovery.get("meta") or {}
+    stem = str(meta.get("balcony_stem") or "")
+    if not stem:
+        img = meta.get("balcony_image") or meta.get("image")
+        stem = Path(str(img)).stem if img else str(meta.get("facade_id") or "")
+    if not stem:
+        return None
+    balcony_dir = recovery_path.parent / "balcony"
+    direct = balcony_dir / f"s3_cluster_balcony_types_{stem}.png"
+    return direct if direct.is_file() else None
+
+
+def write_balcony_window_compare(
+    *,
+    balcony_path: Path,
+    photo_path: Path,
+    render_path: Path,
+    out_path: Path,
+    title: str = "",
+    target_h: int = 900,
+) -> Path | None:
+    if not balcony_path.is_file() or not photo_path.is_file() or not render_path.is_file():
+        return None
+    from PIL import Image, ImageDraw, ImageFont
+
+    try:
+        font = ImageFont.truetype("arial.ttf", 18)
+    except OSError:
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
+        except OSError:
+            font = ImageFont.load_default()
+
+    def fit_h(im: Image.Image, h: int) -> Image.Image:
+        w = max(1, int(round(im.width * h / im.height)))
+        return im.resize((w, h), Image.Resampling.LANCZOS)
+
+    a = fit_h(Image.open(balcony_path).convert("RGB"), target_h)
+    b = fit_h(Image.open(photo_path).convert("RGB"), target_h)
+    c = fit_h(Image.open(render_path).convert("RGB"), target_h)
+    gap, label_h = 16, 44
+    canvas = Image.new(
+        "RGB",
+        (a.width + b.width + c.width + gap * 2, label_h + target_h),
+        (28, 28, 28),
+    )
+    d = ImageDraw.Draw(canvas)
+    prefix = f"{title}  ·  " if title else ""
+    labels = (
+        "balcony types (cluster)",
+        f"{prefix}photo (clusters)",
+        f"{prefix}blender render (clusters)",
+    )
+    xs = (12, a.width + gap + 12, a.width + gap + b.width + gap + 12)
+    for x, label in zip(xs, labels):
+        d.text((x, 12), label, fill=(230, 230, 230), font=font)
+    canvas.paste(a, (0, label_h))
+    canvas.paste(b, (a.width + gap, label_h))
+    canvas.paste(c, (a.width + gap + b.width + gap, label_h))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.is_file():
+        out_path.unlink()
+    canvas.save(out_path, quality=92)
+    return out_path
+
+
 def render_facade(
     *,
     blender: str,
@@ -356,7 +424,9 @@ def render_facade(
             "Set FACADE_COMPILER_ROOT to a package with main.py, or skip --render."
         )
     png_path.parent.mkdir(parents=True, exist_ok=True)
+    blend_path = png_path.parent / "facade_scene.blend"
     env = os.environ.copy()
+    env["FACADE_SAVE_BLEND"] = str(blend_path.resolve())
     env["FACADE_RENDER_IMAGE"] = str(png_path.resolve())
     env["FACADE_RENDER_RES"] = res
     env["FACADE_RENDER_SAMPLES"] = str(samples)
@@ -409,7 +479,8 @@ def main() -> None:
     )
     print(
         f"wrote {facade_path}  "
-        f"types={len(facade.get('windows') or {})}  placed={n_win}"
+        f"types={len(facade.get('windows') or {})}  placed={n_win}  "
+        f"balconies={len(facade.get('balcony_placement') or [])}"
     )
 
     render_png = out_dir / "facade_render.png"
@@ -426,6 +497,7 @@ def main() -> None:
                 ortho_zoom=args.ortho_zoom,
             )
             print(f"façade render → {render_png}")
+            print(f"façade blend → {out_dir / 'facade_scene.blend'}")
     else:
         print(
             "skip Blender (pass --render). Manual:\n"
@@ -468,6 +540,19 @@ def main() -> None:
         if wrote:
             print(f"compare → {wrote}")
 
+    balcony_cluster = resolve_balcony_cluster_png(recovery_path, recovery)
+    compare_balcony_path = out_dir / "Compare_window_balcony_vs_render.jpg"
+    if balcony_cluster and left and right.is_file():
+        wrote_b = write_balcony_window_compare(
+            balcony_path=balcony_cluster,
+            photo_path=left,
+            render_path=right,
+            out_path=compare_balcony_path,
+            title=f"facade {fid}" if fid else "",
+        )
+        if wrote_b:
+            print(f"balcony compare → {wrote_b}")
+
     summary = {
         "recovery": str(recovery_path),
         "renderer": "blender",
@@ -476,6 +561,8 @@ def main() -> None:
         "render_clusters": str(render_clusters) if render_clusters.is_file() else None,
         "photo_clusters": str(photo_clusters) if photo_clusters.is_file() else None,
         "compare": str(compare_path) if compare_path.is_file() else None,
+        "compare_balcony": str(compare_balcony_path) if compare_balcony_path.is_file() else None,
+        "balcony_cluster": str(balcony_cluster) if balcony_cluster else None,
         "n_types": len(facade.get("windows") or {}),
         "n_placed": n_win,
         "grid": {

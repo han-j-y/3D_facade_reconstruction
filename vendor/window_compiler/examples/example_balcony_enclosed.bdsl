@@ -1,0 +1,11 @@
+# Projecting enclosed balcony — glass box, 1 m mullions, 200 mm slabs
+# Nested WDSL glazing is ignored for this mesh; panels are compiled directly.
+# Wall door/window is FDSL placement on the same floor×bay, not BDSL opening.
+
+balcony rectangle(width=4.0, depth=2.0)
+
+structure projecting
+enclosure enclosed
+
+output:
+  slab_thickness 0.20

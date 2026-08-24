@@ -8,7 +8,8 @@ Pipeline
   4. Assetize — per-type crops; medoid exemplar
   5. Structure — predict window structure IR per unit; majority-vote within type
   6. DSL       — floor×bay layout + type library (``facade_dsl.json``)
-  7. (opt)     — Blender façade render via ``scripts/render_facade.py``
+  7. (opt)     — balcony track (``--with-balconies``) → ``facade_dsl_with_balconies.json``
+  8. (opt)     — Blender façade render via ``scripts/render_facade.py``
 
 Majority vote uses a discrete ``structure_view`` fingerprint (shape + pane
 topology + program ops). Continuous floats are ignored. Ties prefer the
@@ -19,7 +20,7 @@ Blender rendering is optional (``--blender-render``).
 Examples::
 
   python run.py --facade-id 8 --device cuda
-  python run.py --image photo.png --out-dir runs/demo --device cuda
+  python run.py --image photo.png --out-dir runs/demo --device cuda --with-balconies
   python run.py --facade-id 8 --blender-render --device cuda
 """
 
@@ -120,6 +121,11 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="predict IR on all units in a type and majority-vote (default on)",
+    )
+    ap.add_argument(
+        "--with-balconies",
+        action="store_true",
+        help="after window DSL, run balcony_pipeline and write facade_dsl_with_balconies.json",
     )
     return ap.parse_args()
 
@@ -870,6 +876,46 @@ def main() -> None:
     print(f"  DSL → {dsl_path}")
     print(f"  assets → {types_dir}")
     print(f"  overview → {out_dir / 'overview.png'}")
+
+    if args.with_balconies:
+        img = Path(facade_path) if facade_path else None
+        if img is None or not img.is_file():
+            print("warn: --with-balconies skipped (no facade image path)")
+        else:
+            print("=== balcony track (balcony_pipeline) ===")
+            bp_dir = ROOT / "balcony_pipeline"
+            if str(bp_dir) not in sys.path:
+                sys.path.insert(0, str(bp_dir))
+            import argparse as _ap
+            import run_balcony as _bp
+
+            bp_out = out_dir / "balcony"
+            bp_args = _ap.Namespace(
+                image=img,
+                windows_dsl=dsl_path,
+                out_dir=bp_out,
+                prompt="balcony",
+                threshold=args.threshold,
+                min_side=max(16, int(args.min_side)),
+                max_side_frac=0.85,
+                device=str(device),
+                dino=args.dino,
+                facade_max_side=args.facade_max_side,
+                pca_dim=args.pca_dim,
+                seed=args.seed,
+                k_max=args.k_max,
+                col_tol=args.col_tol,
+                row_tol=args.row_tol,
+                spatial_strength=args.spatial_strength,
+                unary_weight=args.unary_weight,
+                force=True,
+            )
+            merged_path = _bp.run(bp_args)
+            if merged_path and merged_path.is_file():
+                dest = out_dir / "facade_dsl_with_balconies.json"
+                dest.write_text(merged_path.read_text(encoding="utf-8"), encoding="utf-8")
+                print(f"  merged DSL -> {dest}")
+                dsl_path = dest
 
     if args.blender_render:
         import os

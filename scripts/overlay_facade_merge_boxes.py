@@ -147,6 +147,30 @@ def x_gap(a: list[int], b: list[int]) -> float:
     return 0.0
 
 
+# Window: merge multi-pane faces of one opening.
+# Balcony: keep neighbors separate; only merge nested/IoU duplicate SAM hits.
+MERGE_PROFILES: dict[str, dict[str, float]] = {
+    "window": {
+        "contain_thr": 0.55,
+        "iou_thr": 0.25,
+        "extruded_gap": 2.2,
+        "min_y_overlap": 0.30,
+        "narrow_frac": 0.9,
+        "tight_gap": 0.55,
+        "cross_bay_gap": 1.0,
+    },
+    "balcony": {
+        "contain_thr": 0.55,
+        "iou_thr": 0.25,
+        "extruded_gap": 0.0,
+        "min_y_overlap": 0.30,
+        "narrow_frac": 0.9,
+        "tight_gap": 0.0,
+        "cross_bay_gap": 0.0,
+    },
+}
+
+
 def merge_adjacent_boxes(
     boxes: list[list[int]],
     cx: np.ndarray,
@@ -156,21 +180,46 @@ def merge_adjacent_boxes(
     adj_gap: float,
     merge_bays: bool,
     col_tol: float,
-    contain_thr: float = 0.55,
-    iou_thr: float = 0.25,
-    extruded_gap: float = 2.2,
-    min_y_overlap: float = 0.30,
-    narrow_frac: float = 0.9,
-    tight_gap: float = 0.55,
-    cross_bay_gap: float = 1.0,
+    mode: str = "window",
+    contain_thr: float | None = None,
+    iou_thr: float | None = None,
+    extruded_gap: float | None = None,
+    min_y_overlap: float | None = None,
+    narrow_frac: float | None = None,
+    tight_gap: float | None = None,
+    cross_bay_gap: float | None = None,
 ) -> tuple[list[list[int]], list[list[int]], np.ndarray, np.ndarray]:
     """Merge pane faces of one opening; keep separate columns apart.
 
-    - Nested/IoU always.
-    - Same bay + same floor: generous gap (projecting bay faces).
+    - Nested/IoU always (Pass 1).
+    - Same bay + same floor: generous gap (projecting bay faces) — window mode.
     - Different bay: only if a box is narrow (flat multi-pane) and gap is small.
     - Optional: force whole vertical bay.
+    - ``mode="balcony"``: Pass-1 only (gap merges off) so adjacent balconies stay separate.
     """
+    if mode not in MERGE_PROFILES:
+        raise ValueError(f"unknown merge mode {mode!r}; expected one of {sorted(MERGE_PROFILES)}")
+    profile = dict(MERGE_PROFILES[mode])
+    overrides = {
+        "contain_thr": contain_thr,
+        "iou_thr": iou_thr,
+        "extruded_gap": extruded_gap,
+        "min_y_overlap": min_y_overlap,
+        "narrow_frac": narrow_frac,
+        "tight_gap": tight_gap,
+        "cross_bay_gap": cross_bay_gap,
+    }
+    for key, val in overrides.items():
+        if val is not None:
+            profile[key] = float(val)
+    contain_thr = float(profile["contain_thr"])
+    iou_thr = float(profile["iou_thr"])
+    extruded_gap = float(profile["extruded_gap"])
+    min_y_overlap = float(profile["min_y_overlap"])
+    narrow_frac = float(profile["narrow_frac"])
+    tight_gap = float(profile["tight_gap"])
+    cross_bay_gap = float(profile["cross_bay_gap"])
+
     n = len(boxes)
     floor = lay.assign_bays(cy, row_tol)
     bay = lay.assign_bays(cx, col_tol)
@@ -184,26 +233,28 @@ def merge_adjacent_boxes(
             ):
                 uf.union(i, j)
 
-    for i in range(n):
-        for j in range(i + 1, n):
-            if int(floor[i]) != int(floor[j]):
-                continue
-            if y_overlap_frac(boxes[i], boxes[j]) < min_y_overlap:
-                continue
-            gap = x_gap(boxes[i], boxes[j])
-            wi = hints.box_width(boxes[i])
-            wj = hints.box_width(boxes[j])
-            narrow = min(wi, wj) <= narrow_frac * med_w
-            same_bay = int(bay[i]) == int(bay[j])
+    # Pass 2: gap-based horizontal merges (window multi-pane). Skip for balcony.
+    if mode != "balcony" and max(extruded_gap, tight_gap, cross_bay_gap) > 0:
+        for i in range(n):
+            for j in range(i + 1, n):
+                if int(floor[i]) != int(floor[j]):
+                    continue
+                if y_overlap_frac(boxes[i], boxes[j]) < min_y_overlap:
+                    continue
+                gap = x_gap(boxes[i], boxes[j])
+                wi = hints.box_width(boxes[i])
+                wj = hints.box_width(boxes[j])
+                narrow = min(wi, wj) <= narrow_frac * med_w
+                same_bay = int(bay[i]) == int(bay[j])
 
-            if same_bay and gap <= extruded_gap * med_w:
-                # projecting / multi-face unit inside one vertical bay
-                uf.union(i, j)
-            elif (not same_bay) and narrow and gap <= cross_bay_gap * med_w:
-                # flat coplanar panes that fell into adjacent bay ids
-                uf.union(i, j)
-            elif gap <= tight_gap * med_w:
-                uf.union(i, j)
+                if same_bay and gap <= extruded_gap * med_w:
+                    # projecting / multi-face unit inside one vertical bay
+                    uf.union(i, j)
+                elif (not same_bay) and narrow and gap <= cross_bay_gap * med_w:
+                    # flat coplanar panes that fell into adjacent bay ids
+                    uf.union(i, j)
+                elif gap <= tight_gap * med_w:
+                    uf.union(i, j)
 
     if merge_bays:
         for b in sorted(set(int(v) for v in bay.tolist())):
