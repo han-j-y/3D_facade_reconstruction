@@ -37,8 +37,9 @@ Docstring only: documents `--with-balconies`.
 
 ### Language
 - `documents/BDSL.ebnf` — one balcony type (sibling of WDSL). Catalog axes:
-  structure, enclosure, floor shape, railing (baluster / solid / glass).
-  Enclosed is a glass box (no railing). Wall opening is the window FDSL grid.
+  structure, floor shape, railing (baluster / solid / glass); enclosure is
+  authoring-only (`open`/`enclosed`). Recovery always uses `open`.
+  Wall opening is the window FDSL grid.
 - `vendor/window_compiler/examples/example_balcony_projecting.bdsl`
 - `vendor/window_compiler/examples/example_balcony_enclosed.bdsl` (glass box; no nested WDSL mesh)
 - `vendor/window_compiler/examples/example_facade_with_balcony.fdsl`
@@ -51,14 +52,20 @@ Standalone track; does not edit window e2e internals.
 | `run_balcony.py` | CLI + `run()` |
 | `snap.py` | Snap boxes to **window** floors/bays |
 | `cluster.py` | DINOv2 ROI + spectral + Potts (balcony boxes only) |
-| `heuristic_ir.py` | Per-crop BDSL JSON IR + `balcony_view` fingerprint (no `opening`) |
+| `filter.py` | Drop decoration FPs (below shrunk sill; exempt if >=20% wider than partner window) or top rail |
+| `heuristic_ir.py` | Per-crop BDSL JSON IR + `balcony_view` fingerprint |
+| `recovery_profile.py` | Which axes to infer/vote (`railing_only` / `full`) |
 | `vote.py` | Majority vote (same algorithm as windows, balcony key) |
 | `merge_dsl.py` | Copy window DSL; append `balcony_types` + `layout.balconies` |
 | `draw.py` | Stage overlays |
 
-Same **methods** as windows: SAM3 detect, box merge, DINO cluster, cosine medoid, majority vote. Floor/bay are **not** re-clustered; they come from the window DSL (`layout.floors` / `layout.bays`). Instance width is the spanned bay widths. Wall door vs window is the window `placement` token on those cells, not a BDSL `opening` field.
+Same **methods** as windows: SAM3 detect, box merge, DINO cluster, cosine medoid, majority vote. Floor/bay are **not** re-clustered; they come from the window DSL (`layout.floors` / `layout.bays`). Instance **width and horizontal center** come from the photo detection box (`width_norm` / `cx_norm`); bay ids still anchor the storey. Wall door vs window is the window `placement` token on those cells, not a BDSL `opening` field.
 
-Vote fingerprint (`balcony_view`): `structure`, `enclosure`, `floor.shape`, `railing.kind` (omitted if enclosed), `supports.count`. `metal` is an alias of `baluster`. Floats and `opening` are not voted.
+Vote fingerprint (`balcony_view`): controlled by `--recovery-profile`
+(default **`railing_only`** → vote `railing.kind` only: **`baluster` | `solid`**).
+`glass` is never inferred; legacy `glass` fingerprints map to `solid`.
+`metal` ≡ `baluster`. Disabled axes use fixed defaults (`projecting` / `open` /
+`rectangle` / supports 0). Use `--recovery-profile full` to restore other axes.
 
 IR is heuristic (no `structure_best.pt` for balconies). Meshes compile in `balcony_compile.py` (catalog rules: baluster rods, 200 mm solid parapet, 10 mm glass, enclosed 1 m mullions + matching ceiling slab).
 

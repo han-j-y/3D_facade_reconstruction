@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -407,6 +408,43 @@ def write_balcony_window_compare(
     return out_path
 
 
+def archive_stem_from_recovery(recovery: dict) -> str:
+    """Input image stem for archive filenames (e.g. cmp_b0015)."""
+    meta = recovery.get("meta") or {}
+    for key in ("balcony_stem", "facade_id"):
+        raw = meta.get(key)
+        if raw:
+            return Path(str(raw)).stem
+    for key in ("balcony_image", "image", "source_image"):
+        raw = meta.get(key)
+        if raw:
+            return Path(str(raw)).stem
+    return "facade"
+
+
+def archive_blender_outputs(out_dir: Path, stem: str) -> list[Path]:
+    """Copy blend + balcony compare into ``_Archive`` with input stem in the name."""
+    archive_dir = out_dir / "_Archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    mapping = (
+        (out_dir / "facade_scene.blend", archive_dir / f"facade_scene_{stem}.blend"),
+        (
+            out_dir / "Compare_window_balcony_vs_render.jpg",
+            archive_dir / f"Compare_window_balcony_vs_render_{stem}.jpg",
+        ),
+    )
+    wrote: list[Path] = []
+    for src, dest in mapping:
+        if not src.is_file():
+            continue
+        if dest.is_file():
+            dest.unlink()
+        shutil.copy2(src, dest)
+        wrote.append(dest)
+        print(f"archive → {dest}")
+    return wrote
+
+
 def render_facade(
     *,
     blender: str,
@@ -553,6 +591,9 @@ def main() -> None:
         if wrote_b:
             print(f"balcony compare → {wrote_b}")
 
+    archive_stem = archive_stem_from_recovery(recovery) or fid or "facade"
+    archived = archive_blender_outputs(out_dir, archive_stem)
+
     summary = {
         "recovery": str(recovery_path),
         "renderer": "blender",
@@ -563,6 +604,8 @@ def main() -> None:
         "compare": str(compare_path) if compare_path.is_file() else None,
         "compare_balcony": str(compare_balcony_path) if compare_balcony_path.is_file() else None,
         "balcony_cluster": str(balcony_cluster) if balcony_cluster else None,
+        "archive_stem": archive_stem,
+        "archive": [str(p) for p in archived],
         "n_types": len(facade.get("windows") or {}),
         "n_placed": n_win,
         "grid": {

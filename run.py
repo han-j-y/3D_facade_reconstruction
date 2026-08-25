@@ -8,6 +8,7 @@ Examples
 --------
   python run.py --image /path/to/facade.png --device cuda
   python run.py --image /path/to/facade.png --device cuda --with-balconies --blender-render
+  python run.py --image-dir data/base --out-dir runs/batch --device cuda --with-balconies
   python run.py --facade-id 8 --device cuda
   python run.py --facade-id 8 --blender-render --device cuda
 """

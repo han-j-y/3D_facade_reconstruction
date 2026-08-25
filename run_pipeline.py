@@ -21,6 +21,8 @@ Examples::
 
   python run.py --facade-id 8 --device cuda
   python run.py --image photo.png --out-dir runs/demo --device cuda --with-balconies
+  python run.py --image-dir data/base --out-dir runs/batch --device cuda --with-balconies
+  python run.py --image-dir data/base --out-dir runs/batch --device cuda --with-balconies --blender-render
   python run.py --facade-id 8 --blender-render --device cuda
 """
 
@@ -65,11 +67,50 @@ patch = _load(ROOT / "scripts" / "overlay_facade_patch_layout.py", "e2e_patch")
 merge_mod = _load(ROOT / "scripts" / "overlay_facade_merge_boxes.py", "e2e_merge")
 reemb = _load(ROOT / "scripts" / "overlay_facade_merge_reembed.py", "e2e_reemb")
 
+_IMAGE_GLOBS = ("*.jpg", "*.jpeg", "*.png", "*.webp", "*.JPG", "*.JPEG", "*.PNG", "*.WEBP")
+
+
+def iter_images_in_dir(image_dir: Path) -> list[Path]:
+    """Sorted image paths under ``image_dir`` (non-recursive)."""
+    found: list[Path] = []
+    for pattern in _IMAGE_GLOBS:
+        found.extend(p for p in image_dir.glob(pattern) if p.is_file())
+    return sorted({p.resolve() for p in found}, key=lambda p: p.name.lower())
+
+
+def copy_to_batch_summary(batch_root: Path, stem: str, blender_dir: Path) -> list[Path]:
+    """Copy key Blender outputs into ``{batch_root}/_Summary`` (batch mode only)."""
+    summary_dir = batch_root / "_Summary"
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    mapping = (
+        (blender_dir / "facade_scene.blend", summary_dir / f"facade_scene_{stem}.blend"),
+        (
+            blender_dir / "Compare_window_balcony_vs_render.jpg",
+            summary_dir / f"Compare_window_balcony_vs_render_{stem}.jpg",
+        ),
+    )
+    wrote: list[Path] = []
+    for src, dest in mapping:
+        if not src.is_file():
+            continue
+        shutil.copy2(src, dest)
+        wrote.append(dest)
+        print(f"summary → {dest}")
+    return wrote
+
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--facade-id", type=str, default=None)
     ap.add_argument("--image", type=Path, default=None, help="facade image (else train_up/{id}.png)")
+    ap.add_argument(
+        "--image-dir",
+        type=Path,
+        default=None,
+        help="run all facade images in this folder (*.jpg, *.jpeg, *.png, *.webp); "
+        "writes each to {out_dir}/{stem}/; with --blender-render also copies "
+        "facade_scene.blend and Compare_window_balcony_vs_render.jpg to {out_dir}/_Summary/",
+    )
     ap.add_argument(
         "--train-up",
         type=Path,
@@ -126,6 +167,12 @@ def parse_args() -> argparse.Namespace:
         "--with-balconies",
         action="store_true",
         help="after window DSL, run balcony_pipeline and write facade_dsl_with_balconies.json",
+    )
+    ap.add_argument(
+        "--balcony-recovery-profile",
+        default="railing_only",
+        choices=["railing_only", "full"],
+        help="balcony photo IR vote axes (default: railing_only; use full to restore all axes)",
     )
     return ap.parse_args()
 
@@ -612,54 +659,43 @@ def render_overview(
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
-    args = parse_args()
-    device = torch.device(args.device)
-    if args.train_up is None:
-        args.train_up = default_train_up()
-    if args.structure_ckpt is None:
-        args.structure_ckpt = default_structure_ckpt()
-
-    if args.blender_render:
-        blender_bin = resolve_blender(args.blender)
-        compiler = resolve_compiler_root(args.compiler_root)
-        if blender_bin is None:
-            print(
-                "warn: --blender-render requested but Blender not found; "
-                "continuing without render. Set --blender or $BLENDER."
-            )
-            args.blender_render = False
-        elif compiler is None:
-            print(
-                "warn: --blender-render requested but window compiler not found; "
-                "set FACADE_COMPILER_ROOT or --compiler-root to a package with main.py. "
-                "Continuing without render."
-            )
-            args.blender_render = False
-        else:
-            args.blender = blender_bin
-            args.compiler_root = compiler
-
-    if args.image is not None:
-        facade_path = Path(args.image)
-        facade_id = args.facade_id or facade_path.stem
-    elif args.facade_id is not None:
-        facade_id = args.facade_id
-        facade_path = args.train_up / f"{facade_id}.png"
-    elif args.from_index is not None:
-        facade_id = "unknown"
-        facade_path = None
+def _configure_blender(args: argparse.Namespace) -> None:
+    if not args.blender_render:
+        return
+    blender_bin = resolve_blender(args.blender)
+    compiler = resolve_compiler_root(args.compiler_root)
+    if blender_bin is None:
+        print(
+            "warn: --blender-render requested but Blender not found; "
+            "continuing without render. Set --blender or $BLENDER."
+        )
+        args.blender_render = False
+    elif compiler is None:
+        print(
+            "warn: --blender-render requested but window compiler not found; "
+            "set FACADE_COMPILER_ROOT or --compiler-root to a package with main.py. "
+            "Continuing without render."
+        )
+        args.blender_render = False
     else:
-        raise SystemExit("provide --facade-id, --image, or --from-index")
+        args.blender = blender_bin
+        args.compiler_root = compiler
 
-    out_dir = Path(args.out_dir) if args.out_dir else ROOT / "runs" / f"facade_e2e_{facade_id}"
+
+def run_one(
+    args: argparse.Namespace,
+    *,
+    device: torch.device,
+    facade_path: Path | None,
+    facade_id: str,
+    out_dir: Path,
+) -> None:
     assets_dir = out_dir / "assets"
     types_dir = assets_dir / "types"
     crops_dir = out_dir / "crops"
     for d in (out_dir, assets_dir, types_dir, crops_dir):
         d.mkdir(parents=True, exist_ok=True)
 
-    # --- 1 detect ---
     if args.from_index is not None:
         facade, raw_windows, index_meta = load_from_index(args.from_index)
         facade_path = Path(index_meta.get("facade_path", facade_path or ""))
@@ -692,13 +728,12 @@ def main() -> None:
         )
 
     if len(raw_windows) < 2:
-        raise SystemExit("need ≥2 windows")
+        raise SystemExit(f"{facade_id}: need ≥2 windows")
 
     raw_boxes = [w["box_xyxy"] for w in raw_windows]
     for i, b in enumerate(raw_boxes):
         facade.crop(tuple(b)).save(crops_dir / f"raw_{i:03d}.png")
 
-    # --- 2–3 unitize + cluster ---
     print(f"loading {args.dino}…")
     dino = torch.hub.load("facebookresearch/dinov2", args.dino, pretrained=True)
     dino = dino.to(device).eval()
@@ -731,7 +766,6 @@ def main() -> None:
 
     medoids = pick_medoids(feats, labels)
 
-    # --- 4 assetize ---
     units: list[dict[str, Any]] = []
     for ui, box in enumerate(merged_boxes):
         crop = facade.crop(tuple(box))
@@ -755,7 +789,6 @@ def main() -> None:
             }
         )
 
-    # optional structure IR: predict all members → majority vote per type
     structure_model_note = None
     predictor: StructurePredictor | None = None
     if not args.skip_structure and args.structure_ckpt.is_file():
@@ -773,7 +806,6 @@ def main() -> None:
     for tid, med_i in sorted(medoids.items()):
         exemplar = units[med_i]
         ex_path = out_dir / exemplar["asset"]
-        # canonical exemplar copy
         canon = types_dir / f"type_{tid:02d}" / "exemplar.png"
         shutil.copy(ex_path, canon)
         member_units = [u for u in units if int(u["type_id"]) == int(tid)]
@@ -796,7 +828,6 @@ def main() -> None:
                 crop_p = out_dir / u["asset"]
                 pred = predictor.predict(crop_p)
                 member_preds.append({"unit_id": int(u["unit_id"]), **pred})
-                # stash per-unit prediction on the instance
                 u["structure_tokens"] = pred.get("tokens")
                 if pred.get("ir") is not None:
                     u["structure_ir_member"] = pred["ir"]
@@ -808,7 +839,6 @@ def main() -> None:
             entry["structure_tokens"] = voted["structure_tokens"]
             entry["structure_vote"] = voted["vote"]
             entry["structure_members"] = voted["members"]
-            # propagate unified IR onto every unit of this type
             for u in member_units:
                 u["structure_ir"] = voted["structure_ir"]
                 u["structure_tokens_voted"] = voted["structure_tokens"]
@@ -835,7 +865,6 @@ def main() -> None:
             )
         types_out.append(entry)
 
-    # --- 5 DSL ---
     dsl = build_facade_dsl(
         facade_id=facade_id,
         image_path=str(facade_path) if facade_path else "",
@@ -848,7 +877,6 @@ def main() -> None:
     dsl_path = out_dir / "facade_dsl.json"
     dsl_path.write_text(json.dumps(dsl, indent=2) + "\n", encoding="utf-8")
 
-    # human-readable compact summary
     summary = {
         "facade_id": facade_id,
         "n_raw_windows": len(raw_boxes),
@@ -909,6 +937,7 @@ def main() -> None:
                 spatial_strength=args.spatial_strength,
                 unary_weight=args.unary_weight,
                 force=True,
+                recovery_profile=args.balcony_recovery_profile,
             )
             merged_path = _bp.run(bp_args)
             if merged_path and merged_path.is_file():
@@ -940,6 +969,84 @@ def main() -> None:
         subprocess.run(cmd, check=True, env=env)
 
     print(f"wrote {out_dir}")
+
+
+def main() -> None:
+    args = parse_args()
+    device = torch.device(args.device)
+    if args.train_up is None:
+        args.train_up = default_train_up()
+    if args.structure_ckpt is None:
+        args.structure_ckpt = default_structure_ckpt()
+
+    _configure_blender(args)
+
+    if args.image is not None and args.image_dir is not None:
+        raise SystemExit("use only one of --image or --image-dir")
+    if args.image_dir is not None and args.from_index is not None:
+        raise SystemExit("--image-dir cannot be used with --from-index")
+    if args.image_dir is not None and args.facade_id is not None:
+        raise SystemExit("--image-dir cannot be used with --facade-id")
+
+    if args.image_dir is not None:
+        image_dir = Path(args.image_dir)
+        if not image_dir.is_dir():
+            raise SystemExit(f"not a directory: {image_dir}")
+        images = iter_images_in_dir(image_dir)
+        if not images:
+            raise SystemExit(f"no images in {image_dir}")
+        batch_root = Path(args.out_dir) if args.out_dir else ROOT / "runs" / "batch"
+        batch_root.mkdir(parents=True, exist_ok=True)
+        print(f"=== batch: {len(images)} images → {batch_root}/{{stem}}/ ===")
+        failures: list[tuple[str, str]] = []
+        for i, img_path in enumerate(images, start=1):
+            stem = img_path.stem
+            out_dir = batch_root / stem
+            print(f"\n=== [{i}/{len(images)}] {img_path.name} → {out_dir} ===")
+            try:
+                run_one(
+                    args,
+                    device=device,
+                    facade_path=img_path,
+                    facade_id=stem,
+                    out_dir=out_dir,
+                )
+                copy_to_batch_summary(batch_root, stem, out_dir / "blender")
+            except SystemExit as exc:
+                msg = str(exc) or "failed"
+                failures.append((img_path.name, msg))
+                print(f"skip {img_path.name}: {msg}")
+        ok = len(images) - len(failures)
+        print(f"\n=== batch done: {ok}/{len(images)} ok ===")
+        if failures:
+            print("failures:")
+            for name, err in failures:
+                print(f"  {name}: {err}")
+            raise SystemExit(1)
+        return
+
+    if args.image is not None:
+        facade_path = Path(args.image)
+        facade_id = args.facade_id or facade_path.stem
+    elif args.facade_id is not None:
+        facade_id = args.facade_id
+        facade_path = args.train_up / f"{facade_id}.png"
+    elif args.from_index is not None:
+        facade_id = "unknown"
+        facade_path = None
+    else:
+        raise SystemExit(
+            "provide --facade-id, --image, --image-dir, or --from-index"
+        )
+
+    out_dir = Path(args.out_dir) if args.out_dir else ROOT / "runs" / f"facade_e2e_{facade_id}"
+    run_one(
+        args,
+        device=device,
+        facade_path=facade_path,
+        facade_id=facade_id,
+        out_dir=out_dir,
+    )
 
 
 if __name__ == "__main__":

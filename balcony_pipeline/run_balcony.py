@@ -37,8 +37,10 @@ from draw import (  # noqa: E402
     draw_vote,
     save,
 )
+from filter import filter_balcony_boxes  # noqa: E402
 from heuristic_ir import infer_balcony_ir, ir_to_tokens  # noqa: E402
 from merge_dsl import merge_balcony_into_windows_dsl  # noqa: E402
+from recovery_profile import DEFAULT_PROFILE, PROFILES, resolve_profile  # noqa: E402
 from snap import snap_units  # noqa: E402
 from vote import vote_cluster_ir  # noqa: E402
 
@@ -79,12 +81,22 @@ def parse_args() -> argparse.Namespace:
         action="store_false",
         help="keep existing stem assets (not recommended for shared out-dir)",
     )
+    ap.add_argument(
+        "--recovery-profile",
+        default=DEFAULT_PROFILE,
+        choices=sorted(PROFILES),
+        help=(
+            "which BDSL axes to infer+vote (default: railing_only). "
+            "Use 'full' to restore structure/enclosure/floor/supports."
+        ),
+    )
     return ap.parse_args()
 
 
 def _clear_stage_pngs(out_dir: Path, stem: str) -> None:
     for name in (
         f"s1_detect_balconies_{stem}.png",
+        f"s1b_filtered_balconies_{stem}.png",
         f"s2_snap_floors_bays_{stem}.png",
         f"s3_cluster_balcony_types_{stem}.png",
         f"s4_vote_balcony_ir_{stem}.png",
@@ -204,6 +216,36 @@ def run(args: argparse.Namespace) -> Path | None:
         print("warn: no balcony detections; skip merge")
         return None
 
+    print("=== 1a Filter false balconies (window band + rooftop) ===")
+    filtered_boxes, drop_log = filter_balcony_boxes(
+        raw_boxes,
+        facade,
+        windows_dsl.get("instances") or [],
+    )
+    n_drop = sum(1 for e in drop_log if not e["keep"])
+    print(f"  {len(raw_boxes)} raw -> {len(filtered_boxes)} kept  (dropped {n_drop})")
+    for e in drop_log:
+        if e["keep"]:
+            continue
+        print(f"    drop {e['box']}  reasons={e['reasons']}")
+    save(
+        draw_boxes(
+            facade,
+            filtered_boxes,
+            title=(
+                f"1a. Filtered balconies  kept={len(filtered_boxes)}/"
+                f"{len(raw_boxes)}  (below-windows | no-window-above)"
+            ),
+            color=(40, 180, 90),
+        ),
+        out_dir / f"s1b_filtered_balconies_{stem}.png",
+        force=True,
+    )
+    if not filtered_boxes:
+        print("warn: all balcony detections filtered out; skip merge")
+        return None
+    raw_boxes = filtered_boxes
+
     print("=== 1b Unitize (balcony merge: Pass-1 IoU/containment only) ===")
     iw, ih = facade.size
     cx = np.array([0.5 * (b[0] + b[2]) / iw for b in raw_boxes], dtype=np.float64)
@@ -267,7 +309,9 @@ def run(args: argparse.Namespace) -> Path | None:
         )
 
     types_out: list[dict] = []
-    print("=== 4 Heuristic IR + majority vote (balcony_view fingerprint) ===")
+    profile_name = getattr(args, "recovery_profile", None) or DEFAULT_PROFILE
+    axes_on = [k for k, v in resolve_profile(profile_name).items() if v]
+    print(f"=== 4 Heuristic IR + majority vote (profile={profile_name} vote={axes_on}) ===")
     for tid, med_i in sorted(medoids.items()):
         exemplar = units[med_i]
         canon = crops_dir / f"type_{tid:02d}" / "exemplar.png"
@@ -276,11 +320,18 @@ def run(args: argparse.Namespace) -> Path | None:
         member_preds = []
         for u in member_units:
             crop = Image.open(out_dir / u["asset"]).convert("RGB")
-            ir = infer_balcony_ir(crop, box=u["box_xyxy"], image_size=facade.size)
-            tokens = ir_to_tokens(ir)
+            ir = infer_balcony_ir(
+                crop,
+                box=u["box_xyxy"],
+                image_size=facade.size,
+                profile_name=profile_name,
+            )
+            tokens = ir_to_tokens(ir, profile_name=profile_name)
             member_preds.append({"unit_id": int(u["unit_id"]), "ir": ir, "tokens": tokens})
             u["structure_ir_member"] = ir
-        voted = vote_cluster_ir(member_preds, prefer_unit_id=med_i)
+        voted = vote_cluster_ir(
+            member_preds, prefer_unit_id=med_i, profile_name=profile_name
+        )
         for u in member_units:
             u["structure_ir"] = voted["structure_ir"]
         vote = voted["vote"]
@@ -303,16 +354,21 @@ def run(args: argparse.Namespace) -> Path | None:
         )
 
     save(
-        draw_vote(types_out, out_dir, "heuristic balcony_view"),
+        draw_vote(types_out, out_dir, f"profile={profile_name} vote={axes_on}"),
         out_dir / f"s4_vote_balcony_ir_{stem}.png",
     )
 
     print("=== 5 Merge into façade DSL ===")
     merged = merge_balcony_into_windows_dsl(
-        windows_dsl, balcony_types=types_out, units=units
+        windows_dsl,
+        balcony_types=types_out,
+        units=units,
+        image_size=facade.size,
     )
     merged["meta"]["balcony_image"] = str(image_path)
     merged["meta"]["balcony_stem"] = stem
+    merged["meta"]["balcony_recovery_profile"] = profile_name
+    merged["meta"]["balcony_vote_axes"] = axes_on
     out_dsl = out_dir / "facade_dsl_with_balconies.json"
     _write_text(out_dsl, json.dumps(merged, indent=2) + "\n")
     print(f"  dsl -> {out_dsl}")

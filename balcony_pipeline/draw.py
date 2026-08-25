@@ -92,7 +92,7 @@ def draw_vote(types: list[dict], out_dir: Path, note: str) -> Image.Image:
         toks = " ".join(str(x) for x in (t.get("structure_tokens") or [])[:16])
         lines = [
             f"T{tid}  n={t.get('n_instances')}  structure={ir.get('structure')}  "
-            f"enc={ir.get('enclosure')}",
+            f"rail={(ir.get('railing') or {}).get('kind')}",
             f"vote {vote.get('winner_count', 0)}/{vote.get('n_valid', 0)} "
             f"unique={vote.get('n_unique', 0)}",
             toks[:90],

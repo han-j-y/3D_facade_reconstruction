@@ -72,7 +72,11 @@ enclosure_line  = "enclosure", ws, enclosure_name ;
 enclosure_name  = "open" | "enclosed" ;
 (* default: open.  enclosed — 3-sided glass box (no railing), 1 m mullions,
    ceiling slab matches floor thickness. Nested WDSL glazing is optional
-   and not used for this mesh. *)
+   and not used for this mesh.
+
+   Photo recovery always emits enclosure=open and does *not* vote on
+   enclosure (too hard to tell from SAM3 crops). Authoring / catalog may
+   still use enclosed. *)
 
 (* ——— extra floor params (optional; shape already on balcony_line) ——— *)
 
@@ -133,9 +137,10 @@ output_block    = "output:", nl, { ws, ident, ws, scalar, nl } ;
 (* ——— compiled JSON IR ———
 
   BDSL is a subset of this JSON. Photo majority-vote uses a discrete
-  fingerprint: structure, enclosure, floor.shape, railing.kind
-  (omit railing when enclosure=enclosed), supports.count,
-  plus structure_view(glazing) if present.
+  fingerprint selected by recovery_profile (default railing_only:
+  railing.kind in {baluster, solid} only — no glass). Disabled axes use fixed
+  (structure=projecting, enclosure=open, floor=rectangle, supports=0)
+  and are omitted from the vote key — flip the profile to bring them back.
   Floor×bay and wall window/door come from the window FDSL grid.
   Floats (width, depth, height, thicknesses) and opening are dropped.
 

@@ -11,14 +11,19 @@ from typing import Any
 from heuristic_ir import balcony_view
 
 
-def balcony_fingerprint(ir: dict[str, Any]) -> str:
-    return json.dumps(balcony_view(ir), sort_keys=True, separators=(",", ":"))
+def balcony_fingerprint(ir: dict[str, Any], *, profile_name: str | None = None) -> str:
+    return json.dumps(
+        balcony_view(ir, profile_name=profile_name),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def vote_cluster_ir(
     member_preds: list[dict[str, Any]],
     *,
     prefer_unit_id: int | None = None,
+    profile_name: str | None = None,
 ) -> dict[str, Any]:
     valid: list[dict[str, Any]] = []
     for p in member_preds:
@@ -26,7 +31,7 @@ def vote_cluster_ir(
         if not isinstance(ir, dict) or p.get("parse_error"):
             continue
         try:
-            key = balcony_fingerprint(ir)
+            key = balcony_fingerprint(ir, profile_name=profile_name)
         except Exception:
             continue
         valid.append({**p, "structure_key": key})
@@ -39,6 +44,7 @@ def vote_cluster_ir(
         "n_members": len(member_preds),
         "n_valid": len(valid),
         "n_unique": len(tallies),
+        "recovery_profile": profile_name,
         "counts": {
             k: len(v) for k, v in sorted(tallies.items(), key=lambda kv: -len(kv[1]))
         },
@@ -75,7 +81,7 @@ def vote_cluster_ir(
         ir = p.get("ir")
         if isinstance(ir, dict) and not p.get("parse_error"):
             try:
-                key = balcony_fingerprint(ir)
+                key = balcony_fingerprint(ir, profile_name=profile_name)
             except Exception:
                 key = None
         members_out.append(

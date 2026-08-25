@@ -29,7 +29,7 @@ from balcony_plan import (  # noqa: E402
     spaced_count,
     support_polyline,
 )
-from facade_spec import get_cell
+from facade_spec import get_cell, total_grid_size
 from geometry import assign_mat
 from materials import MATS
 
@@ -50,6 +50,58 @@ def _span_xz(
         float(a["z0"]),
         float(a["z1"]),
     )
+
+
+def _photo_x_span(
+    spec: dict[str, Any],
+    rec: dict[str, Any],
+    *,
+    mirror_x: bool,
+    bay_x0: float,
+    bay_x1: float,
+) -> tuple[float, float, float]:
+    """Map photo box width/center to world X. Returns (x0, x1, cx).
+
+    Photo u=0 is left; with mirror_x the camera shows world +X on the left,
+    so ``world_x = (0.5 - cx_norm) * total_w``.
+    Falls back to bay span when norms are missing.
+    """
+    total_w, _ = total_grid_size(spec["grid"])
+    total_w = max(0.3, float(total_w))
+    bay_cx = 0.5 * (bay_x0 + bay_x1)
+    bay_w = max(0.3, bay_x1 - bay_x0)
+
+    w_norm = rec.get("width_norm")
+    cx_norm = rec.get("cx_norm")
+    try:
+        w_norm_f = float(w_norm) if w_norm is not None else None
+        cx_norm_f = float(cx_norm) if cx_norm is not None else None
+    except (TypeError, ValueError):
+        w_norm_f, cx_norm_f = None, None
+
+    if w_norm_f is None or w_norm_f <= 0:
+        return bay_x0, bay_x1, bay_cx
+
+    span_w = max(0.25, min(total_w * 0.98, w_norm_f * total_w))
+    if cx_norm_f is None:
+        cx = bay_cx
+    else:
+        cx_n = min(1.0, max(0.0, cx_norm_f))
+        if mirror_x:
+            cx = (0.5 - cx_n) * total_w
+        else:
+            cx = (cx_n - 0.5) * total_w
+    x0 = cx - span_w / 2.0
+    x1 = cx + span_w / 2.0
+    # Keep on façade
+    half = total_w / 2.0
+    if x0 < -half:
+        x1 += -half - x0
+        x0 = -half
+    if x1 > half:
+        x0 -= x1 - half
+        x1 = half
+    return x0, x1, 0.5 * (x0 + x1)
 
 
 def _link(obj: bpy.types.Object, coll: bpy.types.Collection) -> None:
@@ -538,6 +590,9 @@ def add_balcony_meshes(
             continue
 
         x0, x1, z0, z1 = _span_xz(spec, row, c0, c1, mirror_x=mirror_x)
+        x0, x1, cx = _photo_x_span(
+            spec, rec, mirror_x=mirror_x, bay_x0=x0, bay_x1=x1
+        )
         span_w = max(0.3, x1 - x0)
         cell_h = max(0.3, z1 - z0)
         floor = ir.get("floor") or {}
@@ -550,7 +605,6 @@ def add_balcony_meshes(
         structure = str(ir.get("structure") or "projecting")
         enclosure = str(ir.get("enclosure") or "open")
 
-        cx = 0.5 * (x0 + x1)
         sill_z = z0 + cell_h * bottom_m
         if structure == "free_standing":
             deck_h = float(params.get("height") or 0.0)

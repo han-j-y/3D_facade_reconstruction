@@ -176,7 +176,22 @@ def normalize_facade_spec(
         if cc1 < cc0:
             cc0, cc1 = cc1, cc0
         balcony_placement.append(
-            {"row": rr, "col0": cc0, "col1": cc1, "type": bname}
+            {
+                "row": rr,
+                "col0": cc0,
+                "col1": cc1,
+                "type": bname,
+                **(
+                    {"width_norm": float(rec["width_norm"])}
+                    if rec.get("width_norm") is not None
+                    else {}
+                ),
+                **(
+                    {"cx_norm": float(rec["cx_norm"])}
+                    if rec.get("cx_norm") is not None
+                    else {}
+                ),
+            }
         )
 
     return {
