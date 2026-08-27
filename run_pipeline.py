@@ -21,6 +21,7 @@ Examples::
 
   python run.py --facade-id 8 --device cuda
   python run.py --image photo.png --out-dir runs/demo --device cuda --with-balconies
+  python run.py --image photo.png --device cuda --with-balconies --threshold 0.45 --balcony-threshold 0.35
   python run.py --image-dir data/base --out-dir runs/batch --device cuda --with-balconies
   python run.py --image-dir data/base --out-dir runs/batch --device cuda --with-balconies --blender-render
   python run.py --facade-id 8 --blender-render --device cuda
@@ -120,7 +121,19 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--out-dir", type=Path, default=None)
     ap.add_argument("--from-index", type=Path, default=None, help="reuse SAM index.json")
     ap.add_argument("--prompt", type=str, default="window")
-    ap.add_argument("--threshold", type=float, default=0.45)
+    ap.add_argument(
+        "--threshold",
+        type=float,
+        default=0.45,
+        help="SAM3 score threshold for window detect (default: 0.45)",
+    )
+    ap.add_argument(
+        "--balcony-threshold",
+        type=float,
+        default=None,
+        help="SAM3 score threshold for balcony detect with --with-balconies "
+        "(default: same as --threshold)",
+    )
     ap.add_argument("--min-side", type=int, default=24)
     ap.add_argument("--max-side-frac", type=float, default=0.55)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -175,6 +188,13 @@ def parse_args() -> argparse.Namespace:
         help="balcony photo IR vote axes (default: railing_only; use full to restore all axes)",
     )
     return ap.parse_args()
+
+
+def balcony_sam3_threshold(args: argparse.Namespace) -> float:
+    """Balcony SAM3 threshold; defaults to ``--threshold`` when unset."""
+    if args.balcony_threshold is not None:
+        return float(args.balcony_threshold)
+    return float(args.threshold)
 
 
 # ---------------------------------------------------------------------------
@@ -918,14 +938,15 @@ def run_one(
             import run_balcony as _bp
 
             bp_out = out_dir / "balcony"
+            bp_threshold = balcony_sam3_threshold(args)
             bp_args = _ap.Namespace(
                 image=img,
                 windows_dsl=dsl_path,
                 out_dir=bp_out,
                 prompt="balcony",
-                threshold=args.threshold,
-                min_side=max(16, int(args.min_side)),
-                max_side_frac=0.85,
+                threshold=bp_threshold,
+                min_side=20,
+                max_side_frac=1.0,
                 device=str(device),
                 dino=args.dino,
                 facade_max_side=args.facade_max_side,

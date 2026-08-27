@@ -58,7 +58,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--prompt", type=str, default="balcony")
     ap.add_argument("--threshold", type=float, default=0.45)
     ap.add_argument("--min-side", type=int, default=16)
-    ap.add_argument("--max-side-frac", type=float, default=0.85)
+    ap.add_argument(
+        "--max-side-frac",
+        type=float,
+        default=1.0,
+        help="drop boxes larger than this fraction of image W/H (1.0 = effectively off)",
+    )
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--dino", default="dinov2_vits14")
     ap.add_argument("--facade-max-side", type=int, default=896)
@@ -234,7 +239,7 @@ def run(args: argparse.Namespace) -> Path | None:
             filtered_boxes,
             title=(
                 f"1a. Filtered balconies  kept={len(filtered_boxes)}/"
-                f"{len(raw_boxes)}  (below-windows | no-window-above)"
+                f"{len(raw_boxes)}  (below-windows | juliet-width | no-window-above)"
             ),
             color=(40, 180, 90),
         ),
