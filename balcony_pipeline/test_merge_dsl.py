@@ -47,6 +47,59 @@ class PhotoNormTests(unittest.TestCase):
         self.assertEqual(b["bay_start"], 0)
         self.assertEqual(b["bay_end"], 2)
 
+    def test_merge_per_unit_railing_type(self) -> None:
+        dsl = {
+            "schema": "facade_recovery_dsl_v1",
+            "meta": {"image_size": [1000, 800]},
+            "layout": {"floors": [], "bays": [], "placement": []},
+            "window_types": [],
+            "instances": [],
+        }
+        baluster_ir = {
+            "structure": "projecting",
+            "enclosure": "open",
+            "railing": {"kind": "baluster", "height": 1.1},
+        }
+        solid_ir = {
+            "structure": "projecting",
+            "enclosure": "open",
+            "railing": {"kind": "solid", "height": 1.1},
+        }
+        units = [
+            {
+                "unit_id": 0,
+                "type_id": 0,
+                "floor": 1,
+                "bay_start": 0,
+                "bay_end": 0,
+                "bay": 0,
+                "box_xyxy": [100, 10, 200, 80],
+                "structure_ir": baluster_ir,
+            },
+            {
+                "unit_id": 1,
+                "type_id": 0,
+                "floor": 2,
+                "bay_start": 0,
+                "bay_end": 0,
+                "bay": 0,
+                "box_xyxy": [100, 100, 200, 170],
+                "structure_ir": solid_ir,
+            },
+        ]
+        types = [
+            {"name": "balc_baluster", "structure_ir": baluster_ir},
+            {"name": "balc_solid", "structure_ir": solid_ir},
+        ]
+        out = merge_balcony_into_windows_dsl(
+            dsl,
+            balcony_types=types,
+            units=units,
+            per_unit_railing=True,
+        )
+        self.assertEqual(out["layout"]["balconies"][0]["type"], "balc_baluster")
+        self.assertEqual(out["layout"]["balconies"][1]["type"], "balc_solid")
+
 
 if __name__ == "__main__":
     unittest.main()

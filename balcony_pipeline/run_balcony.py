@@ -14,6 +14,7 @@ import argparse
 import json
 import shutil
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -38,7 +39,7 @@ from draw import (  # noqa: E402
     save,
 )
 from filter import filter_balcony_boxes  # noqa: E402
-from heuristic_ir import infer_balcony_ir, ir_to_tokens  # noqa: E402
+from heuristic_ir import infer_balcony_ir, ir_to_tokens, railing_kind_from_ir  # noqa: E402
 from merge_dsl import merge_balcony_into_windows_dsl  # noqa: E402
 from recovery_profile import DEFAULT_PROFILE, PROFILES, resolve_profile  # noqa: E402
 from snap import snap_units  # noqa: E402
@@ -94,6 +95,11 @@ def parse_args() -> argparse.Namespace:
             "which BDSL axes to infer+vote (default: railing_only). "
             "Use 'full' to restore structure/enclosure/floor/supports."
         ),
+    )
+    ap.add_argument(
+        "--no-railing-vote",
+        action="store_true",
+        help="skip type-level majority vote; each unit keeps its own heuristic railing IR",
     )
     return ap.parse_args()
 
@@ -239,7 +245,7 @@ def run(args: argparse.Namespace) -> Path | None:
             filtered_boxes,
             title=(
                 f"1a. Filtered balconies  kept={len(filtered_boxes)}/"
-                f"{len(raw_boxes)}  (below-windows | juliet-width | no-window-above)"
+                f"{len(raw_boxes)}  (below-windows | juliet-width | window-cover | no-window-above)"
             ),
             color=(40, 180, 90),
         ),
@@ -316,14 +322,14 @@ def run(args: argparse.Namespace) -> Path | None:
     types_out: list[dict] = []
     profile_name = getattr(args, "recovery_profile", None) or DEFAULT_PROFILE
     axes_on = [k for k, v in resolve_profile(profile_name).items() if v]
-    print(f"=== 4 Heuristic IR + majority vote (profile={profile_name} vote={axes_on}) ===")
-    for tid, med_i in sorted(medoids.items()):
-        exemplar = units[med_i]
-        canon = crops_dir / f"type_{tid:02d}" / "exemplar.png"
-        shutil.copy(out_dir / exemplar["asset"], canon)
-        member_units = [u for u in units if int(u["type_id"]) == int(tid)]
-        member_preds = []
-        for u in member_units:
+    per_unit_railing = bool(getattr(args, "no_railing_vote", False))
+
+    if per_unit_railing:
+        print(
+            f"=== 4 Heuristic IR per unit (no vote; profile={profile_name} infer={axes_on}) ==="
+        )
+        by_kind: dict[str, list[dict]] = defaultdict(list)
+        for u in units:
             crop = Image.open(out_dir / u["asset"]).convert("RGB")
             ir = infer_balcony_ir(
                 crop,
@@ -332,34 +338,82 @@ def run(args: argparse.Namespace) -> Path | None:
                 profile_name=profile_name,
             )
             tokens = ir_to_tokens(ir, profile_name=profile_name)
-            member_preds.append({"unit_id": int(u["unit_id"]), "ir": ir, "tokens": tokens})
+            kind = railing_kind_from_ir(ir)
             u["structure_ir_member"] = ir
-        voted = vote_cluster_ir(
-            member_preds, prefer_unit_id=med_i, profile_name=profile_name
-        )
-        for u in member_units:
-            u["structure_ir"] = voted["structure_ir"]
-        vote = voted["vote"]
-        print(
-            f"  type_{tid:02d}: vote "
-            f"{vote.get('winner_count', 0)}/{vote.get('n_valid', 0)} "
-            f"unique={vote.get('n_unique', 0)}"
-        )
-        types_out.append(
-            {
-                "type_id": tid,
-                "name": f"balc_type_{tid:02d}",
-                "n_instances": len(member_units),
-                "exemplar_unit": med_i,
-                "exemplar_asset": str(canon.relative_to(out_dir)),
-                "structure_ir": voted["structure_ir"],
-                "structure_tokens": voted["structure_tokens"],
-                "structure_vote": voted["vote"],
-            }
-        )
+            u["structure_ir"] = ir
+            u["structure_tokens"] = tokens
+            by_kind[kind].append(u)
+            print(f"  unit_{int(u['unit_id']):03d}: railing={kind}")
+
+        for tid, kind in enumerate(sorted(by_kind)):
+            members = by_kind[kind]
+            rep = members[0]
+            canon = crops_dir / f"balc_{kind}_exemplar.png"
+            shutil.copy(out_dir / rep["asset"], canon)
+            types_out.append(
+                {
+                    "type_id": tid,
+                    "name": f"balc_{kind}",
+                    "n_instances": len(members),
+                    "exemplar_unit": int(rep["unit_id"]),
+                    "exemplar_asset": str(canon.relative_to(out_dir)),
+                    "structure_ir": rep["structure_ir"],
+                    "structure_tokens": rep["structure_tokens"],
+                    "structure_vote": {
+                        "mode": "per_unit",
+                        "railing_kind": kind,
+                        "n_members": len(members),
+                        "unit_ids": [int(u["unit_id"]) for u in members],
+                    },
+                }
+            )
+        vote_note = f"profile={profile_name} per-unit infer={axes_on}"
+    else:
+        print(f"=== 4 Heuristic IR + majority vote (profile={profile_name} vote={axes_on}) ===")
+        for tid, med_i in sorted(medoids.items()):
+            exemplar = units[med_i]
+            canon = crops_dir / f"type_{tid:02d}" / "exemplar.png"
+            shutil.copy(out_dir / exemplar["asset"], canon)
+            member_units = [u for u in units if int(u["type_id"]) == int(tid)]
+            member_preds = []
+            for u in member_units:
+                crop = Image.open(out_dir / u["asset"]).convert("RGB")
+                ir = infer_balcony_ir(
+                    crop,
+                    box=u["box_xyxy"],
+                    image_size=facade.size,
+                    profile_name=profile_name,
+                )
+                tokens = ir_to_tokens(ir, profile_name=profile_name)
+                member_preds.append({"unit_id": int(u["unit_id"]), "ir": ir, "tokens": tokens})
+                u["structure_ir_member"] = ir
+            voted = vote_cluster_ir(
+                member_preds, prefer_unit_id=med_i, profile_name=profile_name
+            )
+            for u in member_units:
+                u["structure_ir"] = voted["structure_ir"]
+            vote = voted["vote"]
+            print(
+                f"  type_{tid:02d}: vote "
+                f"{vote.get('winner_count', 0)}/{vote.get('n_valid', 0)} "
+                f"unique={vote.get('n_unique', 0)}"
+            )
+            types_out.append(
+                {
+                    "type_id": tid,
+                    "name": f"balc_type_{tid:02d}",
+                    "n_instances": len(member_units),
+                    "exemplar_unit": med_i,
+                    "exemplar_asset": str(canon.relative_to(out_dir)),
+                    "structure_ir": voted["structure_ir"],
+                    "structure_tokens": voted["structure_tokens"],
+                    "structure_vote": voted["vote"],
+                }
+            )
+        vote_note = f"profile={profile_name} vote={axes_on}"
 
     save(
-        draw_vote(types_out, out_dir, f"profile={profile_name} vote={axes_on}"),
+        draw_vote(types_out, out_dir, vote_note),
         out_dir / f"s4_vote_balcony_ir_{stem}.png",
     )
 
@@ -369,11 +423,13 @@ def run(args: argparse.Namespace) -> Path | None:
         balcony_types=types_out,
         units=units,
         image_size=facade.size,
+        per_unit_railing=per_unit_railing,
     )
     merged["meta"]["balcony_image"] = str(image_path)
     merged["meta"]["balcony_stem"] = stem
     merged["meta"]["balcony_recovery_profile"] = profile_name
     merged["meta"]["balcony_vote_axes"] = axes_on
+    merged["meta"]["balcony_per_unit_railing"] = per_unit_railing
     out_dsl = out_dir / "facade_dsl_with_balconies.json"
     _write_text(out_dsl, json.dumps(merged, indent=2) + "\n")
     print(f"  dsl -> {out_dsl}")

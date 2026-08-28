@@ -52,7 +52,7 @@ Standalone track; does not edit window e2e internals.
 | `run_balcony.py` | CLI + `run()` |
 | `snap.py` | Snap boxes to **window** floors/bays |
 | `cluster.py` | DINOv2 ROI + spectral + Potts (balcony boxes only) |
-| `filter.py` | Drop decoration FPs (below shrunk sill; exempt if >=20% wider than partner window), Juliet-like same-width partners (0.85–1.15×), or top rail (no window above in the balcony's bay span) |
+| `filter.py` | Drop decoration FPs (below shrunk sill; exempt if >=20% wider than partner window), Juliet-like same-width partners (0.85–1.08×), window-inclusive boxes (partner window covers >=90% of balcony area), or top rail (no window above in the balcony's bay span) |
 | `heuristic_ir.py` | Per-crop BDSL JSON IR + `balcony_view` fingerprint |
 | `recovery_profile.py` | Which axes to infer/vote (`railing_only` / `full`) |
 | `vote.py` | Majority vote (same algorithm as windows, balcony key) |

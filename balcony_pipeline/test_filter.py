@@ -16,6 +16,7 @@ from filter import (  # noqa: E402
     clearly_below_windows,
     filter_balcony_boxes,
     has_window_center_above,
+    mostly_covered_by_partner_window,
     no_window_above,
     similar_width_to_partner,
     wider_than_partner_window,
@@ -143,15 +144,33 @@ class FilterTests(unittest.TestCase):
         self.assertIn("below_windows", reasons[tuple(narrow_deco)])
         self.assertIn("wide_vs_window", reasons[tuple(wide_balc)])
 
+    def test_window_cover_drops_mostly_inside_partner(self) -> None:
+        win = [[100, 50, 200, 150]]  # 100×100
+        # intersection 100×100 / area 100×110 ≈ 0.909
+        t1_like = [100, 50, 200, 160]
+        # wider slab: intersection 100×100 / area 140×130 ≈ 0.55; width ratio 1.4
+        real_balc = [80, 50, 220, 180]
+        self.assertTrue(
+            mostly_covered_by_partner_window(t1_like, win, iw=400, ih=400)
+        )
+        self.assertFalse(
+            mostly_covered_by_partner_window(real_balc, win, iw=400, ih=400)
+        )
+
+        im = Image.new("RGB", (400, 400), (200, 200, 200))
+        instances = [_inst(win[0]), _inst([100, 10, 200, 40], floor=1)]
+        kept, log = filter_balcony_boxes([t1_like, real_balc], im, instances)
+        self.assertEqual(kept, [real_balc])
+        reasons = {tuple(e["box"]): e["reasons"] for e in log}
+        self.assertIn("window_cover", reasons[tuple(t1_like)])
+        self.assertNotIn("window_cover", reasons[tuple(real_balc)])
+
     def test_juliet_width_drops_similar_width(self) -> None:
         win = [[100, 50, 200, 150]]  # w=100
-        # Same width band as window, overlaps sill (not below-windows)
         juliet = [105, 120, 195, 180]  # w=90 → ratio 0.90
         wide = [40, 120, 220, 180]  # w=180 → ratio 1.80
         narrow = [120, 120, 170, 180]  # w=50 → ratio 0.50
-        self.assertTrue(
-            similar_width_to_partner(juliet, win, iw=400, ih=400)
-        )
+        self.assertTrue(similar_width_to_partner(juliet, win, iw=400, ih=400))
         self.assertFalse(similar_width_to_partner(wide, win, iw=400, ih=400))
         self.assertFalse(similar_width_to_partner(narrow, win, iw=400, ih=400))
 

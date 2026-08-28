@@ -5,6 +5,8 @@ Which axes are inferred/voted is controlled by ``recovery_profile`` (default
 ``railing_only``). Railing recovery classes are ``baluster`` | ``solid`` only
 (vertical members vs opaque panel/parapet); ``glass`` is never chosen.
 Disabled axes use fixed defaults and are omitted from the fingerprint.
+Railing kind (``baluster`` | ``solid``) uses only the top 50% crop band:
+mean horizontal diff (vertical-edge strength) vs a fixed threshold.
 Wall opening and floor×bay come from the window FDSL grid, not this IR.
 """
 
@@ -16,6 +18,11 @@ import numpy as np
 from PIL import Image
 
 from recovery_profile import FIXED_DEFAULTS, resolve_profile
+
+
+def railing_kind_from_ir(ir: dict[str, Any]) -> str:
+    """Recovery railing class from a BDSL IR dict (baluster | solid)."""
+    return _rail_kind((ir.get("railing") or {}).get("kind"))
 
 
 def _rail_kind(raw: Any) -> str:
@@ -31,15 +38,28 @@ def _rail_kind(raw: Any) -> str:
     return "baluster"
 
 
-def _infer_rail_kind(*, inner_mean: float, top_edges: float) -> str:
-    """Baluster if vertical-member look; solid for panel / parapet (no glass)."""
-    # Low edge energy along the top band → continuous opaque face
-    if top_edges < 8:
-        return "solid"
-    # Bright smooth crops used to map to glass; fold into solid
-    if inner_mean > 160 and top_edges < 15:
-        return "solid"
-    return "baluster"
+# Mean |diff along columns| in the top-half railing band; >= threshold → baluster.
+RAILING_VERTICAL_EDGE_THRESHOLD = 10.0
+
+
+def _railing_vertical_edge_score(gray: np.ndarray) -> float:
+    """Mean horizontal diff in top 50% ROI (responds to vertical edges / balusters)."""
+    h = gray.shape[0]
+    band = gray[: max(1, h // 2)]
+    if band.size <= 1 or band.shape[1] < 2:
+        return 0.0
+    return float(np.abs(np.diff(band, axis=1)).mean())
+
+
+def _infer_rail_kind(
+    *,
+    vertical_edge: float,
+    threshold: float = RAILING_VERTICAL_EDGE_THRESHOLD,
+) -> str:
+    """Baluster when vertical-edge energy in the top-half band is high enough."""
+    if vertical_edge >= float(threshold):
+        return "baluster"
+    return "solid"
 
 
 def balcony_view(
@@ -117,8 +137,7 @@ def infer_balcony_ir(
     inner = gray[y0i:y1i, x0i:x1i]
     inner_mean = float(inner.mean()) if inner.size else float(gray.mean())
     inner_std = float(inner.std()) if inner.size else float(gray.std())
-    top = gray[: max(1, h // 3)]
-    top_edges = float(np.abs(np.diff(top, axis=1)).mean()) if top.size > 1 else 0.0
+    vertical_edge = _railing_vertical_edge_score(gray)
 
     if p.get("enclosure"):
         enclosure = "enclosed" if inner_mean > 140 and inner_std < 45 else "open"
@@ -148,7 +167,7 @@ def infer_balcony_ir(
         floor_shape = str(FIXED_DEFAULTS["floor_shape"])
 
     if p.get("railing"):
-        rail_kind = _infer_rail_kind(inner_mean=inner_mean, top_edges=top_edges)
+        rail_kind = _infer_rail_kind(vertical_edge=vertical_edge)
     else:
         rail_kind = "baluster"
 

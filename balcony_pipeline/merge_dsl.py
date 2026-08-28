@@ -5,6 +5,8 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from heuristic_ir import railing_kind_from_ir
+
 
 def _photo_norms(
     box: list[int] | list[float],
@@ -26,6 +28,7 @@ def merge_balcony_into_windows_dsl(
     balcony_types: list[dict[str, Any]],
     units: list[dict[str, Any]],
     image_size: tuple[int, int] | list[int] | None = None,
+    per_unit_railing: bool = False,
 ) -> dict[str, Any]:
     dsl = copy.deepcopy(windows_dsl)
     layout = dsl.setdefault("layout", {})
@@ -37,7 +40,11 @@ def merge_balcony_into_windows_dsl(
     # One placement per unit; photo box width/center drive mesh size.
     seen: set[tuple[int, int, str]] = set()
     for u in units:
-        name = f"balc_type_{int(u['type_id']):02d}"
+        if per_unit_railing:
+            ir = u.get("structure_ir") or {}
+            name = f"balc_{railing_kind_from_ir(ir)}"
+        else:
+            name = f"balc_type_{int(u['type_id']):02d}"
         box = u.get("box_xyxy") or [0, 0, 1, 1]
         w_norm, cx_norm = _photo_norms(box, image_size)
         # Dedup near-identical centers on the same floor+type (px quantization).
@@ -63,8 +70,9 @@ def merge_balcony_into_windows_dsl(
     meta["n_balcony_units"] = len(units)
     meta["n_balcony_types"] = len(balcony_types)
     notes = str(meta.get("notes") or "")
+    mode = "per-unit railing IR" if per_unit_railing else "heuristic IR vote"
     extra = (
-        " Balcony types appended by balcony_pipeline (heuristic IR vote); "
+        f" Balcony types appended by balcony_pipeline ({mode}); "
         "slab width/center from photo boxes (width_norm/cx_norm)."
     )
     if "width_norm/cx_norm" not in notes:

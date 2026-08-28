@@ -5,8 +5,10 @@ Drop a candidate if:
      (windows: ~10% expanded in X/Y for overlap; Y shrunk ~10% for sill).
      Skip this drop when the balcony is >=20% wider than an overlapping partner
      window (real multi-bay / wide slab cue).
-  2. Juliet-like: width is close to a partner window (default 0.85–1.15×).
-  3. Rooftop / top rail: drop when no window in the balcony's bay span has its
+  2. Juliet-like: width is close to a partner window (default 0.85–1.08×).
+  3. Window-inclusive: intersection with a raw partner window covers >=90% of
+     the balcony area (T1 window+box false positives).
+  4. Rooftop / top rail: drop when no window in the balcony's bay span has its
      center higher than the balcony center (image Y up = smaller cy).
 """
 
@@ -90,6 +92,22 @@ def _box_width(box: list[int] | list[float] | tuple[float, ...]) -> float:
     return max(1.0, x1 - x0)
 
 
+def _box_area(box: list[int] | list[float] | tuple[float, ...]) -> float:
+    x0, y0, x1, y1 = _as_box(list(box))
+    return max(1.0, (x1 - x0) * (y1 - y0))
+
+
+def _intersection_area(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+) -> float:
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    w = _overlap_1d(ax0, ax1, bx0, bx1)
+    h = _overlap_1d(ay0, ay1, by0, by1)
+    return w * h
+
+
 def _partner_windows(
     box: tuple[float, float, float, float],
     window_boxes: list[list[int]],
@@ -136,7 +154,7 @@ def similar_width_to_partner(
     ih: int,
     expand_frac: float = 0.10,
     min_ratio: float = 0.85,
-    max_ratio: float = 1.15,
+    max_ratio: float = 1.08,
 ) -> bool:
     """True if balcony width is close to a partner window (Juliet-like).
 
@@ -151,6 +169,31 @@ def similar_width_to_partner(
     ):
         ratio = bw / _box_width(raw)
         if lo <= ratio <= hi:
+            return True
+    return False
+
+
+def mostly_covered_by_partner_window(
+    box: list[int] | list[float],
+    window_boxes: list[list[int]],
+    *,
+    iw: int,
+    ih: int,
+    expand_frac: float = 0.10,
+    min_cover_frac: float = 0.90,
+) -> bool:
+    """True if a raw partner window covers most of the balcony box area.
+
+    Uses the same partner pairing as other decoration filters (10% expanded
+    window overlap). Intersection is computed against the raw window box.
+    """
+    b = _as_box(box)
+    area_b = _box_area(b)
+    threshold = float(min_cover_frac)
+    for raw in _partner_windows(
+        b, window_boxes, iw=iw, ih=ih, expand_frac=expand_frac
+    ):
+        if _intersection_area(b, raw) / area_b >= threshold:
             return True
     return False
 
@@ -272,7 +315,8 @@ def filter_balcony_boxes(
     above_margin_frac: float = 0.0,
     min_width_ratio: float = 1.20,
     juliet_min_ratio: float = 0.85,
-    juliet_max_ratio: float = 1.15,
+    juliet_max_ratio: float = 1.08,
+    window_cover_frac: float = 0.90,
 ) -> tuple[list[list[int]], list[dict[str, Any]]]:
     """Return (kept_boxes, drop_log)."""
     iw, ih = facade.size
@@ -312,6 +356,14 @@ def filter_balcony_boxes(
             min_ratio=juliet_min_ratio,
             max_ratio=juliet_max_ratio,
         )
+        window_cover = mostly_covered_by_partner_window(
+            b,
+            win_boxes,
+            iw=iw,
+            ih=ih,
+            expand_frac=expand_frac,
+            min_cover_frac=window_cover_frac,
+        )
         rooftop = no_window_above(
             b, window_instances, ih=ih, margin_frac=above_margin_frac
         )
@@ -322,9 +374,11 @@ def filter_balcony_boxes(
             reasons.append("wide_vs_window")
         if juliet:
             reasons.append("juliet_width")
+        if window_cover:
+            reasons.append("window_cover")
         if rooftop:
             reasons.append("no_window_above")
-        keep = (not below) and (not juliet) and (not rooftop)
+        keep = (not below) and (not juliet) and (not window_cover) and (not rooftop)
         log.append({"box": b, "keep": keep, "reasons": reasons})
         if keep:
             kept.append(b)

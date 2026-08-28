@@ -187,6 +187,11 @@ def parse_args() -> argparse.Namespace:
         choices=["railing_only", "full"],
         help="balcony photo IR vote axes (default: railing_only; use full to restore all axes)",
     )
+    ap.add_argument(
+        "--no-railing-vote",
+        action="store_true",
+        help="balcony track: per-unit heuristic railing IR (skip type majority vote)",
+    )
     return ap.parse_args()
 
 
@@ -959,6 +964,7 @@ def run_one(
                 unary_weight=args.unary_weight,
                 force=True,
                 recovery_profile=args.balcony_recovery_profile,
+                no_railing_vote=args.no_railing_vote,
             )
             merged_path = _bp.run(bp_args)
             if merged_path and merged_path.is_file():
