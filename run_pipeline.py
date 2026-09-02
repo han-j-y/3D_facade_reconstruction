@@ -192,6 +192,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="balcony track: per-unit heuristic railing IR (skip type majority vote)",
     )
+    ap.add_argument(
+        "--railing-ckpt",
+        type=Path,
+        default=None,
+        help="balcony solid/baluster classifier (default: checkpoints/railing_best.pt)",
+    )
+    ap.add_argument(
+        "--no-railing-ckpt",
+        action="store_true",
+        help="balcony track: force opaque-run heuristic (ignore railing_best.pt)",
+    )
     return ap.parse_args()
 
 
@@ -965,6 +976,8 @@ def run_one(
                 force=True,
                 recovery_profile=args.balcony_recovery_profile,
                 no_railing_vote=args.no_railing_vote,
+                railing_ckpt=args.railing_ckpt,
+                no_railing_ckpt=args.no_railing_ckpt,
             )
             merged_path = _bp.run(bp_args)
             if merged_path and merged_path.is_file():

@@ -1,0 +1,24 @@
+Collecting scikit-learn
+  Downloading scikit_learn-1.9.0-cp314-cp314-win_amd64.whl.metadata (11 kB)
+Requirement already satisfied: numpy>=1.24.1 in C:\Users\hiroo\anaconda3\envs\glodon\Lib\site-packages (from scikit-learn) (2.5.2)
+Collecting scipy>=1.10.0 (from scikit-learn)
+  Downloading scipy-1.18.1-cp314-cp314-win_amd64.whl.metadata (61 kB)
+Collecting joblib>=1.4.0 (from scikit-learn)
+  Downloading joblib-1.6.0-py3-none-any.whl.metadata (6.5 kB)
+Collecting narwhals>=2.0.1 (from scikit-learn)
+  Downloading narwhals-2.25.0-py3-none-any.whl.metadata (15 kB)
+Collecting threadpoolctl>=3.5.0 (from scikit-learn)
+  Using cached threadpoolctl-3.6.0-py3-none-any.whl.metadata (13 kB)
+Collecting cloudpickle>=3.0 (from joblib>=1.4.0->scikit-learn)
+  Downloading cloudpickle-3.1.2-py3-none-any.whl.metadata (7.1 kB)
+Downloading scikit_learn-1.9.0-cp314-cp314-win_amd64.whl (8.3 MB)
+   ---------------------------------------- 8.3/8.3 MB 12.4 MB/s  0:00:00
+Downloading joblib-1.6.0-py3-none-any.whl (306 kB)
+Downloading cloudpickle-3.1.2-py3-none-any.whl (22 kB)
+Downloading narwhals-2.25.0-py3-none-any.whl (467 kB)
+Downloading scipy-1.18.1-cp314-cp314-win_amd64.whl (37.4 MB)
+   ---------------------------------------- 37.4/37.4 MB 15.5 MB/s  0:00:02
+Using cached threadpoolctl-3.6.0-py3-none-any.whl (18 kB)
+Installing collected packages: threadpoolctl, scipy, narwhals, cloudpickle, joblib, scikit-learn
+
+Successfully installed cloudpickle-3.1.2 joblib-1.6.0 narwhals-2.25.0 scikit-learn-1.9.0 scipy-1.18.1 threadpoolctl-3.6.0

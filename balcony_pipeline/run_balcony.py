@@ -1,4 +1,4 @@
-"""Balcony photo → BDSL IR (heuristic) → merge into window recovery DSL.
+"""Balcony photo → BDSL IR (heuristic or railing classifier) → merge into window DSL.
 
 Does not edit run.py / run_pipeline.py. Reuses SAM3 detect, box merge, DINOv2
 cluster, medoid, and majority-vote *pattern* with a balcony fingerprint.
@@ -44,6 +44,9 @@ from merge_dsl import merge_balcony_into_windows_dsl  # noqa: E402
 from recovery_profile import DEFAULT_PROFILE, PROFILES, resolve_profile  # noqa: E402
 from snap import snap_units  # noqa: E402
 from vote import vote_cluster_ir  # noqa: E402
+
+from balcony_train.model import try_load_predictor  # noqa: E402
+from balcony_train.paths import DEFAULT_RAILING_CKPT  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -101,6 +104,20 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="skip type-level majority vote; each unit keeps its own heuristic railing IR",
     )
+    ap.add_argument(
+        "--railing-ckpt",
+        type=Path,
+        default=None,
+        help=(
+            "solid/baluster classifier (default: checkpoints/railing_best.pt if present; "
+            "else opaque-run heuristic)"
+        ),
+    )
+    ap.add_argument(
+        "--no-railing-ckpt",
+        action="store_true",
+        help="force the opaque-run heuristic even if railing_best.pt exists",
+    )
     return ap.parse_args()
 
 
@@ -137,6 +154,39 @@ def _write_text(path: Path, text: str) -> None:
     if path.is_file():
         path.unlink()
     path.write_text(text, encoding="utf-8")
+
+
+def resolve_railing_predictor(args: argparse.Namespace, device: torch.device):
+    """Classifier if ckpt exists; None → opaque-run heuristic in infer_balcony_ir."""
+    force_off = bool(getattr(args, "no_railing_ckpt", False))
+    ckpt = getattr(args, "railing_ckpt", None)
+    predictor = try_load_predictor(ckpt, device, force_off=force_off)
+    if predictor is not None:
+        print(f"railing classifier {predictor.ckpt_path}")
+    elif force_off:
+        print("railing classifier off (--no-railing-ckpt); using heuristic")
+    else:
+        path = Path(ckpt) if ckpt else DEFAULT_RAILING_CKPT
+        print(f"railing classifier missing ({path}); using heuristic")
+    return predictor
+
+
+def infer_unit_ir(
+    crop: Image.Image,
+    unit: dict,
+    *,
+    image_size: tuple[int, int],
+    profile_name: str,
+    predictor,
+) -> dict:
+    override = predictor.predict(crop) if predictor is not None else None
+    return infer_balcony_ir(
+        crop,
+        box=unit["box_xyxy"],
+        image_size=image_size,
+        profile_name=profile_name,
+        rail_kind_override=override,
+    )
 
 
 def cluster_boxes(
@@ -323,19 +373,23 @@ def run(args: argparse.Namespace) -> Path | None:
     profile_name = getattr(args, "recovery_profile", None) or DEFAULT_PROFILE
     axes_on = [k for k, v in resolve_profile(profile_name).items() if v]
     per_unit_railing = bool(getattr(args, "no_railing_vote", False))
+    predictor = resolve_railing_predictor(args, device)
+    rail_src = "classifier" if predictor is not None else "heuristic"
+    ir_label = "Classifier IR" if predictor is not None else "Heuristic IR"
 
     if per_unit_railing:
         print(
-            f"=== 4 Heuristic IR per unit (no vote; profile={profile_name} infer={axes_on}) ==="
+            f"=== 4 {ir_label} per unit (no vote; profile={profile_name} infer={axes_on}) ==="
         )
         by_kind: dict[str, list[dict]] = defaultdict(list)
         for u in units:
             crop = Image.open(out_dir / u["asset"]).convert("RGB")
-            ir = infer_balcony_ir(
+            ir = infer_unit_ir(
                 crop,
-                box=u["box_xyxy"],
+                u,
                 image_size=facade.size,
                 profile_name=profile_name,
+                predictor=predictor,
             )
             tokens = ir_to_tokens(ir, profile_name=profile_name)
             kind = railing_kind_from_ir(ir)
@@ -367,9 +421,9 @@ def run(args: argparse.Namespace) -> Path | None:
                     },
                 }
             )
-        vote_note = f"profile={profile_name} per-unit infer={axes_on}"
+        vote_note = f"profile={profile_name} per-unit infer={axes_on} rail={rail_src}"
     else:
-        print(f"=== 4 Heuristic IR + majority vote (profile={profile_name} vote={axes_on}) ===")
+        print(f"=== 4 {ir_label} + majority vote (profile={profile_name} vote={axes_on}) ===")
         for tid, med_i in sorted(medoids.items()):
             exemplar = units[med_i]
             canon = crops_dir / f"type_{tid:02d}" / "exemplar.png"
@@ -378,11 +432,12 @@ def run(args: argparse.Namespace) -> Path | None:
             member_preds = []
             for u in member_units:
                 crop = Image.open(out_dir / u["asset"]).convert("RGB")
-                ir = infer_balcony_ir(
+                ir = infer_unit_ir(
                     crop,
-                    box=u["box_xyxy"],
+                    u,
                     image_size=facade.size,
                     profile_name=profile_name,
+                    predictor=predictor,
                 )
                 tokens = ir_to_tokens(ir, profile_name=profile_name)
                 member_preds.append({"unit_id": int(u["unit_id"]), "ir": ir, "tokens": tokens})
@@ -410,7 +465,7 @@ def run(args: argparse.Namespace) -> Path | None:
                     "structure_vote": voted["vote"],
                 }
             )
-        vote_note = f"profile={profile_name} vote={axes_on}"
+        vote_note = f"profile={profile_name} vote={axes_on} rail={rail_src}"
 
     save(
         draw_vote(types_out, out_dir, vote_note),
@@ -430,6 +485,9 @@ def run(args: argparse.Namespace) -> Path | None:
     merged["meta"]["balcony_recovery_profile"] = profile_name
     merged["meta"]["balcony_vote_axes"] = axes_on
     merged["meta"]["balcony_per_unit_railing"] = per_unit_railing
+    merged["meta"]["balcony_railing_source"] = rail_src
+    if predictor is not None:
+        merged["meta"]["balcony_railing_ckpt"] = str(predictor.ckpt_path)
     out_dsl = out_dir / "facade_dsl_with_balconies.json"
     _write_text(out_dsl, json.dumps(merged, indent=2) + "\n")
     print(f"  dsl -> {out_dsl}")

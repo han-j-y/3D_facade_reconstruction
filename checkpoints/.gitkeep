@@ -1,11 +1,15 @@
 # Structure checkpoint directory.
 #
 # Expected files (real copies, not symlinks):
-#   structure_best.pt   — window structure AST weights (~300MB)
+#   structure_best.pt   — window structure AST weights (~300MB, not committed)
 #   vocab.json          — tokenizer / field vocab
+#   railing_best.pt     — balcony solid/baluster linear head (small; commit after train)
 #
-# These binaries are gitignored. Copy them in, e.g.:
+# Window binaries are gitignored. Copy them in, e.g.:
 #   cp /path/to/best.pt structure_best.pt
 #   cp /path/to/vocab.json vocab.json
+#
+# Train the railing head:
+#   python balcony_train/train.py --device cuda
 #
 # Or pass:  python run.py --structure-ckpt /path/to/best.pt

@@ -54,6 +54,7 @@ Standalone track; does not edit window e2e internals.
 | `cluster.py` | DINOv2 ROI + spectral + Potts (balcony boxes only) |
 | `filter.py` | Drop decoration FPs (below shrunk sill; exempt if >=20% wider than partner window), Juliet-like same-width partners (0.85–1.08×), window-inclusive boxes (partner window covers >=90% of balcony area), or top rail (no window above in the balcony's bay span) |
 | `heuristic_ir.py` | Per-crop BDSL JSON IR + `balcony_view` fingerprint |
+| `../balcony_train/` | Optional solid/baluster classifier (`railing.kind` only) |
 | `recovery_profile.py` | Which axes to infer/vote (`railing_only` / `full`) |
 | `vote.py` | Majority vote (same algorithm as windows, balcony key) |
 | `merge_dsl.py` | Copy window DSL; append `balcony_types` + `layout.balconies` |
@@ -67,7 +68,12 @@ Vote fingerprint (`balcony_view`): controlled by `--recovery-profile`
 `metal` ≡ `baluster`. Disabled axes use fixed defaults (`projecting` / `open` /
 `rectangle` / supports 0). Use `--recovery-profile full` to restore other axes.
 
-IR is heuristic (no `structure_best.pt` for balconies). Meshes compile in `balcony_compile.py` (catalog rules: baluster rods, 200 mm solid parapet, 10 mm glass, enclosed 1 m mullions + matching ceiling slab).
+`railing.kind` uses `checkpoints/railing_best.pt` when present (frozen DINOv2 +
+linear head; see `balcony_train/README.md`). Otherwise the opaque-run heuristic
+in `heuristic_ir.py`. Other IR axes stay heuristic / fixed defaults. Force the
+heuristic with `--no-railing-ckpt`. Meshes compile in `balcony_compile.py`
+(catalog rules: baluster rods, 200 mm solid parapet, 10 mm glass, enclosed 1 m
+mullions + matching ceiling slab).
 
 ## How to run
 
@@ -87,6 +93,14 @@ Balcony track only (needs an existing window `facade_dsl.json`):
 
 ```text
 python balcony_pipeline/run_balcony.py --image PHOTO.png --windows-dsl path/to/facade_dsl.json --out-dir runs/balcony_demo --device cuda
+```
+
+Railing classifier (after labeling crops; checkpoint is shared):
+
+```text
+python balcony_train/collect.py
+python balcony_train/train.py --device cuda
+python run.py --image PHOTO.png --out-dir runs/demo --device cuda --with-balconies
 ```
 
 Use `pipeline_preview/.venv` if the system Python has no torch.
