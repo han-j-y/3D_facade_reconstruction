@@ -1,0 +1,11 @@
+{
+  "schema": "facade_recovery_door_v1",
+  "name": "d00",
+  "kind": "door",
+  "type_id": 0,
+  "primitive": "rectangle",
+  "shape": "rectangle",
+  "arch_rise_ratio": 0.0,
+  "material": "door_wood",
+  "notes": "Default placeholder door: solid panel + frame, no glass. Used when no custom door asset is provided."
+}

@@ -4,10 +4,11 @@
 Pipeline
   1. Detect   — SAM3 ``window`` boxes (or reuse ``--from-index``)
   2. Unitize  — merge adjacent same-floor panes / bay faces
-  3. Cluster  — DINOv2 patch-ROI + neighbor Potts prior → window types
+  3. Layout   — structural columns from box geometry (bay + colspan); legacy ``--layout-mode centroid``
+  4. Cluster  — z-scored box geometry (GMM) then optional DINO splits → window types
   4. Assetize — per-type crops; medoid exemplar
   5. Structure — predict window structure IR per unit; majority-vote within type
-  6. DSL       — floor×bay layout + type library (``facade_dsl.json``)
+  6. DSL       — floor×bay layout (+ colspan) + type library (``facade_dsl.json``)
   7. (opt)     — Blender façade render via ``scripts/render_facade.py``
 
 Majority vote uses a discrete ``structure_view`` fingerprint (shape + pane
@@ -43,6 +44,33 @@ EXP = ROOT.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from facade_recovery.box_cluster import (  # noqa: E402
+    cluster_box_geometry_pipeline,
+    cluster_within_groups,
+)
+from facade_recovery.merge_guard import (  # noqa: E402
+    filter_indices,
+    spanning_box_indices,
+    split_member_groups_by_floor,
+)
+from facade_recovery.column_layout import (  # noqa: E402
+    assign_box_to_columns,
+    assign_floors,
+    infer_bay_column_bounds_from_units,
+    infer_floor_row_bounds_from_units,
+    infer_gap_norms,
+    infer_inter_bay_gaps_robust,
+    infer_inter_floor_gaps_robust,
+    infer_proportional_floor_heights,
+    infer_structural_columns,
+    infer_window_bay_columns,
+)
+from facade_recovery.door_types import door_type_token
+from facade_recovery.doors import (  # noqa: E402
+    assign_doors_to_layout,
+    cluster_door_units,
+    filter_door_boxes,
+)
 from facade_recovery.paths import (  # noqa: E402
     default_structure_ckpt,
     default_train_up,
@@ -77,6 +105,25 @@ def parse_args() -> argparse.Namespace:
     )
     ap.add_argument("--out-dir", type=Path, default=None)
     ap.add_argument("--from-index", type=Path, default=None, help="reuse SAM index.json")
+    ap.add_argument(
+        "--windows",
+        choices=("sam", "xml"),
+        default="sam",
+        help="window boxes: SAM detect (default) or CMP XML next to the image",
+    )
+    ap.add_argument(
+        "--merge-mode",
+        choices=("structural", "ast"),
+        default="structural",
+        help="unitize merge: e2e structural columns, or window_ast_predictor "
+        "(centroid bays + vertical same-stack merge)",
+    )
+    ap.add_argument(
+        "--vert-gap",
+        type=float,
+        default=0.55,
+        help="vertical merge gap (× median height) when --merge-mode ast",
+    )
     ap.add_argument("--prompt", type=str, default="window")
     ap.add_argument("--threshold", type=float, default=0.45)
     ap.add_argument("--min-side", type=int, default=24)
@@ -86,7 +133,44 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--facade-max-side", type=int, default=896)
     ap.add_argument("--pca-dim", type=int, default=32)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--k-max", type=int, default=8)
+    ap.add_argument("--k-max", type=int, default=8, help="max k for appearance / final clustering")
+    ap.add_argument(
+        "--cluster-mode",
+        choices=("shape_then_feat", "box", "appearance"),
+        default="shape_then_feat",
+        help="type clustering: z-scored box GMM then DINO splits (default), box-only, or legacy appearance+Potts",
+    )
+    ap.add_argument("--k-max-box", type=int, default=6, help="max k for stage-1 box geometry clustering")
+    ap.add_argument(
+        "--k-max-within",
+        type=int,
+        default=4,
+        help="max k per box group when splitting on appearance (shape_then_feat)",
+    )
+    ap.add_argument(
+        "--box-method",
+        default="gmm_diag",
+        choices=("gmm_diag", "spectral_rbf", "agglo_ward", "spectral_nn", "kmeans"),
+        help="stage-1 clustering method on z-scored (w, h, aspect)",
+    )
+    ap.add_argument(
+        "--box-conservative-k",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="lower silhouette k when box cluster medians are within jitter tol",
+    )
+    ap.add_argument("--box-conservative-k-wh-tol", type=float, default=0.008)
+    ap.add_argument(
+        "--box-merge-near",
+        action="store_true",
+        help="merge box clusters with near-identical median (w, h) after GMM",
+    )
+    ap.add_argument(
+        "--box-snap-wh",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="reassign units to nearest cluster by raw (w, h) medians",
+    )
     ap.add_argument(
         "--blender-render",
         action="store_true",
@@ -105,6 +189,12 @@ def parse_args() -> argparse.Namespace:
     )
     ap.add_argument("--col-tol", type=float, default=0.04)
     ap.add_argument("--row-tol", type=float, default=0.055)
+    ap.add_argument(
+        "--layout-mode",
+        choices=("structural", "centroid"),
+        default="structural",
+        help="bay layout: structural columns from box geometry (default) or legacy centroid",
+    )
     ap.add_argument("--spatial-strength", type=float, default=1.8)
     ap.add_argument("--unary-weight", type=float, default=0.9)
     ap.add_argument(
@@ -115,6 +205,25 @@ def parse_args() -> argparse.Namespace:
     )
     ap.add_argument("--structure-only", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--skip-structure", action="store_true")
+    ap.add_argument(
+        "--detect-doors",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="SAM-detect ground doors and add to façade DSL (default on)",
+    )
+    ap.add_argument("--door-prompt", type=str, default="door")
+    ap.add_argument(
+        "--door-min-y-frac",
+        type=float,
+        default=0.55,
+        help="keep doors whose center is below this image-height fraction",
+    )
+    ap.add_argument(
+        "--door-iou-nms",
+        type=float,
+        default=0.35,
+        help="drop door if IoU with any window unit exceeds this",
+    )
     ap.add_argument(
         "--structure-vote",
         action=argparse.BooleanOptionalAction,
@@ -157,26 +266,50 @@ def detect_windows(
     )[0]
     boxes = results["boxes"].detach().float().cpu().numpy()
     scores = results["scores"].detach().float().cpu().numpy()
-    print(f"SAM3 raw detections: {len(boxes)}")
+    masks = results.get("masks")
+    if masks is not None:
+        if hasattr(masks, "detach"):
+            masks = masks.detach().float().cpu().numpy()
+        else:
+            masks = np.asarray(masks)
+    print(f"SAM3 raw detections: {len(boxes)}  masks={'yes' if masks is not None else 'no'}")
     del sam, outputs, inputs
     torch.cuda.empty_cache()
 
     records = []
+    n_mask_box = 0
     for i, (box, sc) in enumerate(zip(boxes, scores)):
-        x0, y0, x1, y1 = [float(v) for v in box]
+        det = [float(v) for v in box]
+        x0, y0, x1, y1 = det
+        used_mask = False
+        fill = None
+        if masks is not None and i < len(masks):
+            m = masks[i]
+            if m.ndim == 3:
+                m = m[0]
+            ys, xs = np.where(m > 0.5)
+            if xs.size >= 16:
+                x0, x1 = float(xs.min()), float(xs.max() + 1)
+                y0, y1 = float(ys.min()), float(ys.max() + 1)
+                fill = float(xs.size) / max(1.0, (x1 - x0) * (y1 - y0))
+                used_mask = True
+                n_mask_box += 1
         bw, bh = x1 - x0, y1 - y0
         if bw < min_side or bh < min_side:
             continue
         if bw > max_side_frac * iw or bh > max_side_frac * ih:
             continue
-        records.append(
-            {
-                "idx": len(records),
-                "score": float(sc),
-                "box_xyxy": [int(x0), int(y0), int(x1), int(y1)],
-            }
-        )
-    print(f"after size filter: {len(records)}")
+        rec: dict[str, Any] = {
+            "idx": len(records),
+            "score": float(sc),
+            "box_xyxy": [int(x0), int(y0), int(x1), int(y1)],
+            "box_det_xyxy": [int(det[0]), int(det[1]), int(det[2]), int(det[3])],
+            "from_mask": used_mask,
+        }
+        if fill is not None:
+            rec["mask_fill"] = round(fill, 4)
+        records.append(rec)
+    print(f"after size filter: {len(records)}  tight-from-mask={n_mask_box}")
     return records
 
 
@@ -214,38 +347,110 @@ def cluster_units(
     row_tol: float,
     spatial_strength: float,
     unary_weight: float,
+    layout_mode: str = "structural",
+    merge_mode: str = "structural",
+    vert_gap: float = 0.55,
+    cluster_mode: str = "shape_then_feat",
+    k_max_box: int = 6,
+    k_max_within: int = 4,
+    box_method: str = "gmm_diag",
+    box_conservative_k: bool = True,
+    box_conservative_k_wh_tol: float = 0.008,
+    box_merge_near: bool = False,
+    box_snap_wh: bool = True,
 ) -> dict[str, Any]:
     iw, ih = facade.size
-    cx = np.array([0.5 * (b[0] + b[2]) / iw for b in boxes], dtype=np.float64)
-    cy = np.array([0.5 * (b[1] + b[3]) / ih for b in boxes], dtype=np.float64)
+    work_boxes = [list(b) for b in boxes]
+    cx = np.array([0.5 * (b[0] + b[2]) / iw for b in work_boxes], dtype=np.float64)
+    cy = np.array([0.5 * (b[1] + b[3]) / ih for b in work_boxes], dtype=np.float64)
 
-    merged_boxes, members, bay_raw, floor_raw = merge_mod.merge_adjacent_boxes(
-        boxes,
-        cx,
-        cy,
-        row_tol=row_tol,
-        adj_gap=1.0,
-        merge_bays=False,
-        col_tol=col_tol,
+    floors_raw = assign_floors(cy, row_tol)
+    spanning = spanning_box_indices(work_boxes, floors_raw)
+    if spanning:
+        keep = [i for i in range(len(work_boxes)) if i not in set(spanning)]
+        print(f"drop {len(spanning)} box(es) that span multiple floors")
+        work_boxes = filter_indices(work_boxes, keep)
+        cx = cx[keep]
+        cy = cy[keep]
+        floors_raw = assign_floors(cy, row_tol)
+
+    columns: list[tuple[float, float]] | None = None
+    structural_col: np.ndarray | None = None
+    bay_raw: np.ndarray
+    if merge_mode == "ast":
+        ast_merge = _load(
+            EXP / "window_ast_predictor" / "scripts" / "overlay_facade_merge_boxes.py",
+            "ast_merge",
+        )
+        merged_boxes, members, bay_raw, _ = ast_merge.merge_adjacent_boxes(
+            work_boxes,
+            cx,
+            cy,
+            row_tol=row_tol,
+            adj_gap=1.0,
+            merge_bays=False,
+            col_tol=col_tol,
+            merge_vertical=False,
+        )
+    else:
+        if layout_mode == "structural":
+            columns = infer_structural_columns(work_boxes, floors_raw, iw=iw)
+            structural_col = np.array(
+                [assign_box_to_columns(b, columns)[0] for b in work_boxes],
+                dtype=np.int32,
+            )
+        merged_boxes, members, bay_raw, _ = merge_mod.merge_adjacent_boxes(
+            work_boxes,
+            cx,
+            cy,
+            row_tol=row_tol,
+            adj_gap=1.0,
+            merge_bays=False,
+            col_tol=col_tol,
+            structural_col=structural_col,
+        )
+    merged_boxes, members = split_member_groups_by_floor(
+        work_boxes, merged_boxes, members, floors_raw
     )
     n_m = len(merged_boxes)
-    bay_u = []
-    for mem in members:
-        labs = [int(bay_raw[i]) for i in mem]
-        bay_u.append(max(set(labs), key=labs.count))
-
     mcy = np.array([0.5 * (b[1] + b[3]) / ih for b in merged_boxes], dtype=np.float64)
-    floor_m = merge_mod.lay.assign_bays(mcy, row_tol)
+    floor_m = assign_floors(mcy, row_tol)
+
+    bay_u: list[int] = []
+    colspan_u: list[int] = []
+    if layout_mode == "structural":
+        temp_units = [
+            {
+                "floor": int(floor_m[i]),
+                "box_xyxy": merged_boxes[i],
+                "kind": "window",
+                "colspan": 1,
+            }
+            for i in range(n_m)
+        ]
+        columns = infer_window_bay_columns(temp_units, iw=iw)
+        for u in temp_units:
+            bay_u.append(int(u["bay"]))
+            colspan_u.append(int(u.get("colspan", 1)))
+    else:
+        columns = None
+        for mem in members:
+            labs = [int(bay_raw[i]) for i in mem]
+            bay_u.append(max(set(labs), key=labs.count))
+        colspan_u = [1] * n_m
 
     spatial, meta = patch.facade_patch_spatial(
         model, facade, device=device, max_side=facade_max_side
     )
-    feats = patch.roi_pool_patches(spatial, merged_boxes, meta)
-    feats_pca = base.apply_pca(feats, min(pca_dim, max(2, n_m - 1)), seed)
+    feats_raw = patch.roi_pool_patches(spatial, merged_boxes, meta)
+    feats_pca = base.apply_pca(feats_raw, min(pca_dim, max(2, n_m - 1)), seed)
+    labels_box: np.ndarray | None = None
+    box_groups: list[dict[str, Any]] | None = None
 
     if n_m < 2:
         labels = np.zeros(n_m, dtype=np.int32)
-    else:
+        labels_box = labels.copy()
+    elif cluster_mode == "appearance":
         k = base.select_k(feats_pca, "spectral_rbf", min(k_max, n_m - 1), seed)
         k = max(2, min(k, n_m - 1))
         labels0 = base.cluster_features(feats_pca, "spectral_rbf", k, seed)
@@ -266,14 +471,58 @@ def cluster_units(
             iters=12,
             unary_weight=unary_weight,
         )
+    elif cluster_mode == "box":
+        labels_box, _ = cluster_box_geometry_pipeline(
+            merged_boxes,
+            (iw, ih),
+            base,
+            method=box_method,
+            k_max=k_max_box,
+            seed=seed,
+            conservative_k=box_conservative_k,
+            conservative_k_wh_tol=box_conservative_k_wh_tol,
+            merge_near=box_merge_near,
+            snap_wh=box_snap_wh,
+        )
+        labels = labels_box
+    else:
+        labels_box, _ = cluster_box_geometry_pipeline(
+            merged_boxes,
+            (iw, ih),
+            base,
+            method=box_method,
+            k_max=k_max_box,
+            seed=seed,
+            conservative_k=box_conservative_k,
+            conservative_k_wh_tol=box_conservative_k_wh_tol,
+            merge_near=box_merge_near,
+            snap_wh=box_snap_wh,
+        )
+        labels, box_groups = cluster_within_groups(
+            feats_pca,
+            labels_box,
+            base,
+            k_max_within=k_max_within,
+            seed=seed,
+        )
 
     return {
         "merged_boxes": merged_boxes,
         "members": members,
         "bay": bay_u,
+        "colspan": colspan_u,
         "floor": [int(f) for f in floor_m.tolist()],
         "labels": labels,
+        "labels_box": labels_box,
+        "box_groups": box_groups,
         "feats": feats_pca,
+        "feats_raw": feats_raw,
+        "spatial": spatial,
+        "patch_meta": meta,
+        "columns": columns,
+        "layout_mode": layout_mode,
+        "merge_mode": merge_mode,
+        "cluster_mode": cluster_mode,
     }
 
 
@@ -496,41 +745,113 @@ def build_facade_dsl(
     image_size: tuple[int, int],
     units: list[dict[str, Any]],
     types: list[dict[str, Any]],
+    columns: list[tuple[float, float]] | None = None,
+    door_units: list[dict[str, Any]] | None = None,
+    door_types: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Recovery DSL: layout grid of type refs + window type library."""
-    floors = sorted({int(u["floor"]) for u in units})
-    bays = sorted({int(u["bay"]) for u in units})
-    # placement[floor_idx][bay_idx] = type_id or null (first unit if multiple)
-    floor_i = {f: i for i, f in enumerate(floors)}
-    bay_i = {b: i for i, b in enumerate(bays)}
-    placement: list[list[str | None]] = [
-        [None for _ in bays] for _ in floors
-    ]
-    for u in units:
-        r, c = floor_i[int(u["floor"])], bay_i[int(u["bay"])]
-        tid = f"win_type_{int(u['type_id']):02d}"
-        # keep first / prefer existing
-        if placement[r][c] is None:
-            placement[r][c] = tid
-
-    # normalized row/col sizes from unit boxes (relative)
+    door_units = door_units or []
+    door_types = door_types or []
+    all_units = list(units) + list(door_units)
     iw, ih = image_size
-    row_heights = []
-    for f in floors:
-        ys = [u["box_xyxy"] for u in units if int(u["floor"]) == f]
-        if not ys:
-            row_heights.append(1.0)
+    floors = sorted({int(u["floor"]) for u in all_units})
+    floor_i = {f: i for i, f in enumerate(floors)}
+
+    inter_bay_gaps_px: list[float | None] | None = None
+    inter_bay_gap_norm: list[float] | None = None
+
+    if columns is not None:
+        bay_ids = list(range(len(columns)))
+        envelope_units = [
+            u for u in units if int(u.get("colspan", 1)) == 1
+        ]
+        columns_xy = infer_bay_column_bounds_from_units(
+            envelope_units or units,
+            len(columns),
+            iw=iw,
+            structural_columns=columns,
+        )
+        col_widths = [max(0.03, (xr - xl) / iw) for xl, xr in columns_xy]
+        inter_bay_gaps_px = infer_inter_bay_gaps_robust(units, len(bay_ids))
+        inter_bay_gap_norm = infer_gap_norms(units, len(bay_ids), iw)
+    else:
+        bay_ids = sorted({int(u["bay"]) for u in units})
+        col_widths = []
+        columns_xy = None
+        for b in bay_ids:
+            xs = [u["box_xyxy"] for u in units if int(u["bay"]) == b]
+            if not xs:
+                col_widths.append(1.0)
+                continue
+            w = float(np.mean([box[2] - box[0] for box in xs])) / iw
+            col_widths.append(max(0.05, w))
+
+    n_bays = len(bay_ids)
+    placement: list[list[str | None]] = [
+        [None for _ in range(n_bays)] for _ in floors
+    ]
+    placement_spans: list[list[int]] = [
+        [1 for _ in range(n_bays)] for _ in floors
+    ]
+    win_units = sorted(
+        units,
+        key=lambda u: (
+            -int(u.get("colspan", 1)),
+            int(u["floor"]),
+            int(u["bay"]),
+        ),
+    )
+    for u in win_units:
+        r = floor_i[int(u["floor"])]
+        c = int(u["bay"])
+        if c < 0 or c >= n_bays:
             continue
-        h = float(np.mean([b[3] - b[1] for b in ys])) / ih
-        row_heights.append(max(0.05, h))
-    col_widths = []
-    for b in bays:
-        xs = [u["box_xyxy"] for u in units if int(u["bay"]) == b]
-        if not xs:
-            col_widths.append(1.0)
+        tid = f"win_type_{int(u['type_id']):02d}"
+        span = max(1, int(u.get("colspan", 1)))
+        if placement[r][c] is not None:
             continue
-        w = float(np.mean([box[2] - box[0] for box in xs])) / iw
-        col_widths.append(max(0.05, w))
+        placement[r][c] = tid
+        placement_spans[r][c] = span
+        for j in range(1, span):
+            if c + j < n_bays:
+                placement[r][c + j] = None
+                placement_spans[r][c + j] = 0
+    for u in door_units:
+        r = floor_i[int(u["floor"])]
+        c = int(u["bay"])
+        if c < 0 or c >= n_bays:
+            continue
+        tid = str(u.get("name") or door_type_token(int(u["type_id"])))
+        placement[r][c] = tid
+        placement_spans[r][c] = max(1, int(u.get("colspan", 1)))
+
+    row_heights: list[float] = []
+    inter_floor_gaps_px: list[float] | None = None
+    inter_floor_gap_norm: list[float] | None = None
+    floors_y: list[tuple[float, float]] | None = None
+    if floors:
+        row_heights, inter_floor_gap_norm = infer_proportional_floor_heights(
+            all_units, floors, ih
+        )
+        inter_floor_gaps_px = infer_inter_floor_gaps_robust(all_units, floors)
+        floors_y = infer_floor_row_bounds_from_units(all_units, floors, ih=ih)
+
+    layout_note = (
+        "Recovery DSL: w_norm and h_norm from box size + half inter-bay/floor gap "
+        "(all ÷ image width/height), including outer wall-edge margins."
+    )
+
+    meta_extra: dict[str, Any] = {}
+    if inter_bay_gaps_px is not None:
+        meta_extra["inter_bay_gaps_px"] = [round(g, 1) for g in inter_bay_gaps_px]
+    if inter_bay_gap_norm is not None:
+        meta_extra["inter_bay_gap_norm"] = [round(g, 4) for g in inter_bay_gap_norm]
+    if inter_floor_gaps_px is not None:
+        meta_extra["inter_floor_gaps_px"] = [round(g, 1) for g in inter_floor_gaps_px]
+    if inter_floor_gap_norm is not None:
+        meta_extra["inter_floor_gap_norm"] = [round(g, 4) for g in inter_floor_gap_norm]
+    if floors_y is not None:
+        meta_extra["floors_y"] = [[round(a, 1), round(b, 1)] for a, b in floors_y]
 
     return {
         "schema": "facade_recovery_dsl_v1",
@@ -540,11 +861,15 @@ def build_facade_dsl(
             "image_size": [iw, ih],
             "n_units": len(units),
             "n_types": len(types),
-            "notes": (
-                "Recovery DSL from photo: grid is floor×bay with type refs; "
-                "window_types hold one voted window structure IR per cluster "
-                "(majority over member predictions on structure_view fingerprints)."
+            "n_doors": len(door_units),
+            "n_door_types": len(door_types),
+            "notes": layout_note,
+            "columns_xy": (
+                [[round(xl, 1), round(xr, 1)] for xl, xr in columns_xy]
+                if columns_xy is not None
+                else None
             ),
+            **meta_extra,
         },
         "layout": {
             "floors": [
@@ -553,12 +878,16 @@ def build_facade_dsl(
             ],
             "bays": [
                 {"name": f"B{b}", "id": int(b), "w_norm": float(col_widths[i])}
-                for i, b in enumerate(bays)
+                for i, b in enumerate(bay_ids)
             ],
             "placement": placement,
+            "placement_spans": placement_spans,
         },
         "window_types": types,
-        "instances": units,
+        "door_types": door_types,
+        "instances": [{**u, "kind": "window"} for u in units] + [
+            {**u, "kind": "door"} for u in door_units
+        ],
     }
 
 
@@ -663,19 +992,27 @@ def main() -> None:
         if facade_path is None or not facade_path.is_file():
             raise SystemExit(f"missing facade image: {facade_path}")
         facade = Image.open(facade_path).convert("RGB")
-        raw_windows = detect_windows(
-            facade,
-            prompt=args.prompt,
-            threshold=args.threshold,
-            min_side=args.min_side,
-            max_side_frac=args.max_side_frac,
-            device=device,
-        )
+        if args.windows == "xml":
+            xml_path = facade_path.with_suffix(".xml")
+            if not xml_path.is_file():
+                raise SystemExit(f"missing CMP XML windows: {xml_path}")
+            raw_windows = load_cmp_xml_windows(xml_path, facade.size, stem=facade_id)
+            print(f"CMP XML windows: {len(raw_windows)} from {xml_path}")
+        else:
+            raw_windows = detect_windows(
+                facade,
+                prompt=args.prompt,
+                threshold=args.threshold,
+                min_side=args.min_side,
+                max_side_frac=args.max_side_frac,
+                device=device,
+            )
         (out_dir / "index_raw.json").write_text(
             json.dumps(
                 {
                     "facade_id": facade_id,
                     "facade_path": str(facade_path),
+                    "source": args.windows,
                     "n_windows": len(raw_windows),
                     "windows": raw_windows,
                 },
@@ -691,6 +1028,13 @@ def main() -> None:
     raw_boxes = [w["box_xyxy"] for w in raw_windows]
     for i, b in enumerate(raw_boxes):
         facade.crop(tuple(b)).save(crops_dir / f"raw_{i:03d}.png")
+    raw_ov = base.draw_overlay(
+        facade,
+        [{"box_xyxy": b} for b in raw_boxes],
+        np.arange(len(raw_boxes), dtype=np.int32),
+        title=f"{facade_id}  {args.windows} raw n={len(raw_boxes)}",
+    )
+    raw_ov.save(out_dir / "raw_windows.png")
 
     # --- 2–3 unitize + cluster ---
     print(f"loading {args.dino}…")
@@ -709,21 +1053,118 @@ def main() -> None:
         row_tol=args.row_tol,
         spatial_strength=args.spatial_strength,
         unary_weight=args.unary_weight,
+        layout_mode=args.layout_mode,
+        merge_mode=args.merge_mode,
+        vert_gap=args.vert_gap,
+        cluster_mode=args.cluster_mode,
+        k_max_box=args.k_max_box,
+        k_max_within=args.k_max_within,
+        box_method=args.box_method,
+        box_conservative_k=args.box_conservative_k,
+        box_conservative_k_wh_tol=args.box_conservative_k_wh_tol,
+        box_merge_near=args.box_merge_near,
+        box_snap_wh=args.box_snap_wh,
     )
-    del dino
-    torch.cuda.empty_cache()
-
     merged_boxes = clustered["merged_boxes"]
     members = clustered["members"]
     labels = clustered["labels"]
     feats = clustered["feats"]
     n_types = len(set(int(x) for x in labels.tolist()))
+    k_box = (
+        len(set(clustered["labels_box"].tolist()))
+        if clustered.get("labels_box") is not None
+        else "n/a"
+    )
     print(
         f"units: {len(raw_boxes)} raw → {len(merged_boxes)} merged  "
-        f"types={n_types}"
+        f"cluster={clustered.get('cluster_mode', 'appearance')}  "
+        f"merge={clustered.get('merge_mode', 'structural')}  "
+        f"k_box={k_box}  types={n_types}  "
+        f"layout={clustered.get('layout_mode', 'centroid')}  "
+        f"cols={len(clustered.get('columns') or []) or 'n/a'}"
     )
 
     medoids = pick_medoids(feats, labels)
+
+    # --- 3b doors ---
+    door_units: list[dict[str, Any]] = []
+    door_types_out: list[dict[str, Any]] = []
+    if args.detect_doors:
+        print("detecting doors…")
+        raw_doors = detect_windows(
+            facade,
+            prompt=args.door_prompt,
+            threshold=args.threshold,
+            min_side=max(16, args.min_side // 2),
+            max_side_frac=min(0.85, args.max_side_frac + 0.25),
+            device=device,
+        )
+        kept_doors = filter_door_boxes(
+            raw_doors,
+            merged_boxes,
+            image_size=facade.size,
+            min_y_frac=args.door_min_y_frac,
+            iou_nms=args.door_iou_nms,
+        )
+        door_units = assign_doors_to_layout(
+            kept_doors,
+            [
+                {
+                    "floor": int(clustered["floor"][i]),
+                    "bay": int(clustered["bay"][i]),
+                    "box_xyxy": merged_boxes[i],
+                }
+                for i in range(len(merged_boxes))
+            ],
+            image_size=facade.size,
+        )
+        for i, du in enumerate(door_units):
+            crop_path = crops_dir / f"door_{i:03d}.png"
+            facade.crop(tuple(du["box_xyxy"])).save(crop_path)
+            du["asset"] = str(crop_path.relative_to(out_dir))
+        door_types_out: list[dict[str, Any]] = []
+        if door_units:
+            door_units, door_types_out = cluster_door_units(
+                door_units,
+                facade,
+                image_size=facade.size,
+                base=base,
+                seed=args.seed,
+            )
+            for dt in door_types_out:
+                name = str(dt["name"])
+                group = [du for du in door_units if du["name"] == name]
+                doors_dir = types_dir / name
+                doors_dir.mkdir(parents=True, exist_ok=True)
+                exemplar = group[0]
+                for g in group:
+                    if g.get("is_exemplar"):
+                        exemplar = g
+                ex_src = out_dir / exemplar["asset"]
+                canon = doors_dir / "exemplar.png"
+                if ex_src.is_file():
+                    shutil.copy(ex_src, canon)
+                dt["exemplar_asset"] = str(canon.relative_to(out_dir))
+                (doors_dir / "door.json").write_text(
+                    (ROOT / "assets" / "default_door.json").read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
+                (doors_dir / "structure_ir.json").write_text(
+                    json.dumps(
+                        {
+                            "kind": "door",
+                            "placeholder": True,
+                            "name": name,
+                        },
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+        print(f"doors: raw={len(raw_doors)} kept={len(kept_doors)} placed={len(door_units)}")
+
+    del dino
+    torch.cuda.empty_cache()
 
     # --- 4 assetize ---
     units: list[dict[str, Any]] = []
@@ -742,6 +1183,7 @@ def main() -> None:
                 "box_xyxy": box,
                 "floor": int(clustered["floor"][ui]),
                 "bay": int(clustered["bay"][ui]),
+                "colspan": int(clustered["colspan"][ui]),
                 "type_id": tid,
                 "member_raw_idxs": members[ui],
                 "asset": str(asset_path.relative_to(out_dir)),
@@ -836,6 +1278,9 @@ def main() -> None:
         image_size=facade.size,
         units=units,
         types=types_out,
+        columns=clustered.get("columns"),
+        door_units=door_units,
+        door_types=door_types_out,
     )
     if structure_model_note:
         dsl["meta"]["structure_ckpt"] = structure_model_note
@@ -848,6 +1293,8 @@ def main() -> None:
         "n_raw_windows": len(raw_boxes),
         "n_units": len(merged_boxes),
         "n_types": n_types,
+        "layout_mode": clustered.get("layout_mode"),
+        "n_columns": len(clustered.get("columns") or []),
         "floors": sorted({u["floor"] for u in units}),
         "bays": sorted({u["bay"] for u in units}),
         "types": [
@@ -866,7 +1313,7 @@ def main() -> None:
 
     render_overview(facade, units, types_out, out_dir / "overview.png")
     print(f"\n=== facade e2e {facade_id} ===")
-    print(f"  raw={len(raw_boxes)}  units={len(merged_boxes)}  types={n_types}")
+    print(f"  raw={len(raw_boxes)}  units={len(merged_boxes)}  types={n_types}  doors={len(door_units)}")
     print(f"  DSL → {dsl_path}")
     print(f"  assets → {types_dir}")
     print(f"  overview → {out_dir / 'overview.png'}")

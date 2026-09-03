@@ -31,6 +31,13 @@ def init_materials(frame_name="painted_wood"):
     MATS["wall"] = make_principled_mat(
         "Wall", base_color=(0.78, 0.78, 0.76), roughness=0.85
     )
+    MATS["door_wood"] = make_principled_mat(
+        "DoorWood", base_color=(0.42, 0.30, 0.22), roughness=0.62
+    )
+    MATS["door_frame"] = MATS["painted_wood"]
+    MATS["threshold"] = make_principled_mat(
+        "Threshold", base_color=(0.52, 0.50, 0.46), roughness=0.78
+    )
     if frame_name not in MATS:
         MATS[frame_name] = MATS["frame"]
     return MATS

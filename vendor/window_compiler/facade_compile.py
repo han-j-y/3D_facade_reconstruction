@@ -8,15 +8,23 @@ import bpy
 
 from blender_scene import build_blender_scene
 from compiler import compile_spec
+from door_scene import build_default_door, door_opening_bounds
 from facade_spec import (
     EMPTY_TOKENS,
+    build_instance_map,
+    fit_window_ir_to_bounds,
     fit_window_ir_to_cell,
+    cell_cx_ratio_world,
     get_cell,
+    get_cell_span,
+    is_door_type_token,
     is_facade_spec,
     is_window_spec,
     normalize_facade_spec,
+    placement_fit_for_instance,
     total_grid_size,
     unwrap_window_ir,
+    world_placement_in_cell,
 )
 from geometry import assign_mat
 from materials import MATS
@@ -112,9 +120,12 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
 
     grid = spec["grid"]
     placement = spec.get("placement") or []
+    placement_spans = spec.get("placement_spans") or []
     windows = spec.get("windows") or {}
+    doors = spec.get("doors") or {}
     pp = spec.get("placement_params") or {}
     type_ratios = (spec.get("meta") or {}).get("type_ratios") or {}
+    placement_fit = spec.get("placement_fit") or []
     default_wr = float(pp.get("width_ratio", 0.55))
     default_hr = float(pp.get("height_ratio", 0.60))
     bottom_m = float(pp.get("bottom_margin_ratio", 0.14))
@@ -128,6 +139,8 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
     bpy.context.scene.collection.children.link(facade_coll)
     windows_coll = bpy.data.collections.new("Windows")
     facade_coll.children.link(windows_coll)
+    doors_coll = bpy.data.collections.new("Doors")
+    facade_coll.children.link(doors_coll)
 
     wall_obj = _build_wall(spec, facade_coll)
 
@@ -141,57 +154,165 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
     planned: list[dict[str, Any]] = []
     # Photo-left ↔ image-left: compiler +Y camera mirrors world X (see get_cell).
     mirror_x = bool((spec.get("placement_params") or {}).get("mirror_x", True))
+    floor_ids = spec.get("floor_ids") or []
+    inst_map = build_instance_map(spec)
+
+    n_doors = 0
+    ground_floor_id = max(floor_ids) if floor_ids else None
 
     for r in range(n_rows):
         row = placement[r] if r < len(placement) else []
-        for c in range(n_cols):
+        span_row = placement_spans[r] if r < len(placement_spans) else []
+        c = 0
+        floor_id = int(floor_ids[r]) if r < len(floor_ids) else r
+        while c < n_cols:
             tok = row[c] if c < len(row) else None
+            span = 1
+            if c < len(span_row) and span_row[c]:
+                span = max(1, int(span_row[c]))
             if tok in EMPTY_TOKENS:
+                c += max(1, span)
                 continue
             tok = str(tok)
-            if tok not in windows:
-                print(f"warn: unknown window type {tok!r} at ({r},{c})")
+            is_door = tok in doors or is_door_type_token(tok)
+            if is_door and tok not in doors:
+                print(f"warn: unknown door type {tok!r} at ({r},{c})")
+                c += span
                 continue
-            cell = get_cell(spec, r, c, mirror_x=mirror_x)
+            if not is_door and tok not in windows:
+                print(f"warn: unknown window type {tok!r} at ({r},{c})")
+                c += span
+                continue
+            if span > 1:
+                cell = get_cell_span(spec, r, c, c + span, mirror_x=mirror_x)
+            else:
+                cell = get_cell(spec, r, c, mirror_x=mirror_x)
+            fit_row = placement_fit[r] if r < len(placement_fit) else []
+            fit = fit_row[c] if c < len(fit_row) and fit_row[c] else {}
+            inst = inst_map.get((floor_id, c))
+
+            if is_door:
+                door_def = doors[tok]
+                seg_fit = (
+                    placement_fit_for_instance(spec, inst, r, c)
+                    if inst is not None
+                    else fit
+                )
+                if seg_fit:
+                    ox, oz, ww, hh = world_placement_in_cell(cell, seg_fit)
+                else:
+                    ratios = type_ratios.get(tok) or {}
+                    wr = float(fit.get("width_ratio", ratios.get("width_ratio", default_wr)))
+                    hr = float(fit.get("height_ratio", ratios.get("height_ratio", default_hr)))
+                    ww = max(0.25, float(cell["w"]) * wr)
+                    hh = max(0.35, float(cell["h"]) * hr)
+                    cx_ratio = cell_cx_ratio_world(cell, float(fit.get("cx_ratio", 0.5)))
+                    cy_ratio = float(fit.get("cy_ratio", 0.5))
+                    ox = float(cell["x0"]) + cx_ratio * float(cell["w"]) - ww / 2.0
+                    cz = float(cell["z1"]) - cy_ratio * float(cell["h"])
+                    oz = cz - hh / 2.0
+                oy = front_y - max(0.0, recess)
+                open_to_floor = 0.0 if floor_id == ground_floor_id else oz
+                open_x0, open_z0, open_x1, open_z1 = door_opening_bounds(
+                    ox=ox, oz=oz, ww=ww, hh=hh, open_to_floor_z=open_to_floor
+                )
+                planned.append(
+                    {
+                        "r": r,
+                        "c": c,
+                        "tok": tok,
+                        "kind": "door",
+                        "door_def": door_def,
+                        "ox": ox,
+                        "oy": oy,
+                        "oz": oz,
+                        "ww": ww,
+                        "hh": hh,
+                        "open_x0": open_x0,
+                        "open_x1": open_x1,
+                        "open_z0": open_z0,
+                        "open_z1": open_z1,
+                    }
+                )
+                c += span
+                continue
+
             ratios = type_ratios.get(tok) or {}
-            wr = float(ratios.get("width_ratio", default_wr))
-            hr = float(ratios.get("height_ratio", default_hr))
-            ir = fit_window_ir_to_cell(windows[tok], cell, width_ratio=wr, height_ratio=hr)
+            seg_fit = (
+                placement_fit_for_instance(spec, inst, r, c)
+                if inst is not None
+                else fit
+            )
+            if not seg_fit:
+                seg_fit = {
+                    "width_ratio": float(
+                        fit.get("width_ratio", ratios.get("width_ratio", default_wr))
+                    ),
+                    "height_ratio": float(
+                        fit.get("height_ratio", ratios.get("height_ratio", default_hr))
+                    ),
+                    "cx_ratio": float(fit.get("cx_ratio", 0.5)),
+                    "cy_ratio": float(fit.get("cy_ratio", 0.5)),
+                }
+            ox, oz, ww, hh = world_placement_in_cell(cell, seg_fit)
+            ir = fit_window_ir_to_bounds(
+                windows[tok], ww, hh, preserve_aspect=False
+            )
             ctx = compile_spec(ir)
-            ww = float(ctx.region("root").width)
             hh = float(ctx.region("root").height)
-            ox = float(cell["cx"]) - ww / 2.0
-            oz = float(cell["z0"]) + float(cell["h"]) * bottom_m
-            if oz + hh > float(cell["z1"]) - 0.02:
-                oz = max(float(cell["z0"]) + 0.02, float(cell["z1"]) - hh - 0.02)
-            # Exterior face flush with / slightly into the wall front after opening cut
+            ww = float(ctx.region("root").width)
+            open_x0, open_x1 = ox, ox + ww
+            open_z0, open_z1 = oz, oz + hh
             oy = front_y - max(0.0, recess)
             planned.append(
                 {
                     "r": r,
                     "c": c,
                     "tok": tok,
+                    "kind": "window",
                     "ctx": ctx,
+                    "cell": cell,
                     "ox": ox,
                     "oy": oy,
                     "oz": oz,
                     "ww": ww,
                     "hh": hh,
+                    "open_x0": open_x0,
+                    "open_x1": open_x1,
+                    "open_z0": open_z0,
+                    "open_z1": open_z1,
+                    "seg_fit": seg_fit,
                 }
             )
+            c += span
 
     for p in planned:
         _cut_opening(
             wall_obj,
-            x0=p["ox"],
-            z0=p["oz"],
-            x1=p["ox"] + p["ww"],
-            z1=p["oz"] + p["hh"],
+            x0=p["open_x0"],
+            z0=p["open_z0"],
+            x1=p["open_x1"],
+            z1=p["open_z1"],
             front_y=front_y,
             depth=wall_depth,
         )
 
     for p in planned:
+        if p.get("kind") == "door":
+            dd = p.get("door_def") or {}
+            build_default_door(
+                name_prefix=f"Door_r{p['r']}_c{p['c']}_{p['tok']}",
+                parent_collection=doors_coll,
+                origin=(p["ox"], p["oy"], p["oz"]),
+                width=p["ww"],
+                height=p["hh"],
+                shape=str(dd.get("shape") or "rectangle"),
+                arch_rise_ratio=float(dd.get("arch_rise_ratio") or 0.0),
+                recess=recess,
+                open_to_floor_z=p["open_z0"],
+            )
+            n_doors += 1
+            continue
         prefix = f"Win_r{p['r']}_c{p['c']}_{p['tok']}"
         build_blender_scene(
             p["ctx"],
@@ -204,11 +325,12 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
 
     bounds = (-total_w / 2.0, total_w / 2.0, 0.0, total_h)
     print(
-        f"compiled façade: {n_placed} windows, {n_segments} muntin segments, "
+        f"compiled façade: {n_placed} windows, {n_doors} doors, {n_segments} muntin segments, "
         f"size={total_w:.2f}×{total_h:.2f}m"
     )
     return {
         "n_windows": n_placed,
+        "n_doors": n_doors,
         "n_segments": n_segments,
         "total_w": total_w,
         "total_h": total_h,

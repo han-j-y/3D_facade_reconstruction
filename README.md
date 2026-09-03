@@ -35,14 +35,36 @@ python run.py --image /path/to/facade.png --out-dir runs/demo --device cuda
 python run.py --facade-id 8 --train-up /path/to/train_up --device cuda
 ```
 
+CMP XML boxes + the window-AST predictor merge/cluster (box GMM, no DINO split):
+
+```bash
+python run.py --image data/facades/base/cmp_b0250.jpg --windows xml \
+  --merge-mode ast --cluster-mode box --col-tol 0.045 \
+  --out-dir runs/e2e_ast_cluster_cmp_b0250 --device cuda --blender-render
+```
+
+SAM3 mask-tight boxes with the same merge/cluster:
+
+```bash
+python run.py --image data/facades/base/cmp_b0250.jpg --windows sam \
+  --merge-mode ast --cluster-mode box --col-tol 0.045 \
+  --out-dir runs/e2e_sam3_cluster_cmp_b0250 --device cuda --blender-render
+```
+
+**Layout:** bay count is the max number of windows on any floor. Column bounds come from that densest row; a wide box (e.g. two openings) *spans* those columns instead of merging them. Nested/IoU merge is same-floor only — no vertical merge across floors.
+
+**Windows:** `--windows sam` (default) uses SAM3 instance masks as tight boxes; `--windows xml` loads CMP XML next to the image.
+
 Outputs under `runs/facade_e2e_<id>/` (or `--out-dir`):
 
 | File | Description |
 |------|-------------|
+| `raw_windows.png` | Raw SAM3/XML boxes before merge |
 | `overview.png` | Units colored by type |
 | `facade_dsl.json` | Floor×bay layout + voted structure IR |
 | `summary.json` | Counts + vote stats |
 | `assets/types/type_XX/` | Exemplar crop + `structure_ir.json` |
+| `blender/compare_photo_vs_render.png` | Photo vs Blender (with `--blender-render`) |
 
 ## Optional Blender render
 
