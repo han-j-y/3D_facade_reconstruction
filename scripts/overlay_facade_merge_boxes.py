@@ -188,13 +188,16 @@ def merge_adjacent_boxes(
     narrow_frac: float | None = None,
     tight_gap: float | None = None,
     cross_bay_gap: float | None = None,
+    structural_col: np.ndarray | None = None,
 ) -> tuple[list[list[int]], list[list[int]], np.ndarray, np.ndarray]:
     """Merge pane faces of one opening; keep separate columns apart.
 
-    - Nested/IoU always (Pass 1).
+    - Nested/IoU always (Pass 1), same floor only.
     - Same bay + same floor: generous gap (projecting bay faces) — window mode.
     - Different bay: only if a box is narrow (flat multi-pane) and gap is small.
     - Optional: force whole vertical bay.
+    - If ``structural_col`` is set, only merge within the same structural column
+      (plus containment/IoU). Uses ``adj_gap`` with similar pane widths.
     - ``mode="balcony"``: Pass-1 only (gap merges off) so adjacent balconies stay separate.
     """
     if mode not in MERGE_PROFILES:
@@ -223,14 +226,22 @@ def merge_adjacent_boxes(
     n = len(boxes)
     floor = lay.assign_bays(cy, row_tol)
     bay = lay.assign_bays(cx, col_tol)
+    col = structural_col if structural_col is not None else bay
     med_w = float(np.median([hints.box_width(b) for b in boxes]))
     uf = lay.UnionFind(n)
+
+    def _similar_width(wi: float, wj: float, *, min_ratio: float = 0.45) -> bool:
+        if wi <= 0 or wj <= 0:
+            return False
+        return min(wi, wj) / max(wi, wj) >= min_ratio
 
     for i in range(n):
         for j in range(i + 1, n):
             if containment_or_iou(
                 boxes[i], boxes[j], contain_thr=contain_thr, iou_thr=iou_thr
             ):
+                if int(floor[i]) != int(floor[j]):
+                    continue
                 uf.union(i, j)
 
     # Pass 2: gap-based horizontal merges (window multi-pane). Skip for balcony.
@@ -246,12 +257,17 @@ def merge_adjacent_boxes(
                 wj = hints.box_width(boxes[j])
                 narrow = min(wi, wj) <= narrow_frac * med_w
                 same_bay = int(bay[i]) == int(bay[j])
+                same_col = int(col[i]) == int(col[j])
+                similar_w = _similar_width(wi, wj)
 
-                if same_bay and gap <= extruded_gap * med_w:
-                    # projecting / multi-face unit inside one vertical bay
+                if structural_col is not None:
+                    if same_col and same_bay and gap <= extruded_gap * med_w:
+                        uf.union(i, j)
+                    elif same_col and similar_w and gap <= adj_gap * med_w:
+                        uf.union(i, j)
+                elif same_bay and gap <= extruded_gap * med_w:
                     uf.union(i, j)
                 elif (not same_bay) and narrow and gap <= cross_bay_gap * med_w:
-                    # flat coplanar panes that fell into adjacent bay ids
                     uf.union(i, j)
                 elif gap <= tight_gap * med_w:
                     uf.union(i, j)

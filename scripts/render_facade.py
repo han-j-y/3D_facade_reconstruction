@@ -58,10 +58,15 @@ if str(COMPILER_ROOT) not in sys.path:
 from facade_recovery.paths import resolve_blender  # noqa: E402
 from facade_spec import (  # noqa: E402
     EMPTY_TOKENS,
-    fit_window_ir_to_cell,
+    build_instance_map,
+    cell_cx_ratio_world,
     get_cell,
+    get_cell_span,
+    is_door_type_token,
     normalize_facade_spec,
+    placement_fit_for_instance,
     total_grid_size,
+    world_placement_in_cell,
 )
 
 
@@ -129,51 +134,121 @@ def type_color(type_id: int) -> tuple[int, int, int]:
 
 
 def type_id_from_name(name: str) -> int:
+    s = str(name).strip().lower()
+    if s.startswith("d") and len(s) > 1 and s[1:].isdigit():
+        return int(s[1:])
     try:
         return int(str(name).rsplit("_", 1)[-1])
     except ValueError:
         return 0
 
 
+def instance_label(inst: dict) -> str:
+    tid = int(inst.get("type_id", 0))
+    if inst.get("kind") == "door":
+        return f"D{tid:02d}"
+    return f"T{tid}"
+
+
 def planned_windows(facade: dict) -> list[dict]:
     """Mirror facade_compile placement (world XZ boxes per placed window)."""
     windows = facade.get("windows") or {}
+    doors = facade.get("doors") or {}
     placement = facade.get("placement") or []
+    placement_spans = facade.get("placement_spans") or []
+    placement_fit = facade.get("placement_fit") or []
     pp = facade.get("placement_params") or {}
     type_ratios = (facade.get("meta") or {}).get("type_ratios") or {}
     default_wr = float(pp.get("width_ratio", 0.55))
     default_hr = float(pp.get("height_ratio", 0.60))
-    bottom_m = float(pp.get("bottom_margin_ratio", 0.14))
     mirror_x = bool(pp.get("mirror_x", True))
     n_rows = len(facade["grid"]["rows"])
     n_cols = len(facade["grid"]["cols"])
+    floor_ids = facade.get("floor_ids") or []
+    inst_map = build_instance_map(facade)
     out: list[dict] = []
     for r in range(n_rows):
         row = placement[r] if r < len(placement) else []
-        for c in range(n_cols):
+        span_row = placement_spans[r] if r < len(placement_spans) else []
+        fit_row = placement_fit[r] if r < len(placement_fit) else []
+        floor_id = int(floor_ids[r]) if r < len(floor_ids) else r
+        c = 0
+        while c < n_cols:
             tok = row[c] if c < len(row) else None
+            span = 1
+            if c < len(span_row) and span_row[c]:
+                span = max(1, int(span_row[c]))
             if tok in EMPTY_TOKENS:
+                c += span
                 continue
             tok = str(tok)
-            if tok not in windows:
+            is_door = tok in doors or is_door_type_token(tok)
+            if not is_door and tok not in windows:
+                c += span
                 continue
-            cell = get_cell(facade, r, c, mirror_x=mirror_x)
+            if span > 1:
+                cell = get_cell_span(facade, r, c, c + span, mirror_x=mirror_x)
+            else:
+                cell = get_cell(facade, r, c, mirror_x=mirror_x)
+            fit = fit_row[c] if c < len(fit_row) and fit_row[c] else {}
             ratios = type_ratios.get(tok) or {}
-            wr = float(ratios.get("width_ratio", default_wr))
-            hr = float(ratios.get("height_ratio", default_hr))
-            ir = fit_window_ir_to_cell(windows[tok], cell, width_ratio=wr, height_ratio=hr)
-            params = (ir.get("boundary") or {}).get("params") or {}
-            ww = float(params.get("width", cell["w"] * wr))
-            hh = float(params.get("height", cell["h"] * hr))
-            ox = float(cell["cx"]) - ww / 2.0
-            oz = float(cell["z0"]) + float(cell["h"]) * bottom_m
-            if oz + hh > float(cell["z1"]) - 0.02:
-                oz = max(float(cell["z0"]) + 0.02, float(cell["z1"]) - hh - 0.02)
+            inst = inst_map.get((floor_id, c))
+            if is_door:
+                seg_fit = (
+                    placement_fit_for_instance(facade, inst, r, c)
+                    if inst is not None
+                    else fit
+                )
+                if seg_fit:
+                    ox, oz, ww, hh = world_placement_in_cell(cell, seg_fit)
+                else:
+                    wr = float(fit.get("width_ratio", ratios.get("width_ratio", default_wr)))
+                    hr = float(fit.get("height_ratio", ratios.get("height_ratio", default_hr)))
+                    ww = float(cell["w"] * wr)
+                    hh = float(cell["h"] * hr)
+                    cx_ratio = cell_cx_ratio_world(cell, float(fit.get("cx_ratio", 0.5)))
+                    cy_ratio = float(fit.get("cy_ratio", 0.5))
+                    ox = float(cell["x0"]) + cx_ratio * float(cell["w"]) - ww / 2.0
+                    cz = float(cell["z1"]) - cy_ratio * float(cell["h"])
+                    oz = cz - hh / 2.0
+                out.append(
+                    {
+                        "row": r,
+                        "col": c,
+                        "name": tok,
+                        "kind": "door",
+                        "type_id": type_id_from_name(tok),
+                        "x0": ox,
+                        "z0": oz,
+                        "x1": ox + ww,
+                        "z1": oz + hh,
+                    }
+                )
+                c += span
+                continue
+            seg_fit = (
+                placement_fit_for_instance(facade, inst, r, c)
+                if inst is not None
+                else fit
+            )
+            if not seg_fit:
+                seg_fit = {
+                    "width_ratio": float(
+                        fit.get("width_ratio", ratios.get("width_ratio", default_wr))
+                    ),
+                    "height_ratio": float(
+                        fit.get("height_ratio", ratios.get("height_ratio", default_hr))
+                    ),
+                    "cx_ratio": float(fit.get("cx_ratio", 0.5)),
+                    "cy_ratio": float(fit.get("cy_ratio", 0.5)),
+                }
+            ox, oz, ww, hh = world_placement_in_cell(cell, seg_fit)
             out.append(
                 {
                     "row": r,
                     "col": c,
                     "name": tok,
+                    "kind": "window",
                     "type_id": type_id_from_name(tok),
                     "x0": ox,
                     "z0": oz,
@@ -181,6 +256,7 @@ def planned_windows(facade: dict) -> list[dict]:
                     "z1": oz + hh,
                 }
             )
+            c += span
     return out
 
 
@@ -255,14 +331,16 @@ def overlay_clusters_on_render(
         y0, y1 = sorted((v0, v1))
         draw.rectangle([x0, y0, x1, y1], fill=(*color, 55), outline=(*color, 230), width=3)
         draw.rectangle([x0, y0, x0 + 28, y0 + 16], fill=(*color, 220))
-        draw.text((x0 + 3, y0 + 1), f"T{w['type_id']}", fill=(255, 255, 255, 255), font=font_sm)
+        label = "D" + f"{w['type_id']:02d}" if w.get("kind") == "door" else f"T{w['type_id']}"
+        draw.text((x0 + 3, y0 + 1), label, fill=(255, 255, 255, 255), font=font_sm)
 
-    types = sorted({w["type_id"] for w in wins})
+    types = sorted({(w.get("kind", "window"), w["type_id"]) for w in wins})
     lx, ly = 12, 12
-    for tid in types:
+    for kind, tid in types:
         color = type_color(tid)
         draw.rectangle([lx, ly, lx + 18, ly + 18], fill=(*color, 230), outline=(255, 255, 255, 200))
-        draw.text((lx + 24, ly), f"type {tid}", fill=(255, 255, 255, 255), font=font)
+        tag = f"d{tid:02d}" if kind == "door" else f"type {tid}"
+        draw.text((lx + 24, ly), tag, fill=(255, 255, 255, 255), font=font)
         ly += 24
 
     out = Image.alpha_composite(im, overlay).convert("RGB")
@@ -289,9 +367,10 @@ def overlay_clusters_on_photo(*, recovery: dict, out_path: Path) -> Path | None:
         tid = int(inst["type_id"])
         color = type_color(tid)
         x0, y0, x1, y1 = [float(v) for v in inst["box_xyxy"]]
+        label = instance_label(inst)
         draw.rectangle([x0, y0, x1, y1], outline=(*color, 230), width=3)
         draw.rectangle([x0, y0, x0 + 28, y0 + 16], fill=(*color, 220))
-        draw.text((x0 + 3, y0 + 1), f"T{tid}", fill=(255, 255, 255, 255), font=font_sm)
+        draw.text((x0 + 3, y0 + 1), label, fill=(255, 255, 255, 255), font=font_sm)
 
     out = Image.alpha_composite(im, overlay).convert("RGB")
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -441,7 +520,7 @@ def archive_blender_outputs(out_dir: Path, stem: str) -> list[Path]:
             dest.unlink()
         shutil.copy2(src, dest)
         wrote.append(dest)
-        print(f"archive → {dest}")
+        print(f"archive -> {dest}")
     return wrote
 
 
@@ -534,8 +613,8 @@ def main() -> None:
                 samples=args.samples,
                 ortho_zoom=args.ortho_zoom,
             )
-            print(f"façade render → {render_png}")
-            print(f"façade blend → {out_dir / 'facade_scene.blend'}")
+            print(f"facade render -> {render_png}")
+            print(f"facade blend -> {out_dir / 'facade_scene.blend'}")
     else:
         print(
             "skip Blender (pass --render). Manual:\n"
@@ -558,10 +637,10 @@ def main() -> None:
             ortho_zoom=args.ortho_zoom,
         )
         if wrote_r:
-            print(f"render clusters → {wrote_r}")
+            print(f"render clusters -> {wrote_r}")
     wrote_p = overlay_clusters_on_photo(recovery=recovery, out_path=photo_clusters)
     if wrote_p:
-        print(f"photo clusters → {wrote_p}")
+        print(f"photo clusters -> {wrote_p}")
 
     compare_path = out_dir / "compare_photo_vs_render.png"
     left = photo_clusters if photo_clusters.is_file() else None
@@ -576,7 +655,7 @@ def main() -> None:
             title=f"facade {fid}" if fid else "",
         )
         if wrote:
-            print(f"compare → {wrote}")
+            print(f"compare -> {wrote}")
 
     balcony_cluster = resolve_balcony_cluster_png(recovery_path, recovery)
     compare_balcony_path = out_dir / "Compare_window_balcony_vs_render.jpg"
@@ -589,7 +668,7 @@ def main() -> None:
             title=f"facade {fid}" if fid else "",
         )
         if wrote_b:
-            print(f"balcony compare → {wrote_b}")
+            print(f"balcony compare -> {wrote_b}")
 
     archive_stem = archive_stem_from_recovery(recovery) or fid or "facade"
     archived = archive_blender_outputs(out_dir, archive_stem)
@@ -615,7 +694,7 @@ def main() -> None:
         "out_dir": str(out_dir),
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    print(f"done → {out_dir}")
+    print(f"done -> {out_dir}")
 
 
 if __name__ == "__main__":

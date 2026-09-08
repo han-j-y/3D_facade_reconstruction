@@ -118,6 +118,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="force the opaque-run heuristic even if railing_best.pt exists",
     )
+    ap.add_argument(
+        "--balcony-center",
+        choices=("window", "bay", "photo"),
+        default="window",
+        help=(
+            "horizontal mesh center: window (default, paired window box center), "
+            "bay (mean of bays_center bands), or photo (detection box cx_norm)"
+        ),
+    )
     return ap.parse_args()
 
 
@@ -479,6 +488,7 @@ def run(args: argparse.Namespace) -> Path | None:
         units=units,
         image_size=facade.size,
         per_unit_railing=per_unit_railing,
+        center_mode=str(getattr(args, "balcony_center", "window")),
     )
     merged["meta"]["balcony_image"] = str(image_path)
     merged["meta"]["balcony_stem"] = stem

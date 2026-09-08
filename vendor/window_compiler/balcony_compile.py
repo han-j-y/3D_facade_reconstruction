@@ -52,6 +52,23 @@ def _span_xz(
     )
 
 
+def _mean_column_cx(
+    spec: dict[str, Any],
+    row: int,
+    col0: int,
+    col1: int,
+    *,
+    mirror_x: bool,
+) -> float:
+    """Mean X center of grid columns col0..col1 (inclusive)."""
+    c0, c1 = min(int(col0), int(col1)), max(int(col0), int(col1))
+    centers: list[float] = []
+    for col in range(c0, c1 + 1):
+        cell = get_cell(spec, int(row), col, mirror_x=mirror_x)
+        centers.append(0.5 * (float(cell["x0"]) + float(cell["x1"])))
+    return sum(centers) / len(centers)
+
+
 def _photo_x_span(
     spec: dict[str, Any],
     rec: dict[str, Any],
@@ -59,38 +76,63 @@ def _photo_x_span(
     mirror_x: bool,
     bay_x0: float,
     bay_x1: float,
+    row: int,
+    col0: int,
+    col1: int,
 ) -> tuple[float, float, float]:
     """Map photo box width/center to world X. Returns (x0, x1, cx).
 
     Photo u=0 is left; with mirror_x the camera shows world +X on the left,
     so ``world_x = (0.5 - cx_norm) * total_w``.
-    Falls back to bay span when norms are missing.
+    When cx_norm is missing, uses window_cx_norm (paired window boxes), then
+    bay_cx_norm (mean of photo bay bands), then the mean of associated grid
+    column centers (multi-bay balconies).
     """
     total_w, _ = total_grid_size(spec["grid"])
     total_w = max(0.3, float(total_w))
-    bay_cx = 0.5 * (bay_x0 + bay_x1)
-    bay_w = max(0.3, bay_x1 - bay_x0)
+    bay_cx = _mean_column_cx(spec, row, col0, col1, mirror_x=mirror_x)
 
     w_norm = rec.get("width_norm")
     cx_norm = rec.get("cx_norm")
+    window_cx_norm = rec.get("window_cx_norm")
+    bay_cx_norm = rec.get("bay_cx_norm")
     try:
         w_norm_f = float(w_norm) if w_norm is not None else None
         cx_norm_f = float(cx_norm) if cx_norm is not None else None
+        window_cx_norm_f = (
+            float(window_cx_norm) if window_cx_norm is not None else None
+        )
+        bay_cx_norm_f = float(bay_cx_norm) if bay_cx_norm is not None else None
     except (TypeError, ValueError):
-        w_norm_f, cx_norm_f = None, None
+        w_norm_f, cx_norm_f, window_cx_norm_f, bay_cx_norm_f = None, None, None, None
 
     if w_norm_f is None or w_norm_f <= 0:
         return bay_x0, bay_x1, bay_cx
 
     span_w = max(0.25, min(total_w * 0.98, w_norm_f * total_w))
-    if cx_norm_f is None:
-        cx = bay_cx
-    else:
+    if cx_norm_f is not None:
         cx_n = min(1.0, max(0.0, cx_norm_f))
-        if mirror_x:
-            cx = (0.5 - cx_n) * total_w
-        else:
-            cx = (cx_n - 0.5) * total_w
+    elif window_cx_norm_f is not None:
+        cx_n = min(1.0, max(0.0, window_cx_norm_f))
+    elif bay_cx_norm_f is not None:
+        cx_n = min(1.0, max(0.0, bay_cx_norm_f))
+    else:
+        cx = bay_cx
+        x0 = cx - span_w / 2.0
+        x1 = cx + span_w / 2.0
+        half = total_w / 2.0
+        if x0 < -half:
+            x1 += -half - x0
+            x0 = -half
+        if x1 > half:
+            x0 -= x1 - half
+            x1 = half
+        return x0, x1, 0.5 * (x0 + x1)
+
+    if mirror_x:
+        cx = (0.5 - cx_n) * total_w
+    else:
+        cx = (cx_n - 0.5) * total_w
     x0 = cx - span_w / 2.0
     x1 = cx + span_w / 2.0
     # Keep on façade
@@ -591,7 +633,14 @@ def add_balcony_meshes(
 
         x0, x1, z0, z1 = _span_xz(spec, row, c0, c1, mirror_x=mirror_x)
         x0, x1, cx = _photo_x_span(
-            spec, rec, mirror_x=mirror_x, bay_x0=x0, bay_x1=x1
+            spec,
+            rec,
+            mirror_x=mirror_x,
+            bay_x0=x0,
+            bay_x1=x1,
+            row=row,
+            col0=c0,
+            col1=c1,
         )
         span_w = max(0.3, x1 - x0)
         cell_h = max(0.3, z1 - z0)

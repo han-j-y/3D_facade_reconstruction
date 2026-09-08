@@ -3,13 +3,14 @@
 
 Pipeline
   1. Detect   — SAM3 ``window`` boxes (or reuse ``--from-index``)
-  2. Unitize  — merge adjacent same-floor panes / bay faces
-  3. Cluster  — DINOv2 patch-ROI + neighbor Potts prior → window types
-  4. Assetize — per-type crops; medoid exemplar
-  5. Structure — predict window structure IR per unit; majority-vote within type
-  6. DSL       — floor×bay layout + type library (``facade_dsl.json``)
-  7. (opt)     — balcony track (``--with-balconies``) → ``facade_dsl_with_balconies.json``
-  8. (opt)     — Blender façade render via ``scripts/render_facade.py``
+  2. Unitize  — merge adjacent same-floor panes (no cross-floor unions)
+  3. Layout   — structural columns from box geometry (bay + colspan); ``--layout-mode centroid`` for legacy
+  4. Cluster  — box geometry GMM then optional DINO splits (``--cluster-mode appearance`` for legacy Potts)
+  5. Assetize — per-type crops; medoid exemplar
+  6. Structure — predict window structure IR per unit; majority-vote within type
+  7. DSL       — floor×bay layout (+ colspan) + type library (``facade_dsl.json``)
+  8. (opt)     — balcony track (``--with-balconies``) → ``facade_dsl_with_balconies.json``
+  9. (opt)     — Blender façade render via ``scripts/render_facade.py``
 
 Majority vote uses a discrete ``structure_view`` fingerprint (shape + pane
 topology + program ops). Continuous floats are ignored. Ties prefer the
@@ -47,6 +48,27 @@ EXP = ROOT.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from facade_recovery.box_cluster import (  # noqa: E402
+    cluster_box_geometry_pipeline,
+    cluster_within_groups,
+)
+from facade_recovery.column_layout import (  # noqa: E402
+    assign_box_to_columns,
+    assign_floors,
+    infer_bay_column_bounds_from_units,
+    infer_floor_row_bounds_from_units,
+    infer_gap_norms,
+    infer_inter_bay_gaps_robust,
+    infer_inter_floor_gaps_robust,
+    infer_proportional_floor_heights,
+    infer_structural_columns,
+    infer_window_bay_columns,
+)
+from facade_recovery.merge_guard import (  # noqa: E402
+    filter_indices,
+    spanning_box_indices,
+    split_member_groups_by_floor,
+)
 from facade_recovery.paths import (  # noqa: E402
     default_structure_ckpt,
     default_train_up,
@@ -141,7 +163,44 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--facade-max-side", type=int, default=896)
     ap.add_argument("--pca-dim", type=int, default=32)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--k-max", type=int, default=8)
+    ap.add_argument("--k-max", type=int, default=8, help="max k for appearance / final clustering")
+    ap.add_argument(
+        "--cluster-mode",
+        choices=("shape_then_feat", "box", "appearance"),
+        default="shape_then_feat",
+        help="window types: box GMM then DINO splits (default, same as main), box-only, or legacy appearance+Potts",
+    )
+    ap.add_argument("--k-max-box", type=int, default=6, help="max k for stage-1 box geometry clustering")
+    ap.add_argument(
+        "--k-max-within",
+        type=int,
+        default=4,
+        help="max k per box group when splitting on appearance (shape_then_feat)",
+    )
+    ap.add_argument(
+        "--box-method",
+        default="gmm_diag",
+        choices=("gmm_diag", "spectral_rbf", "agglo_ward", "spectral_nn", "kmeans"),
+        help="stage-1 clustering method on z-scored (w, h, aspect)",
+    )
+    ap.add_argument(
+        "--box-conservative-k",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="lower silhouette k when box cluster medians are within jitter tol",
+    )
+    ap.add_argument("--box-conservative-k-wh-tol", type=float, default=0.008)
+    ap.add_argument(
+        "--box-merge-near",
+        action="store_true",
+        help="merge box clusters with near-identical median (w, h) after GMM",
+    )
+    ap.add_argument(
+        "--box-snap-wh",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="reassign units to nearest cluster by raw (w, h) medians",
+    )
     ap.add_argument(
         "--blender-render",
         action="store_true",
@@ -160,6 +219,12 @@ def parse_args() -> argparse.Namespace:
     )
     ap.add_argument("--col-tol", type=float, default=0.04)
     ap.add_argument("--row-tol", type=float, default=0.055)
+    ap.add_argument(
+        "--layout-mode",
+        choices=("structural", "centroid"),
+        default="structural",
+        help="window floor×bay: structural columns (default, same as main) or legacy centroid assign_bays",
+    )
     ap.add_argument("--spatial-strength", type=float, default=1.8)
     ap.add_argument("--unary-weight", type=float, default=0.9)
     ap.add_argument(
@@ -202,6 +267,14 @@ def parse_args() -> argparse.Namespace:
         "--no-railing-ckpt",
         action="store_true",
         help="balcony track: force opaque-run heuristic (ignore railing_best.pt)",
+    )
+    ap.add_argument(
+        "--balcony-center",
+        choices=("window", "bay", "photo"),
+        default="window",
+        help=(
+            "balcony mesh horizontal center: paired window (default), bay bands, or photo box"
+        ),
     )
     return ap.parse_args()
 
@@ -303,38 +376,92 @@ def cluster_units(
     row_tol: float,
     spatial_strength: float,
     unary_weight: float,
+    layout_mode: str = "structural",
+    cluster_mode: str = "shape_then_feat",
+    k_max_box: int = 6,
+    k_max_within: int = 4,
+    box_method: str = "gmm_diag",
+    box_conservative_k: bool = True,
+    box_conservative_k_wh_tol: float = 0.008,
+    box_merge_near: bool = False,
+    box_snap_wh: bool = True,
 ) -> dict[str, Any]:
     iw, ih = facade.size
-    cx = np.array([0.5 * (b[0] + b[2]) / iw for b in boxes], dtype=np.float64)
-    cy = np.array([0.5 * (b[1] + b[3]) / ih for b in boxes], dtype=np.float64)
+    work_boxes = [list(b) for b in boxes]
+    cx = np.array([0.5 * (b[0] + b[2]) / iw for b in work_boxes], dtype=np.float64)
+    cy = np.array([0.5 * (b[1] + b[3]) / ih for b in work_boxes], dtype=np.float64)
 
-    merged_boxes, members, bay_raw, floor_raw = merge_mod.merge_adjacent_boxes(
-        boxes,
+    floors_raw = assign_floors(cy, row_tol)
+    spanning = spanning_box_indices(work_boxes, floors_raw)
+    if spanning:
+        keep = [i for i in range(len(work_boxes)) if i not in set(spanning)]
+        print(f"drop {len(spanning)} box(es) that span multiple floors")
+        work_boxes = filter_indices(work_boxes, keep)
+        cx = cx[keep]
+        cy = cy[keep]
+        floors_raw = assign_floors(cy, row_tol)
+
+    columns: list[tuple[float, float]] | None = None
+    structural_col: np.ndarray | None = None
+    if layout_mode == "structural":
+        columns = infer_structural_columns(work_boxes, floors_raw, iw=iw)
+        structural_col = np.array(
+            [assign_box_to_columns(b, columns)[0] for b in work_boxes],
+            dtype=np.int32,
+        )
+
+    merged_boxes, members, bay_raw, _ = merge_mod.merge_adjacent_boxes(
+        work_boxes,
         cx,
         cy,
         row_tol=row_tol,
         adj_gap=1.0,
         merge_bays=False,
         col_tol=col_tol,
+        structural_col=structural_col,
+    )
+    merged_boxes, members = split_member_groups_by_floor(
+        work_boxes, merged_boxes, members, floors_raw
     )
     n_m = len(merged_boxes)
-    bay_u = []
-    for mem in members:
-        labs = [int(bay_raw[i]) for i in mem]
-        bay_u.append(max(set(labs), key=labs.count))
-
     mcy = np.array([0.5 * (b[1] + b[3]) / ih for b in merged_boxes], dtype=np.float64)
-    floor_m = merge_mod.lay.assign_bays(mcy, row_tol)
+    floor_m = assign_floors(mcy, row_tol)
+
+    bay_u: list[int] = []
+    colspan_u: list[int] = []
+    if layout_mode == "structural":
+        temp_units = [
+            {
+                "floor": int(floor_m[i]),
+                "box_xyxy": merged_boxes[i],
+                "kind": "window",
+                "colspan": 1,
+            }
+            for i in range(n_m)
+        ]
+        columns = infer_window_bay_columns(temp_units, iw=iw)
+        for u in temp_units:
+            bay_u.append(int(u["bay"]))
+            colspan_u.append(int(u.get("colspan", 1)))
+    else:
+        columns = None
+        for mem in members:
+            labs = [int(bay_raw[i]) for i in mem]
+            bay_u.append(max(set(labs), key=labs.count))
+        colspan_u = [1] * n_m
 
     spatial, meta = patch.facade_patch_spatial(
         model, facade, device=device, max_side=facade_max_side
     )
-    feats = patch.roi_pool_patches(spatial, merged_boxes, meta)
-    feats_pca = base.apply_pca(feats, min(pca_dim, max(2, n_m - 1)), seed)
+    feats_raw = patch.roi_pool_patches(spatial, merged_boxes, meta)
+    feats_pca = base.apply_pca(feats_raw, min(pca_dim, max(2, n_m - 1)), seed)
+    labels_box: np.ndarray | None = None
+    box_groups: list[dict[str, Any]] | None = None
 
     if n_m < 2:
         labels = np.zeros(n_m, dtype=np.int32)
-    else:
+        labels_box = labels.copy()
+    elif cluster_mode == "appearance":
         k = base.select_k(feats_pca, "spectral_rbf", min(k_max, n_m - 1), seed)
         k = max(2, min(k, n_m - 1))
         labels0 = base.cluster_features(feats_pca, "spectral_rbf", k, seed)
@@ -355,14 +482,54 @@ def cluster_units(
             iters=12,
             unary_weight=unary_weight,
         )
+    elif cluster_mode == "box":
+        labels_box, _ = cluster_box_geometry_pipeline(
+            merged_boxes,
+            (iw, ih),
+            base,
+            method=box_method,
+            k_max=k_max_box,
+            seed=seed,
+            conservative_k=box_conservative_k,
+            conservative_k_wh_tol=box_conservative_k_wh_tol,
+            merge_near=box_merge_near,
+            snap_wh=box_snap_wh,
+        )
+        labels = labels_box
+    else:
+        labels_box, _ = cluster_box_geometry_pipeline(
+            merged_boxes,
+            (iw, ih),
+            base,
+            method=box_method,
+            k_max=k_max_box,
+            seed=seed,
+            conservative_k=box_conservative_k,
+            conservative_k_wh_tol=box_conservative_k_wh_tol,
+            merge_near=box_merge_near,
+            snap_wh=box_snap_wh,
+        )
+        labels, box_groups = cluster_within_groups(
+            feats_pca,
+            labels_box,
+            base,
+            k_max_within=k_max_within,
+            seed=seed,
+        )
 
     return {
         "merged_boxes": merged_boxes,
         "members": members,
         "bay": bay_u,
+        "colspan": colspan_u,
         "floor": [int(f) for f in floor_m.tolist()],
         "labels": labels,
+        "labels_box": labels_box,
+        "box_groups": box_groups,
         "feats": feats_pca,
+        "columns": columns,
+        "layout_mode": layout_mode,
+        "cluster_mode": cluster_mode,
     }
 
 
@@ -585,41 +752,98 @@ def build_facade_dsl(
     image_size: tuple[int, int],
     units: list[dict[str, Any]],
     types: list[dict[str, Any]],
+    columns: list[tuple[float, float]] | None = None,
 ) -> dict[str, Any]:
     """Recovery DSL: layout grid of type refs + window type library."""
-    floors = sorted({int(u["floor"]) for u in units})
-    bays = sorted({int(u["bay"]) for u in units})
-    # placement[floor_idx][bay_idx] = type_id or null (first unit if multiple)
-    floor_i = {f: i for i, f in enumerate(floors)}
-    bay_i = {b: i for i, b in enumerate(bays)}
-    placement: list[list[str | None]] = [
-        [None for _ in bays] for _ in floors
-    ]
-    for u in units:
-        r, c = floor_i[int(u["floor"])], bay_i[int(u["bay"])]
-        tid = f"win_type_{int(u['type_id']):02d}"
-        # keep first / prefer existing
-        if placement[r][c] is None:
-            placement[r][c] = tid
-
-    # normalized row/col sizes from unit boxes (relative)
     iw, ih = image_size
-    row_heights = []
-    for f in floors:
-        ys = [u["box_xyxy"] for u in units if int(u["floor"]) == f]
-        if not ys:
-            row_heights.append(1.0)
+    floors = sorted({int(u["floor"]) for u in units})
+    floor_i = {f: i for i, f in enumerate(floors)}
+
+    inter_bay_gaps_px: list[float | None] | None = None
+    inter_bay_gap_norm: list[float] | None = None
+
+    if columns is not None:
+        bay_ids = list(range(len(columns)))
+        envelope_units = [u for u in units if int(u.get("colspan", 1)) == 1]
+        columns_xy = infer_bay_column_bounds_from_units(
+            envelope_units or units,
+            len(columns),
+            iw=iw,
+            structural_columns=columns,
+        )
+        col_widths = [max(0.03, (xr - xl) / iw) for xl, xr in columns_xy]
+        inter_bay_gaps_px = infer_inter_bay_gaps_robust(units, len(bay_ids))
+        inter_bay_gap_norm = infer_gap_norms(units, len(bay_ids), iw)
+    else:
+        bay_ids = sorted({int(u["bay"]) for u in units})
+        col_widths = []
+        columns_xy = None
+        for b in bay_ids:
+            xs = [u["box_xyxy"] for u in units if int(u["bay"]) == b]
+            if not xs:
+                col_widths.append(1.0)
+                continue
+            w = float(np.mean([box[2] - box[0] for box in xs])) / iw
+            col_widths.append(max(0.05, w))
+
+    n_bays = len(bay_ids)
+    placement: list[list[str | None]] = [
+        [None for _ in range(n_bays)] for _ in floors
+    ]
+    placement_spans: list[list[int]] = [
+        [1 for _ in range(n_bays)] for _ in floors
+    ]
+    win_units = sorted(
+        units,
+        key=lambda u: (
+            -int(u.get("colspan", 1)),
+            int(u["floor"]),
+            int(u["bay"]),
+        ),
+    )
+    for u in win_units:
+        r = floor_i[int(u["floor"])]
+        c = int(u["bay"])
+        if c < 0 or c >= n_bays:
             continue
-        h = float(np.mean([b[3] - b[1] for b in ys])) / ih
-        row_heights.append(max(0.05, h))
-    col_widths = []
-    for b in bays:
-        xs = [u["box_xyxy"] for u in units if int(u["bay"]) == b]
-        if not xs:
-            col_widths.append(1.0)
+        tid = f"win_type_{int(u['type_id']):02d}"
+        span = max(1, int(u.get("colspan", 1)))
+        if placement[r][c] is not None:
             continue
-        w = float(np.mean([box[2] - box[0] for box in xs])) / iw
-        col_widths.append(max(0.05, w))
+        placement[r][c] = tid
+        placement_spans[r][c] = span
+        for j in range(1, span):
+            if c + j < n_bays:
+                placement[r][c + j] = None
+                placement_spans[r][c + j] = 0
+
+    row_heights: list[float] = []
+    inter_floor_gaps_px: list[float] | None = None
+    inter_floor_gap_norm: list[float] | None = None
+    floors_y: list[tuple[float, float]] | None = None
+    if floors:
+        row_heights, inter_floor_gap_norm = infer_proportional_floor_heights(
+            units, floors, ih
+        )
+        inter_floor_gaps_px = infer_inter_floor_gaps_robust(units, floors)
+        floors_y = infer_floor_row_bounds_from_units(units, floors, ih=ih)
+
+    layout_note = (
+        "Recovery DSL from photo: grid is floor×bay with type refs; "
+        "w_norm/h_norm from box size + half inter-bay/floor gap; "
+        "window_types hold one voted window structure IR per cluster."
+    )
+    meta_extra: dict[str, Any] = {}
+    if inter_bay_gaps_px is not None:
+        meta_extra["inter_bay_gaps_px"] = [round(g, 1) for g in inter_bay_gaps_px]
+    if inter_bay_gap_norm is not None:
+        meta_extra["inter_bay_gap_norm"] = [round(g, 4) for g in inter_bay_gap_norm]
+    if inter_floor_gaps_px is not None:
+        meta_extra["inter_floor_gaps_px"] = [round(g, 1) for g in inter_floor_gaps_px]
+    if inter_floor_gap_norm is not None:
+        meta_extra["inter_floor_gap_norm"] = [round(g, 4) for g in inter_floor_gap_norm]
+    if floors_y is not None:
+        meta_extra["floors_y"] = [[round(a, 1), round(b, 1)] for a, b in floors_y]
 
     return {
         "schema": "facade_recovery_dsl_v1",
@@ -629,11 +853,13 @@ def build_facade_dsl(
             "image_size": [iw, ih],
             "n_units": len(units),
             "n_types": len(types),
-            "notes": (
-                "Recovery DSL from photo: grid is floor×bay with type refs; "
-                "window_types hold one voted window structure IR per cluster "
-                "(majority over member predictions on structure_view fingerprints)."
+            "notes": layout_note,
+            "columns_xy": (
+                [[round(xl, 1), round(xr, 1)] for xl, xr in columns_xy]
+                if columns_xy is not None
+                else None
             ),
+            **meta_extra,
         },
         "layout": {
             "floors": [
@@ -642,12 +868,13 @@ def build_facade_dsl(
             ],
             "bays": [
                 {"name": f"B{b}", "id": int(b), "w_norm": float(col_widths[i])}
-                for i, b in enumerate(bays)
+                for i, b in enumerate(bay_ids)
             ],
             "placement": placement,
+            "placement_spans": placement_spans,
         },
         "window_types": types,
-        "instances": units,
+        "instances": [{**u, "kind": "window"} for u in units],
     }
 
 
@@ -786,6 +1013,15 @@ def run_one(
         row_tol=args.row_tol,
         spatial_strength=args.spatial_strength,
         unary_weight=args.unary_weight,
+        layout_mode=str(getattr(args, "layout_mode", "structural")),
+        cluster_mode=str(getattr(args, "cluster_mode", "shape_then_feat")),
+        k_max_box=int(getattr(args, "k_max_box", 6)),
+        k_max_within=int(getattr(args, "k_max_within", 4)),
+        box_method=str(getattr(args, "box_method", "gmm_diag")),
+        box_conservative_k=bool(getattr(args, "box_conservative_k", True)),
+        box_conservative_k_wh_tol=float(getattr(args, "box_conservative_k_wh_tol", 0.008)),
+        box_merge_near=bool(getattr(args, "box_merge_near", False)),
+        box_snap_wh=bool(getattr(args, "box_snap_wh", True)),
     )
     del dino
     torch.cuda.empty_cache()
@@ -797,7 +1033,8 @@ def run_one(
     n_types = len(set(int(x) for x in labels.tolist()))
     print(
         f"units: {len(raw_boxes)} raw → {len(merged_boxes)} merged  "
-        f"types={n_types}"
+        f"types={n_types}  layout={clustered.get('layout_mode')}  "
+        f"cluster={clustered.get('cluster_mode')}"
     )
 
     medoids = pick_medoids(feats, labels)
@@ -818,6 +1055,7 @@ def run_one(
                 "box_xyxy": box,
                 "floor": int(clustered["floor"][ui]),
                 "bay": int(clustered["bay"][ui]),
+                "colspan": int(clustered["colspan"][ui]),
                 "type_id": tid,
                 "member_raw_idxs": members[ui],
                 "asset": str(asset_path.relative_to(out_dir)),
@@ -907,6 +1145,7 @@ def run_one(
         image_size=facade.size,
         units=units,
         types=types_out,
+        columns=clustered.get("columns"),
     )
     if structure_model_note:
         dsl["meta"]["structure_ckpt"] = structure_model_note
@@ -978,6 +1217,7 @@ def run_one(
                 no_railing_vote=args.no_railing_vote,
                 railing_ckpt=args.railing_ckpt,
                 no_railing_ckpt=args.no_railing_ckpt,
+                balcony_center=args.balcony_center,
             )
             merged_path = _bp.run(bp_args)
             if merged_path and merged_path.is_file():

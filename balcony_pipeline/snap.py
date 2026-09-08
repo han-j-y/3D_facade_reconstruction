@@ -6,13 +6,24 @@ from collections import defaultdict
 from typing import Any
 
 
+def _window_instances(instances: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for u in instances:
+        if str(u.get("kind") or "window") == "door":
+            continue
+        if not u.get("box_xyxy"):
+            continue
+        out.append(u)
+    return out
+
+
 def _bands_from_window_instances(
     instances: list[dict[str, Any]],
 ) -> tuple[dict[int, tuple[int, int]], dict[int, tuple[int, int]]]:
     """floor id → (y0, y1), bay id → (x0, x1) from window unit boxes."""
     floors: dict[int, list[list[int]]] = defaultdict(list)
     bays: dict[int, list[list[int]]] = defaultdict(list)
-    for u in instances:
+    for u in _window_instances(instances):
         box = [int(v) for v in u["box_xyxy"]]
         floors[int(u["floor"])].append(box)
         bays[int(u["bay"])].append(box)
@@ -25,9 +36,112 @@ def _bands_from_window_instances(
     return floor_y, bay_x
 
 
+def _bands_from_layout(
+    windows_dsl: dict[str, Any],
+) -> tuple[dict[int, tuple[int, int]], dict[int, tuple[int, int]]]:
+    """Prefer meta.columns_xy / meta.floors_y when present (main structural grid)."""
+    meta = windows_dsl.get("meta") or {}
+    layout = windows_dsl.get("layout") or {}
+    floors = list(layout.get("floors") or [])
+    bays = list(layout.get("bays") or [])
+    columns_xy = meta.get("columns_xy")
+    floors_y = meta.get("floors_y")
+
+    bay_x: dict[int, tuple[int, int]] = {}
+    if (
+        isinstance(columns_xy, list)
+        and bays
+        and len(columns_xy) == len(bays)
+    ):
+        for j, rec in enumerate(bays):
+            pair = columns_xy[j]
+            if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                bay_x = {}
+                break
+            bay_x[int(rec["id"])] = (int(round(float(pair[0]))), int(round(float(pair[1]))))
+
+    floor_y: dict[int, tuple[int, int]] = {}
+    if isinstance(floors_y, list) and floors and len(floors_y) == len(floors):
+        for i, rec in enumerate(floors):
+            pair = floors_y[i]
+            if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                floor_y = {}
+                break
+            floor_y[int(rec["id"])] = (
+                int(round(float(pair[0]))),
+                int(round(float(pair[1]))),
+            )
+
+    return floor_y, bay_x
+
+
+def _bands_from_windows_dsl(
+    windows_dsl: dict[str, Any],
+) -> tuple[dict[int, tuple[int, int]], dict[int, tuple[int, int]]]:
+    """Layout bands if authored; else min/max of window instance boxes."""
+    floor_y, bay_x = _bands_from_window_instances(windows_dsl.get("instances") or [])
+    ly, lx = _bands_from_layout(windows_dsl)
+    if ly:
+        floor_y = ly
+    if lx:
+        bay_x = lx
+    return floor_y, bay_x
+
+
 def _overlap_1d(a0: float, a1: float, b0: float, b1: float) -> float:
     lo, hi = max(a0, b0), min(a1, b1)
     return max(0.0, hi - lo)
+
+
+def _bay_overlap_stats(
+    x0: float,
+    x1: float,
+    bx0: float,
+    bx1: float,
+) -> tuple[float, float]:
+    """Return (overlap_px, cover_frac) where cover_frac = overlap / bay_width."""
+    overlap_px = _overlap_1d(x0, x1, bx0, bx1)
+    bay_w = max(1.0, bx1 - bx0)
+    return overlap_px, overlap_px / bay_w
+
+
+def center_bay_ids(
+    box: list[int] | list[float],
+    bay_x: dict[int, tuple[int, int]],
+    *,
+    full_cover_frac: float = 1.0,
+) -> list[int]:
+    """Pick bay(s) that define balcony horizontal center.
+
+    1. If any bay has cover_frac >= full_cover_frac, use all such bays.
+    2. Else use the single bay with largest overlap_px (tie: nearer balcony cx, lower id).
+    3. Mean of their X centers is applied later in merge_dsl.
+    """
+    x0, x1 = float(box[0]), float(box[2])
+    cx = 0.5 * (x0 + x1)
+    stats: list[tuple[int, float, float]] = []
+    for bid, (bx0, bx1) in bay_x.items():
+        ov_px, cover = _bay_overlap_stats(x0, x1, float(bx0), float(bx1))
+        if ov_px <= 0.0:
+            continue
+        stats.append((int(bid), ov_px, cover))
+
+    if not stats:
+        return [0]
+
+    thr = float(full_cover_frac)
+    fully = sorted(bid for bid, _, cover in stats if cover >= thr - 1e-9)
+    if fully:
+        return fully
+
+    def _rank(item: tuple[int, float, float]) -> tuple[float, float, int]:
+        bid, ov_px, _ = item
+        bx0, bx1 = bay_x[bid]
+        bay_cx = 0.5 * (float(bx0) + float(bx1))
+        dist = abs(cx - bay_cx)
+        return (ov_px, -dist, -bid)
+
+    return [max(stats, key=_rank)[0]]
 
 
 def snap_box(
@@ -62,11 +176,14 @@ def snap_box(
         nearest = min(bay_x, key=lambda b: abs(cx - 0.5 * sum(bay_x[b])))
         bay_hits = [(nearest, 1.0)]
 
-    ids = [b for b, _ in bay_hits] or [0]
+    ids = sorted({int(b) for b, _ in bay_hits}) or [0]
+    bays_center = center_bay_ids(box, bay_x)
     return {
         "floor": int(floor_id),
         "bay_start": int(min(ids)),
         "bay_end": int(max(ids)),
+        "bays": ids,
+        "bays_center": bays_center,
         "bay": int(max(ids, key=lambda b: dict(bay_hits).get(b, 0.0))) if bay_hits else 0,
     }
 
@@ -75,8 +192,7 @@ def snap_units(
     boxes: list[list[int]],
     windows_dsl: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    instances = windows_dsl.get("instances") or []
-    floor_y, bay_x = _bands_from_window_instances(instances)
+    floor_y, bay_x = _bands_from_windows_dsl(windows_dsl)
     out = []
     for i, box in enumerate(boxes):
         loc = snap_box(box, floor_y, bay_x)

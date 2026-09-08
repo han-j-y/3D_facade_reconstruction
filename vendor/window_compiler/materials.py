@@ -57,13 +57,19 @@ def init_materials(frame_name="painted_wood"):
     )
     MATS["glass"] = make_principled_mat(
         "Glass",
-        base_color=(0.62, 0.70, 0.76),
-        roughness=0.06,
-        transmission_weight=0.92,
-        alpha=0.38,
+        base_color=(0.18, 0.28, 0.38),
+        roughness=0.03,
+        transmission_weight=0.85,
     )
     MATS["wall"] = make_principled_mat(
         "Wall", base_color=(0.78, 0.78, 0.76), roughness=0.85
+    )
+    MATS["door_wood"] = make_principled_mat(
+        "DoorWood", base_color=(0.42, 0.30, 0.22), roughness=0.62
+    )
+    MATS["door_frame"] = MATS["painted_wood"]
+    MATS["threshold"] = make_principled_mat(
+        "Threshold", base_color=(0.52, 0.50, 0.46), roughness=0.78
     )
     MATS["slab"] = make_principled_mat(
         "Slab", base_color=(0.62, 0.62, 0.60), roughness=0.75
