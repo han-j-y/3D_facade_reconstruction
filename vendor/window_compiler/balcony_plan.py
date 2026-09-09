@@ -195,6 +195,7 @@ def even_along_polyline(points: Sequence[Point], n: int) -> list[Point]:
 
 MULLION_SPACING_M = 1.0
 MULLION_WIDTH_M = 0.06
+SURFACE_PANEL_M = 0.025
 ENCLOSED_CLEAR_H_M = 2.5
 
 
@@ -245,3 +246,188 @@ def glass_bays(
         if hi - lo > 0.02:
             bays.append((lo, hi))
     return bays
+
+
+def _panel_divisions(length: float, spacing: float = MULLION_SPACING_M) -> int:
+    """How many panel bays fit on ``length`` (floor, at least 1)."""
+    spacing = max(0.2, float(spacing))
+    length = max(0.2, float(length))
+    return max(1, int(length / spacing))
+
+
+def _even_stations(
+    length: float,
+    n: int,
+    *,
+    include_start: bool = True,
+    include_end: bool = True,
+) -> list[float]:
+    n = max(1, int(n))
+    length = max(1e-6, float(length))
+    step = length / n
+    out: list[float] = []
+    for i in range(n + 1):
+        if i == 0 and not include_start:
+            continue
+        if i == n and not include_end:
+            continue
+        out.append(i * step)
+    return out
+
+
+def _even_bays(
+    length: float,
+    n: int,
+    mull_w: float,
+    *,
+    start_post: bool = True,
+    end_post: bool = True,
+) -> list[tuple[float, float]]:
+    n = max(1, int(n))
+    length = max(1e-6, float(length))
+    step = length / n
+    half = max(0.0, float(mull_w) / 2.0)
+    bays: list[tuple[float, float]] = []
+    for i in range(n):
+        a = i * step
+        b = length if i == n - 1 else (i + 1) * step
+        has_lo = (i == 0 and start_post) or i > 0
+        has_hi = (i == n - 1 and end_post) or i < n - 1
+        lo = a + (half if has_lo else 0.0)
+        hi = b - (half if has_hi else 0.0)
+        if hi - lo > 0.02:
+            bays.append((lo, hi))
+    return bays
+
+
+def _mullion_center(s: float, length: float, lo: float, hi: float, mull_w: float) -> float:
+    if s <= 1e-9:
+        return lo + mull_w / 2.0
+    if s >= float(length) - 1e-9:
+        return hi - mull_w / 2.0
+    return lo + s
+
+
+def surface_panel_parts(
+    *,
+    x0: float,
+    x1: float,
+    y_wall: float,
+    depth: float,
+    z_lo: float,
+    rail_h: float,
+    mull_w: float = MULLION_WIDTH_M,
+    panel_t: float = SURFACE_PANEL_M,
+    spacing: float = MULLION_SPACING_M,
+    front_only: bool = False,
+) -> list[dict[str, float | str]]:
+    """Axis-aligned cubes for a framed surface-panel guard (60 mm mullions, 25 mm panels).
+
+    Outer faces flush with the slab. U-shape open at the wall unless ``front_only``.
+    Each dict: name, cx, cy, cz, sx, sy, sz.
+    """
+    if x1 < x0:
+        x0, x1 = x1, x0
+    width = max(0.3, float(x1) - float(x0))
+    x0 = float(x0)
+    x1 = x0 + width
+    depth = max(mull_w, float(depth))
+    y_wall = float(y_wall)
+    y_front = y_wall + depth
+    mull_w = max(0.02, float(mull_w))
+    panel_t = max(0.008, min(float(panel_t), mull_w - 0.004))
+    rail_h = max(2.0 * mull_w + 0.05, float(rail_h))
+    z_lo = float(z_lo)
+    z_mid = z_lo + rail_h / 2.0
+    panel_h = max(0.04, rail_h - 2.0 * mull_w)
+    z_panel = z_lo + mull_w + panel_h / 2.0
+    z_bot = z_lo + mull_w / 2.0
+    z_top = z_lo + rail_h - mull_w / 2.0
+    cy_f = y_front - mull_w / 2.0
+    n_front = _panel_divisions(width, spacing)
+
+    parts: list[dict[str, float | str]] = []
+
+    def _add(
+        name: str,
+        cx: float,
+        cy: float,
+        cz: float,
+        sx: float,
+        sy: float,
+        sz: float,
+    ) -> None:
+        parts.append(
+            {
+                "name": name,
+                "cx": cx,
+                "cy": cy,
+                "cz": cz,
+                "sx": sx,
+                "sy": sy,
+                "sz": sz,
+            }
+        )
+
+    for i, s in enumerate(
+        _even_stations(width, n_front, include_start=True, include_end=True)
+    ):
+        _add(
+            f"mull_f_{i}",
+            _mullion_center(s, width, x0, x1, mull_w),
+            cy_f,
+            z_mid,
+            mull_w,
+            mull_w,
+            rail_h,
+        )
+    _add("rail_f_bot", 0.5 * (x0 + x1), cy_f, z_bot, width, mull_w, mull_w)
+    _add("rail_f_top", 0.5 * (x0 + x1), cy_f, z_top, width, mull_w, mull_w)
+    for i, (a, b) in enumerate(
+        _even_bays(width, n_front, mull_w, start_post=True, end_post=True)
+    ):
+        _add(
+            f"panel_f_{i}",
+            x0 + 0.5 * (a + b),
+            cy_f,
+            z_panel,
+            b - a,
+            panel_t,
+            panel_h,
+        )
+
+    if front_only:
+        return parts
+
+    n_side = _panel_divisions(depth, spacing)
+    for side, x_face, inward in (("L", x0, 1.0), ("R", x1, -1.0)):
+        cx_m = x_face + inward * mull_w / 2.0
+        for i, s in enumerate(
+            _even_stations(depth, n_side, include_start=True, include_end=False)
+        ):
+            _add(
+                f"mull_{side}_{i}",
+                cx_m,
+                _mullion_center(s, depth, y_wall, y_front, mull_w),
+                z_mid,
+                mull_w,
+                mull_w,
+                rail_h,
+            )
+        side_len = max(0.08, depth - mull_w)
+        side_cy = y_wall + side_len / 2.0
+        _add(f"rail_{side}_bot", cx_m, side_cy, z_bot, mull_w, side_len, mull_w)
+        _add(f"rail_{side}_top", cx_m, side_cy, z_top, mull_w, side_len, mull_w)
+        for i, (a, b) in enumerate(
+            _even_bays(depth, n_side, mull_w, start_post=True, end_post=True)
+        ):
+            _add(
+                f"panel_{side}_{i}",
+                cx_m,
+                y_wall + 0.5 * (a + b),
+                z_panel,
+                panel_t,
+                b - a,
+                panel_h,
+            )
+    return parts

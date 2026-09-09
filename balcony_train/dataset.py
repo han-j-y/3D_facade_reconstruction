@@ -1,4 +1,4 @@
-"""Labeled balcony crops: folder name is the class (baluster/ | solid/)."""
+"""Labeled balcony crops: folder name is the class (see labels.CLASSES)."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ __all__ = [
 
 
 class RailingCropDataset(Dataset):
-    """Reads labeled images under ``crops/baluster/`` and ``crops/solid/``. Ignores unlabeled/."""
+    """Reads labeled images under each CLASSES folder. Ignores unlabeled/."""
 
     def __init__(self, samples: list[tuple[Path, int]], *, transform=None) -> None:
         self.samples = list(samples)

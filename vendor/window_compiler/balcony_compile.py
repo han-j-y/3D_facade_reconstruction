@@ -15,6 +15,7 @@ from balcony_plan import (  # noqa: E402
     ENCLOSED_CLEAR_H_M,
     MULLION_SPACING_M,
     MULLION_WIDTH_M,
+    SURFACE_PANEL_M,
     TOP_RAIL_DIAMETER_M,
     centroid,
     even_along_polyline,
@@ -28,10 +29,12 @@ from balcony_plan import (  # noqa: E402
     slab_outline,
     spaced_count,
     support_polyline,
+    surface_panel_parts,
 )
 from facade_spec import get_cell, total_grid_size
 from geometry import assign_mat
 from materials import MATS
+from parse_bdsl import RAIL_ALIASES, RAIL_KINDS
 
 
 def _span_xz(
@@ -182,8 +185,11 @@ def _rail_thickness(ir: dict[str, Any], kind: str) -> float:
     authored = float((ir.get("output") or {}).get("railing_thickness") or 0.0)
     if kind == "solid":
         return authored if authored > 0.05 else SOLID_PARAPET_M
+    if kind == "surface_panel":
+        if authored > 0.001 and abs(authored - 0.04) > 1e-9:
+            return authored
+        return SURFACE_PANEL_M
     if kind == "glass":
-        # Parser default 0.04 is generic; glass panels default to 10 mm.
         if authored > 0.001 and abs(authored - 0.04) > 1e-9:
             return authored
         return GLASS_PANEL_M
@@ -450,8 +456,13 @@ def _cylinder_between(
 
 
 def _rail_kind(raw: str) -> str:
-    k = (raw or "baluster").strip().lower()
-    return "baluster" if k == "metal" else k
+    k = (raw or "open_work").strip().lower()
+    k = RAIL_ALIASES.get(k, k)
+    if k in RAIL_KINDS:
+        return k
+    if k in ("panel", "parapet", "concrete"):
+        return "solid"
+    return "open_work"
 
 
 def _add_baluster_guard(
@@ -505,6 +516,46 @@ def _add_baluster_guard(
             mat_key=mat_key,
             parent=parent,
             vertices=16,
+        )
+
+
+def _add_surface_panel_guard(
+    *,
+    prefix: str,
+    cx: float,
+    x0: float,
+    x1: float,
+    y_wall: float,
+    depth: float,
+    z_lo: float,
+    rail_h: float,
+    parent: bpy.types.Collection,
+    mat_key: str = "railing",
+    panel_t: float = SURFACE_PANEL_M,
+    front_only: bool = False,
+) -> None:
+    """U-shaped 60×60 mm mullion frames with 25 mm infill panels (open at the wall)."""
+    del cx
+    for part in surface_panel_parts(
+        x0=x0,
+        x1=x1,
+        y_wall=y_wall,
+        depth=depth,
+        z_lo=z_lo,
+        rail_h=rail_h,
+        panel_t=panel_t,
+        front_only=front_only,
+    ):
+        _cube(
+            name=f"{prefix}_{part['name']}",
+            cx=float(part["cx"]),
+            cy=float(part["cy"]),
+            cz=float(part["cz"]),
+            sx=float(part["sx"]),
+            sy=float(part["sy"]),
+            sz=float(part["sz"]),
+            mat_key=mat_key,
+            parent=parent,
         )
 
 
@@ -650,7 +701,7 @@ def add_balcony_meshes(
         depth = max(0.05, float(params.get("depth") or 0.8))
         thick = float((ir.get("output") or {}).get("slab_thickness") or 0.12)
         rail_h = float((ir.get("railing") or {}).get("height") or 1.1)
-        kind = _rail_kind(str((ir.get("railing") or {}).get("kind") or "baluster"))
+        kind = _rail_kind(str((ir.get("railing") or {}).get("kind") or "open_work"))
         structure = str(ir.get("structure") or "projecting")
         enclosure = str(ir.get("enclosure") or "open")
 
@@ -664,9 +715,7 @@ def add_balcony_meshes(
         bx0, bx1 = x0 + pad, x1 - pad
 
         prefix = f"Balc_{i}_{name}"
-        if kind == "glass":
-            rail_mat = "glass"
-        elif kind == "solid":
+        if kind == "solid":
             rail_mat = "slab"
         else:
             rail_mat = "railing"
@@ -723,7 +772,7 @@ def add_balcony_meshes(
                     depth=depth,
                     structure="projecting",
                 )
-                if kind == "baluster":
+                if kind == "open_work":
                     _add_baluster_guard(
                         prefix=prefix,
                         outline=proj_outline,
@@ -732,6 +781,20 @@ def add_balcony_meshes(
                         rail_h=rail_h,
                         parent=balc_coll,
                         mat_key=rail_mat,
+                    )
+                elif kind == "surface_panel":
+                    _add_surface_panel_guard(
+                        prefix=prefix,
+                        cx=cx,
+                        x0=vx0,
+                        x1=vx1,
+                        y_wall=front_y,
+                        depth=depth,
+                        z_lo=z_floor,
+                        rail_h=rail_h,
+                        parent=balc_coll,
+                        mat_key=rail_mat,
+                        panel_t=rail_t,
                     )
                 else:
                     _add_solid_rect_parapet(
@@ -747,7 +810,7 @@ def add_balcony_meshes(
                         mat_key=rail_mat,
                         parent=balc_coll,
                     )
-            elif kind == "baluster":
+            elif kind == "open_work":
                 _add_baluster_guard(
                     prefix=prefix,
                     outline=[(vx0, front_y), (vx1, front_y)],
@@ -756,6 +819,21 @@ def add_balcony_meshes(
                     rail_h=rail_h,
                     parent=balc_coll,
                     mat_key=rail_mat,
+                    front_only=True,
+                )
+            elif kind == "surface_panel":
+                _add_surface_panel_guard(
+                    prefix=prefix,
+                    cx=cx,
+                    x0=vx0,
+                    x1=vx1,
+                    y_wall=front_y - MULLION_WIDTH_M,
+                    depth=MULLION_WIDTH_M,
+                    z_lo=z_floor,
+                    rail_h=rail_h,
+                    parent=balc_coll,
+                    mat_key=rail_mat,
+                    panel_t=rail_t,
                     front_only=True,
                 )
             else:
@@ -832,7 +910,7 @@ def add_balcony_meshes(
                     glass_t=GLASS_PANEL_M,
                     parent=balc_coll,
                 )
-        elif kind == "baluster":
+        elif kind == "open_work":
             _add_baluster_guard(
                 prefix=prefix,
                 outline=outline,
@@ -841,6 +919,21 @@ def add_balcony_meshes(
                 rail_h=rail_h,
                 parent=balc_coll,
                 mat_key=rail_mat,
+            )
+        elif kind == "surface_panel" and shape not in {"triangle", "circle"}:
+            sx_slab = span_w * 0.98
+            _add_surface_panel_guard(
+                prefix=prefix,
+                cx=cx,
+                x0=cx - sx_slab / 2.0,
+                x1=cx + sx_slab / 2.0,
+                y_wall=y_wall,
+                depth=depth,
+                z_lo=sill_z + thick,
+                rail_h=rail_h,
+                parent=balc_coll,
+                mat_key=rail_mat,
+                panel_t=rail_t,
             )
         elif shape in {"triangle", "circle"}:
             mid = centroid(outline)

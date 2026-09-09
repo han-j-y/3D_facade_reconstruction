@@ -91,16 +91,19 @@ floor_kv        = "shape", ws, floor_shape
 
 railing_line    = "railing", ws, rail_kind, { ws, railing_kv } ;
 railing_block   = "railing:", nl, { ws, railing_field, nl } ;
-rail_kind       = "baluster" | "solid" | "glass" ;
+rail_kind       = "open_work" | "surface_panel" | "solid"
+                | "baluster" | "glass" | "metal" ;
 railing_kv      = "height", ws, scalar
                 | "material", ws, ident ;
 railing_field   = "kind", ws, rail_kind
                 | "height", ws, scalar
                 | "material", ws, ident ;
-(* default: baluster, height=1.1.  height is continuous (dropped from vote fingerprint)
-   baluster — ~20 mm Ø rods at ~100 mm spacing, 50 mm Ø top pipe
-   solid    — 200 mm parapet (rectangle: 3-sided U, open at the wall)
-   glass    — 10 mm translucent panels (rectangle: 3-sided U, open at the wall)
+(* default: open_work, height=1.1.  height is continuous (dropped from vote fingerprint)
+   open_work     — ~20 mm Ø rods at ~100 mm spacing, 50 mm Ø top pipe
+                   aliases: baluster, metal
+   surface_panel — 60×60 mm mullion frames, 25 mm infill, ~1 m bays, U open at wall
+                   alias: glass
+   solid         — 200 mm parapet (rectangle: 3-sided U, open at the wall)
 *)
 
 (* ——— supports (free_standing) ——— *)
@@ -131,14 +134,14 @@ wdsl_body       = { line indented strictly deeper than the `glazing:` line } ;
 output_block    = "output:", nl, { ws, ident, ws, scalar, nl } ;
 (* recognized keys: slab_thickness, railing_thickness
    defaults: slab_thickness=0.12, railing_thickness=0.04
-             (solid parapet 0.20, glass panel 0.01 unless authored;
+             (solid parapet 0.20, surface_panel infill 0.025 unless authored;
               enclosed floor/ceiling uses authored slab_thickness, typically 0.20) *)
 
 (* ——— compiled JSON IR ———
 
   BDSL is a subset of this JSON. Photo majority-vote uses a discrete
   fingerprint selected by recovery_profile (default railing_only:
-  railing.kind in {baluster, solid} only — no glass). Disabled axes use fixed
+  railing.kind in {open_work, surface_panel, solid}). Disabled axes use fixed
   (structure=projecting, enclosure=open, floor=rectangle, supports=0)
   and are omitted from the vote key — flip the profile to bring them back.
   Floor×bay and wall window/door come from the window FDSL grid.
@@ -151,7 +154,7 @@ output_block    = "output:", nl, { ws, ident, ws, scalar, nl } ;
     "enclosure": "open"|"enclosed",
     "floor": { "shape": "rectangle"|"circle"|"triangle",
                "params": { "width": <scalar>, "depth": <scalar>, "height"? } },
-    "railing": { "kind": "baluster"|"solid"|"glass", "height": <scalar>,
+    "railing": { "kind": "open_work"|"surface_panel"|"solid", "height": <scalar>,
                  "material"? },
     "supports": { "count": int, "style"?, "spacing"? },
     "opening": "door"|"window"|"none",

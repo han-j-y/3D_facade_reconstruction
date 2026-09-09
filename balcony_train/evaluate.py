@@ -85,7 +85,7 @@ def main() -> None:
     print("rows=true cols=pred  " + "  ".join(CLASSES))
     for i, name in enumerate(CLASSES):
         row = " ".join(f"{int(v):4d}" for v in confusion[i].tolist())
-        print(f"  {name:9s} {row}")
+        print(f"  {name:16s} {row}")
 
 
 if __name__ == "__main__":

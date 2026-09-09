@@ -1,7 +1,7 @@
-# Projecting open balcony — baluster railing
+# Projecting open balcony — open_work (baluster rods)
 
 balcony rectangle(width=2.0, depth=1.5)
 
 structure projecting
 enclosure open
-railing baluster height 1.1
+railing open_work height 1.1

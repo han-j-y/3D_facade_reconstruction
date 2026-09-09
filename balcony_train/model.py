@@ -1,4 +1,4 @@
-"""Frozen DINOv2 + linear head: crop → baluster | solid."""
+"""Frozen DINOv2 + linear head: crop → railing.kind (see labels.CLASSES)."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def make_transform(image_size: int = IMAGE_SIZE):
 
 
 class RailingClassifier(nn.Module):
-    """DINOv2 ViT-S/14 (frozen) + Linear(384, 2). Only the head is trained."""
+    """DINOv2 ViT-S/14 (frozen) + Linear(384, n_classes). Only the head is trained."""
 
     def __init__(self, *, pretrained: bool = True, freeze_backbone: bool = True) -> None:
         super().__init__()

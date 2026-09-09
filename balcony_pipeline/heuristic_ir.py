@@ -2,11 +2,11 @@
 
 Each crop gets a BDSL JSON IR. Majority vote uses balcony_view (discrete only).
 Which axes are inferred/voted is controlled by ``recovery_profile`` (default
-``railing_only``). Railing recovery classes are ``baluster`` | ``solid`` only
-(vertical members vs opaque panel/parapet); ``glass`` is never chosen.
-Disabled axes use fixed defaults and are omitted from the fingerprint.
-Railing kind (``baluster`` | ``solid``) comes from a trained classifier when
-``rail_kind_override`` is set (see ``balcony_train`` + ``checkpoints/railing_best.pt``).
+``railing_only``). Railing recovery classes are ``open_work`` |
+``surface_panel`` | ``solid``. Disabled axes use fixed defaults and are
+omitted from the fingerprint.
+Railing kind comes from a trained classifier when ``rail_kind_override`` is
+set (see ``balcony_train`` + ``checkpoints/railing_best.pt``).
 Otherwise the top 50% crop band heuristic: horizontal opaque run, vertical
 thickness, uniform luminance (max−min ≤ ``RAILING_SOLID_UNIFORM_RANGE``).
 Previous edge/CV rules are off.
@@ -24,21 +24,20 @@ from recovery_profile import FIXED_DEFAULTS, resolve_profile
 
 
 def railing_kind_from_ir(ir: dict[str, Any]) -> str:
-    """Recovery railing class from a BDSL IR dict (baluster | solid)."""
+    """Recovery railing class from a BDSL IR dict."""
     return _rail_kind((ir.get("railing") or {}).get("kind"))
 
 
 def _rail_kind(raw: Any) -> str:
-    """Normalize railing kind for recovery (baluster | solid only)."""
-    k = str(raw or "baluster").strip().lower()
-    if k in ("metal", "baluster"):
-        return "baluster"
+    """Normalize railing kind for recovery (3 infill types)."""
+    k = str(raw or "open_work").strip().lower()
+    if k in ("open_work", "openwork", "metal", "baluster", "lined_panel", "line_panel"):
+        return "open_work"
+    if k in ("surface_panel", "glass"):
+        return "surface_panel"
     if k in ("solid", "panel", "parapet", "concrete"):
         return "solid"
-    # glass and unknowns: not a recovery class — treat as solid (opaque face)
-    if k == "glass":
-        return "solid"
-    return "baluster"
+    return "open_work"
 
 
 # --- Active: thick horizontal opaque face (top-half band) ---
@@ -158,7 +157,7 @@ def _railing_has_solid_patch(
 
 def _infer_rail_kind(*, has_qualifying_solid_patch: bool) -> str:
     """Solid when a thick, uniform horizontal opaque face exists in the band."""
-    return "solid" if has_qualifying_solid_patch else "baluster"
+    return "solid" if has_qualifying_solid_patch else "open_work"
 
 
 # --- Callout: previous edge / CV helpers (temporarily unused) ---
@@ -309,7 +308,7 @@ def infer_balcony_ir(
                 has_qualifying_solid_patch=_railing_has_solid_patch(band),
             )
     else:
-        rail_kind = "baluster"
+        rail_kind = "open_work"
 
     if p.get("supports"):
         supports_count = 4 if structure == "free_standing" else 0
@@ -318,6 +317,13 @@ def infer_balcony_ir(
 
     depth = max(0.4, min(1.6, 0.8 * (bh / max(bw, 1.0))))
     width = max(0.8, bw / max(iw, 1) * 12.0)
+
+    if rail_kind == "solid":
+        rail_t = 0.20
+    elif rail_kind == "surface_panel":
+        rail_t = 0.025
+    else:
+        rail_t = 0.04
 
     ir: dict[str, Any] = {
         "type": "balcony",
@@ -332,7 +338,7 @@ def infer_balcony_ir(
         "glazing": None,
         "output": {
             "slab_thickness": 0.20 if enclosure == "enclosed" else 0.12,
-            "railing_thickness": 0.20 if rail_kind == "solid" else 0.04,
+            "railing_thickness": rail_t,
         },
     }
     if enclosure != "enclosed" or p.get("railing"):

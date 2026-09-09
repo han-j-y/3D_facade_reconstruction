@@ -1,4 +1,4 @@
-"""Train Linear(384, 2) on frozen DINOv2 features. Saves checkpoints/railing_best.pt."""
+"""Train Linear(384, n_classes) on frozen DINOv2 features. Saves checkpoints/railing_best.pt."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--refresh-split",
         action="store_true",
-        help="recompute stratified split.json (e.g. after adding solid images)",
+        help="recompute stratified split.json (e.g. after adding labeled images)",
     )
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument(
@@ -113,11 +113,10 @@ def main() -> None:
     load_backbone(model, device)
     model.head.train()
     opt = torch.optim.Adam(model.head.parameters(), lr=args.lr)
-    n_baluster = train_counts["baluster"]
-    n_solid = train_counts["solid"]
-    n = max(n_baluster + n_solid, 1)
+    n = max(sum(int(train_counts[c]) for c in CLASSES), 1)
+    k = max(len(CLASSES), 1)
     weight = torch.tensor(
-        [n / (2 * max(n_baluster, 1)), n / (2 * max(n_solid, 1))],
+        [n / (k * max(int(train_counts[c]), 1)) for c in CLASSES],
         dtype=torch.float32,
         device=device,
     )

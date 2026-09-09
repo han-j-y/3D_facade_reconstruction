@@ -25,12 +25,12 @@ from balcony_train.splits import (  # noqa: E402
 
 
 class StratifiedSplitTests(unittest.TestCase):
-    def _fake_samples(self, n_baluster: int, n_solid: int):
+    def _fake_samples(self, n_open_work: int, n_solid: int):
         rows = []
-        for i in range(n_baluster):
-            rows.append((Path(f"baluster/b{i:03d}.png"), 0))
+        for i in range(n_open_work):
+            rows.append((Path(f"open_work/b{i:03d}.png"), 0))
         for i in range(n_solid):
-            rows.append((Path(f"solid/s{i:03d}.png"), 1))
+            rows.append((Path(f"solid/s{i:03d}.png"), 2))
         return rows
 
     def test_8_1_1_counts(self) -> None:
@@ -46,7 +46,7 @@ class StratifiedSplitTests(unittest.TestCase):
         fold = stratified_split_indices(samples, seed=7)
         for name in ("train", "val", "test"):
             labels = {samples[i][1] for i in fold[name]}
-            self.assertEqual(labels, {0, 1}, msg=name)
+            self.assertEqual(labels, {0, 2}, msg=name)
 
     def test_save_load_roundtrip(self) -> None:
         samples = self._fake_samples(18, 7)

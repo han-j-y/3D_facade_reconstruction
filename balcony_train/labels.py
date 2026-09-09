@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-CLASSES: tuple[str, str] = ("baluster", "solid")
+CLASSES: tuple[str, ...] = ("open_work", "surface_panel", "solid")
+# Material only applies when kind == open_work (mesh proportions).
+MATERIALS: tuple[str, ...] = ("metal", "masonry")
 
 # Labeled crop image extensions (case-insensitive on Windows).
 LABELED_IMAGE_SUFFIXES: tuple[str, ...] = (".png", ".jpg", ".jpeg", ".webp")
@@ -18,7 +20,7 @@ def class_index(name: str) -> int:
 
 
 def iter_labeled_samples(crops_dir: Path) -> list[tuple[Path, int]]:
-    """Image paths under solid/ and baluster/ with class indices."""
+    """Image paths under each CLASSES folder with class indices."""
     rows: list[tuple[Path, int]] = []
     for name in CLASSES:
         folder = Path(crops_dir) / name

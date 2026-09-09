@@ -15,7 +15,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from balcony_train.collect import _dest_name, collect_crops  # noqa: E402
-from balcony_train.labels import class_counts, ensure_crop_dirs, iter_labeled_samples  # noqa: E402
+from balcony_train.labels import (  # noqa: E402
+    class_counts,
+    class_index,
+    ensure_crop_dirs,
+    iter_labeled_samples,
+)
 
 
 def _png(path: Path, color: tuple[int, int, int] = (10, 20, 30)) -> None:
@@ -53,12 +58,19 @@ class DatasetFolderTests(unittest.TestCase):
             ensure_crop_dirs(crops)
             _png(crops / "unlabeled" / "x.png")
             _png(crops / "solid" / "a.png", (20, 20, 20))
-            _png(crops / "baluster" / "b.png", (30, 30, 30))
+            _png(crops / "open_work" / "b.png", (30, 30, 30))
             samples = iter_labeled_samples(crops)
-            self.assertEqual(class_counts(samples), {"baluster": 1, "solid": 1})
+            self.assertEqual(
+                class_counts(samples),
+                {
+                    "open_work": 1,
+                    "surface_panel": 0,
+                    "solid": 1,
+                },
+            )
             labels = {p.name: i for p, i in samples}
-            self.assertEqual(labels["b.png"], 0)
-            self.assertEqual(labels["a.png"], 1)
+            self.assertEqual(labels["b.png"], class_index("open_work"))
+            self.assertEqual(labels["a.png"], class_index("solid"))
 
     def test_iter_labeled_includes_jpeg_and_webp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -66,11 +78,15 @@ class DatasetFolderTests(unittest.TestCase):
             ensure_crop_dirs(crops)
             _png(crops / "solid" / "a.png")
             Image.new("RGB", (8, 8), (1, 2, 3)).save(crops / "solid" / "b.jpg")
-            Image.new("RGB", (8, 8), (4, 5, 6)).save(crops / "baluster" / "c.jpeg")
-            Image.new("RGB", (8, 8), (7, 8, 9)).save(crops / "baluster" / "d.webp")
+            Image.new("RGB", (8, 8), (4, 5, 6)).save(crops / "open_work" / "c.jpeg")
+            Image.new("RGB", (8, 8), (7, 8, 9)).save(crops / "open_work" / "d.webp")
             self.assertEqual(
                 class_counts(iter_labeled_samples(crops)),
-                {"baluster": 2, "solid": 2},
+                {
+                    "open_work": 2,
+                    "surface_panel": 0,
+                    "solid": 2,
+                },
             )
 
 

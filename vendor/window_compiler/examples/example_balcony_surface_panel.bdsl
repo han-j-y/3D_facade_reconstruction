@@ -1,0 +1,7 @@
+# Projecting open balcony — framed surface panels (60 mm mullions, 25 mm infill)
+
+balcony rectangle(width=2.0, depth=1.5)
+
+structure projecting
+enclosure open
+railing surface_panel height 1.1

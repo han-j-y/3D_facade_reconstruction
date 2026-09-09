@@ -40,7 +40,7 @@ class RailingOnlyProfileTests(unittest.TestCase):
             },
             profile_name="railing_only",
         )
-        self.assertEqual(view, {"railing_kind": "baluster"})
+        self.assertEqual(view, {"railing_kind": "open_work"})
 
     def test_infer_fixed_axes(self) -> None:
         crop = Image.new("RGB", (64, 48), (200, 200, 200))
@@ -54,7 +54,7 @@ class RailingOnlyProfileTests(unittest.TestCase):
         self.assertEqual(ir["enclosure"], FIXED_DEFAULTS["enclosure"])
         self.assertEqual(ir["floor"]["shape"], FIXED_DEFAULTS["floor_shape"])
         self.assertEqual(ir["supports"]["count"], FIXED_DEFAULTS["supports_count"])
-        self.assertIn(ir["railing"]["kind"], ("baluster", "solid"))
+        self.assertIn(ir["railing"]["kind"], ("open_work", "solid"))
         self.assertNotEqual(ir["railing"]["kind"], "glass")
         toks = ir_to_tokens(ir, profile_name="railing_only")
         self.assertEqual(toks[0], "BALCONY")
@@ -72,14 +72,14 @@ class RailingOnlyProfileTests(unittest.TestCase):
         uniform = np.full((h, w), 200.0, dtype=np.float32)
         band = uniform[:top]
 
-        # Flat band with no opaque texture → baluster.
+        # Flat band with no opaque texture → open_work.
         self.assertFalse(_railing_has_solid_patch(band))
         self.assertEqual(
             _infer_rail_kind(has_qualifying_solid_patch=False),
-            "baluster",
+            "open_work",
         )
 
-        # Thin vertical bars → short horizontal runs → baluster.
+        # Thin vertical bars → short horizontal runs → open_work.
         baluster_gray = uniform.copy()
         for x in range(0, w, 8):
             baluster_gray[:top, x : min(x + 3, w)] = 40.0
@@ -93,7 +93,7 @@ class RailingOnlyProfileTests(unittest.TestCase):
                 image_size=(400, 300),
                 profile_name="railing_only",
             )["railing"]["kind"],
-            "baluster",
+            "open_work",
         )
 
         # Thin horizontal handrail: long run but vertical thickness < 5 → baluster.
@@ -134,12 +134,34 @@ class RailingOnlyProfileTests(unittest.TestCase):
         run = _railing_max_opaque_run(band)
         self.assertGreaterEqual(run, 20)
 
-    def test_glass_maps_to_solid_in_view(self) -> None:
+    def test_glass_maps_to_surface_panel_in_view(self) -> None:
         view = balcony_view(
             {"railing": {"kind": "glass"}, "floor": {}, "supports": {}},
             profile_name="railing_only",
         )
-        self.assertEqual(view["railing_kind"], "solid")
+        self.assertEqual(view["railing_kind"], "surface_panel")
+
+    def test_three_rail_kinds_pass_through_view(self) -> None:
+        for kind in ("open_work", "surface_panel", "solid"):
+            view = balcony_view(
+                {"railing": {"kind": kind}, "floor": {}, "supports": {}},
+                profile_name="railing_only",
+            )
+            self.assertEqual(view["railing_kind"], kind, msg=kind)
+        self.assertEqual(
+            balcony_view(
+                {"railing": {"kind": "baluster"}, "floor": {}, "supports": {}},
+                profile_name="railing_only",
+            )["railing_kind"],
+            "open_work",
+        )
+        self.assertEqual(
+            balcony_view(
+                {"railing": {"kind": "lined_panel"}, "floor": {}, "supports": {}},
+                profile_name="railing_only",
+            )["railing_kind"],
+            "open_work",
+        )
 
     def test_full_profile_includes_structure(self) -> None:
         p = resolve_profile("full")
@@ -165,10 +187,13 @@ class RailingOnlyProfileTests(unittest.TestCase):
             profile_name="railing_only",
         )
         heuristic = infer_balcony_ir(crop, **kwargs)
-        self.assertEqual(heuristic["railing"]["kind"], "baluster")
+        self.assertEqual(heuristic["railing"]["kind"], "open_work")
         forced = infer_balcony_ir(crop, rail_kind_override="solid", **kwargs)
         self.assertEqual(forced["railing"]["kind"], "solid")
         self.assertEqual(forced["output"]["railing_thickness"], 0.20)
+        panel = infer_balcony_ir(crop, rail_kind_override="surface_panel", **kwargs)
+        self.assertEqual(panel["railing"]["kind"], "surface_panel")
+        self.assertEqual(panel["output"]["railing_thickness"], 0.025)
 
 
 if __name__ == "__main__":

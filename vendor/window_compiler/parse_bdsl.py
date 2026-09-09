@@ -27,8 +27,15 @@ _PANE_WRAP = re.compile(r"^pane\((.+)\)$", re.I)
 FLOOR_SHAPES = frozenset({"rectangle", "circle", "triangle"})
 STRUCTURES = frozenset({"projecting", "inset", "composite", "free_standing"})
 ENCLOSURES = frozenset({"open", "enclosed"})
-RAIL_KINDS = frozenset({"baluster", "solid", "glass"})
-RAIL_ALIASES = {"metal": "baluster"}
+RAIL_KINDS = frozenset({"open_work", "surface_panel", "solid"})
+RAIL_ALIASES = {
+    "metal": "open_work",
+    "baluster": "open_work",
+    "openwork": "open_work",
+    "lined_panel": "open_work",
+    "line_panel": "open_work",
+    "glass": "surface_panel",
+}
 OPENINGS = frozenset({"door", "window", "none"})
 BLOCK_NAMES = frozenset({"floor", "railing", "supports", "glazing", "output"})
 
@@ -41,7 +48,7 @@ def parse_bdsl(text: str) -> dict[str, Any]:
         "structure": "projecting",
         "enclosure": "open",
         "floor": {"shape": "rectangle", "params": {"width": 1.0, "depth": 0.8}},
-        "railing": {"kind": "baluster", "height": 1.1},
+        "railing": {"kind": "open_work", "height": 1.1},
         "supports": {"count": 0},
         "opening": "door",
         "glazing": None,
@@ -89,6 +96,9 @@ def parse_bdsl(text: str) -> dict[str, Any]:
         raise ValueError("BDSL requires a balcony line")
     if ir["enclosure"] != "enclosed":
         ir["glazing"] = None
+    ir["railing"]["kind"] = _normalize_rail_kind(
+        str((ir.get("railing") or {}).get("kind") or "open_work")
+    )
     return ir
 
 

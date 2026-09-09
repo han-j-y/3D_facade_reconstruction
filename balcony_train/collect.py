@@ -13,7 +13,7 @@ ROOT = HERE.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from balcony_train.labels import ensure_crop_dirs  # noqa: E402
+from balcony_train.labels import CLASSES, ensure_crop_dirs  # noqa: E402
 from balcony_train.paths import BATCH_RUNS_DIR, DEFAULT_CROPS_DIR  # noqa: E402
 
 
@@ -68,7 +68,7 @@ def collect_crops(
     seen_hash: set[str] = set()
     for existing in dest_dir.glob("*.png"):
         seen_hash.add(_file_md5(existing))
-    for name in ("baluster", "solid"):
+    for name in CLASSES:
         labeled = Path(crops_dir) / name
         if labeled.is_dir():
             for existing in labeled.glob("*.png"):
@@ -102,7 +102,7 @@ def parse_args() -> argparse.Namespace:
         "--crops-dir",
         type=Path,
         default=DEFAULT_CROPS_DIR,
-        help="label folders: unlabeled/ solid/ baluster/",
+        help="label folders: unlabeled/ plus one folder per CLASSES name",
     )
     return ap.parse_args()
 
@@ -113,7 +113,7 @@ def main() -> None:
     print(
         f"copied={stats['copied']} skipped_dup={stats['skipped']} -> {stats['dest']}"
     )
-    print("Move PNGs from unlabeled/ into solid/ or baluster/, then run train.py")
+    print("Move PNGs from unlabeled/ into a CLASSES folder, then run train.py")
 
 
 if __name__ == "__main__":
