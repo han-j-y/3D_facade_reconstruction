@@ -46,12 +46,13 @@ string          = '"', { ? any char except '"' ? }, '"'
 
 (* Args by plan (parser defaults in parentheses):
 
-     rectangle(width, depth)              (1.0, 0.8)   aliases: w, d
+     rectangle(width, depth)              (1.0, 1.5)   aliases: w, d
      rectangle(width, depth, height=2.5)  height = inset void (floor to ceiling)
-     circle(diameter, depth)              (1.0, 0.8)   plan ≈ semicircle; depth = projection
-     triangle(width, depth)               (1.0, 0.8)
+     circle(diameter, depth)              (1.0, 1.5)   plan ≈ semicircle; depth = projection
+     triangle(width, depth)               (1.0, 1.5)
 
    Extra plan flags may go in floor_block (e.g. triangle kind).
+   Photo recovery / façade compile force slab depth = 1.5 m for all balconies.
 *)
 
 (* ——— structure: how the slab meets the wall ——— *)
@@ -99,8 +100,13 @@ railing_field   = "kind", ws, rail_kind
                 | "height", ws, scalar
                 | "material", ws, ident ;
 (* default: open_work, height=1.1.  height is continuous (dropped from vote fingerprint)
-   open_work     — ~20 mm Ø rods at ~100 mm spacing, 50 mm Ø top pipe
-                   aliases: baluster, metal
+   open_work     — material metal (default): ~20 mm Ø rods at ~100 mm, 50 mm Ø top pipe
+                   material masonry: 250 mm square posts, φ150 balusters with 100 mm
+                   clear gaps (centered under the rail), 300×150 top rail; assembly
+                   inset 150 mm from slab edge (shared U-frame, one post per corner);
+                   front rail extends to the slab left/right edges; side rails
+                   trimmed at front (no corner notch)
+                   aliases: baluster; bare `metal` → open_work (legacy)
    surface_panel — 60×60 mm mullion frames, 25 mm infill, ~1 m bays, U open at wall
                    alias: glass
    solid         — 200 mm parapet (rectangle: 3-sided U, open at the wall)
@@ -141,7 +147,8 @@ output_block    = "output:", nl, { ws, ident, ws, scalar, nl } ;
 
   BDSL is a subset of this JSON. Photo majority-vote uses a discrete
   fingerprint selected by recovery_profile (default railing_only:
-  railing.kind in {open_work, surface_panel, solid}). Disabled axes use fixed
+  railing.kind in {open_work, surface_panel, solid}; for open_work also
+  railing.material in {metal, masonry}). Disabled axes use fixed
   (structure=projecting, enclosure=open, floor=rectangle, supports=0)
   and are omitted from the vote key — flip the profile to bring them back.
   Floor×bay and wall window/door come from the window FDSL grid.

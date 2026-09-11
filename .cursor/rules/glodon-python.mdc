@@ -14,7 +14,7 @@ Do not use `python`, `py`, Anaconda `base`, `dtsc670`, `dtsc680`, or
 
 ```powershell
 C:\Users\hiroo\anaconda3\envs\glodon\python.exe script.py
-C:\Users\hiroo\anaconda3\envs\glodon\python.exe -m pip install -r requirements-sdxl.txt
+C:\Users\hiroo\anaconda3\envs\glodon\python.exe -m pip install -r requirements-flux2.txt
 ```
 
 Install packages only with that interpreter's `-m pip`.

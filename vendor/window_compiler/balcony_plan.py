@@ -14,9 +14,70 @@ BALUSTER_SPACING_M = 0.10
 BALUSTER_DIAMETER_M = 0.02
 TOP_RAIL_DIAMETER_M = 0.05
 
+# Default projecting slab depth for all balcony types (meters).
+DEFAULT_SLAB_DEPTH_M = 1.5
+
+# open_work + material=masonry catalog proportions (meters).
+MASONRY_POST_M = 0.25
+MASONRY_BALUSTER_DIAMETER_M = 0.15
+# Clear gap between baluster faces; center pitch = diameter + gap.
+MASONRY_BALUSTER_GAP_M = 0.10
+MASONRY_BALUSTER_SPACING_M = MASONRY_BALUSTER_DIAMETER_M + MASONRY_BALUSTER_GAP_M
+MASONRY_TOP_RAIL_WIDTH_M = 0.30
+MASONRY_TOP_RAIL_HEIGHT_M = 0.15
+# Inset entire masonry railing (posts + balusters + top rail) from slab edge.
+MASONRY_RAIL_INSET_M = 0.15
+
 CIRCLE_ARC_STEPS = 24
 
 Point = tuple[float, float]
+
+
+def masonry_inset_rail_frame(
+    outline: Sequence[Point],
+    y_wall: float,
+    inset: float,
+    *,
+    front_only: bool = False,
+) -> tuple[list[Point], list[tuple[Point, Point]]]:
+    """Inset open-U rail frame with shared corners (one post per corner).
+
+    Returns ``(corners, edges)``. Corners are unique; edges share those
+    points so front/side meet at a single post. Front/side are inset from the
+    slab perimeter; side runs reach the wall (no wall-side gap).
+    """
+    inset = max(0.0, float(inset))
+    if len(outline) < 2:
+        return [], []
+    xs = [float(p[0]) for p in outline]
+    ys = [float(p[1]) for p in outline]
+    x0, x1 = min(xs), max(xs)
+    yw = float(y_wall)
+    y_front = max(ys, key=lambda y: abs(y - yw))
+    outward = 1.0 if y_front >= yw else -1.0
+    depth = abs(y_front - yw)
+    if x1 - x0 < 2.0 * inset + 0.05 or depth < inset + 0.05:
+        inset = 0.0
+    xi0 = x0 + inset
+    xi1 = x1 - inset
+    yf = y_front - outward * inset
+    # Sides keep the lateral inset but run all the way to the wall (no wall gap).
+    yw_end = yw
+
+    if front_only:
+        corners = [(xi0, yf), (xi1, yf)]
+        edges = [((xi0, yf), (xi1, yf))]
+        return corners, edges
+
+    fl, fr = (xi0, yf), (xi1, yf)
+    bl, br = (xi0, yw_end), (xi1, yw_end)
+    corners = [bl, fl, fr, br]
+    edges = [
+        (bl, fl),
+        (fl, fr),
+        (fr, br),
+    ]
+    return corners, edges
 
 
 def slab_outline(
@@ -154,6 +215,90 @@ def spaced_count(length: float, spacing: float = BALUSTER_SPACING_M) -> int:
         return 0
     n_gaps = max(1, int(round(length / max(1e-6, spacing))))
     return n_gaps + 1
+
+
+def shorten_segment_end(
+    p0: Point,
+    p1: Point,
+    *,
+    trim0: float = 0.0,
+    trim1: float = 0.0,
+) -> tuple[Point, Point] | None:
+    """Trim ends of segment along its length. None if nothing remains."""
+    dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+    length = math.hypot(dx, dy)
+    if length < 1e-9:
+        return None
+    ux, uy = dx / length, dy / length
+    t0 = max(0.0, float(trim0))
+    t1 = max(0.0, float(trim1))
+    if t0 + t1 >= length - 1e-9:
+        return None
+    a = (p0[0] + ux * t0, p0[1] + uy * t0)
+    b = (p1[0] - ux * t1, p1[1] - uy * t1)
+    return a, b
+
+
+def extend_segment_ends(
+    p0: Point,
+    p1: Point,
+    *,
+    ext0: float = 0.0,
+    ext1: float = 0.0,
+) -> tuple[Point, Point]:
+    """Grow both ends of a segment along its direction."""
+    dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+    length = math.hypot(dx, dy)
+    if length < 1e-9:
+        return p0, p1
+    ux, uy = dx / length, dy / length
+    e0 = max(0.0, float(ext0))
+    e1 = max(0.0, float(ext1))
+    return (p0[0] - ux * e0, p0[1] - uy * e0), (p1[0] + ux * e1, p1[1] + uy * e1)
+
+
+def masonry_baluster_centers(
+    p0: Point,
+    p1: Point,
+    *,
+    end_clear: float,
+    pitch: float,
+) -> list[Point]:
+    """Centers on the rail centerline, fixed pitch, group centered in the clear span."""
+    dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+    length = math.hypot(dx, dy)
+    if length < 1e-9 or pitch <= 1e-9:
+        return []
+    clear = length - 2.0 * float(end_clear)
+    if clear < 1e-6:
+        return []
+    # n centers with (n-1)*pitch <= clear, centered in the clear span.
+    n = max(1, int(math.floor(clear / pitch + 1e-9)) + 1)
+    while n > 1 and (n - 1) * pitch > clear + 1e-9:
+        n -= 1
+    span = 0.0 if n == 1 else (n - 1) * pitch
+    start = float(end_clear) + 0.5 * (clear - span)
+    ux, uy = dx / length, dy / length
+    return [
+        (p0[0] + ux * (start + i * pitch), p0[1] + uy * (start + i * pitch))
+        for i in range(n)
+    ]
+
+
+def is_front_edge(
+    p0: Point,
+    p1: Point,
+    y_wall: float,
+    *,
+    atol: float = 1e-4,
+) -> bool:
+    """True for the outward front run (both ends share front Y, off the wall).
+
+    Side edges run toward the wall (different Y) and must not match.
+    """
+    if abs(p0[1] - p1[1]) > max(atol, 1e-3):
+        return False
+    return abs(p0[1] - y_wall) > atol and abs(p1[1] - y_wall) > atol
 
 
 def even_along_polyline(points: Sequence[Point], n: int) -> list[Point]:

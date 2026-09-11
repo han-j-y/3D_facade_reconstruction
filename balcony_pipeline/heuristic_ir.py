@@ -3,10 +3,11 @@
 Each crop gets a BDSL JSON IR. Majority vote uses balcony_view (discrete only).
 Which axes are inferred/voted is controlled by ``recovery_profile`` (default
 ``railing_only``). Railing recovery classes are ``open_work`` |
-``surface_panel`` | ``solid``. Disabled axes use fixed defaults and are
-omitted from the fingerprint.
-Railing kind comes from a trained classifier when ``rail_kind_override`` is
-set (see ``balcony_train`` + ``checkpoints/railing_best.pt``).
+``surface_panel`` | ``solid``. For ``open_work``, ``material`` is
+``metal`` | ``masonry`` (classifier when available; else ``metal``).
+Disabled axes use fixed defaults and are omitted from the fingerprint.
+Railing kind/material come from a trained multitask classifier when overrides
+are set (see ``balcony_train`` + ``checkpoints/railing_best.pt``).
 Otherwise the top 50% crop band heuristic: horizontal opaque run, vertical
 thickness, uniform luminance (max−min ≤ ``RAILING_SOLID_UNIFORM_RANGE``).
 Previous edge/CV rules are off.
@@ -28,16 +29,42 @@ def railing_kind_from_ir(ir: dict[str, Any]) -> str:
     return _rail_kind((ir.get("railing") or {}).get("kind"))
 
 
+def railing_material_from_ir(ir: dict[str, Any]) -> str | None:
+    """open_work material (metal|masonry) or None for other kinds."""
+    kind = railing_kind_from_ir(ir)
+    if kind != "open_work":
+        return None
+    return _rail_material((ir.get("railing") or {}).get("material"))
+
+
+def balcony_type_token(ir: dict[str, Any]) -> str:
+    """Type name stem: open_work_metal / open_work_masonry / surface_panel / solid."""
+    kind = railing_kind_from_ir(ir)
+    if kind == "open_work":
+        return f"open_work_{railing_material_from_ir(ir) or 'metal'}"
+    return kind
+
+
 def _rail_kind(raw: Any) -> str:
     """Normalize railing kind for recovery (3 infill types)."""
     k = str(raw or "open_work").strip().lower()
-    if k in ("open_work", "openwork", "metal", "baluster", "lined_panel", "line_panel"):
+    if k in ("open_work", "openwork", "baluster", "lined_panel", "line_panel"):
+        return "open_work"
+    # Legacy BDSL: bare ``railing metal`` meant open_work (material now separate).
+    if k == "metal":
         return "open_work"
     if k in ("surface_panel", "glass"):
         return "surface_panel"
     if k in ("solid", "panel", "parapet", "concrete"):
         return "solid"
     return "open_work"
+
+
+def _rail_material(raw: Any) -> str:
+    m = str(raw or "metal").strip().lower()
+    if m in ("masonry", "stone", "concrete_post"):
+        return "masonry"
+    return "metal"
 
 
 # --- Active: thick horizontal opaque face (top-half band) ---
@@ -212,6 +239,8 @@ def balcony_view(
         view["floor_shape"] = floor.get("shape")
     if p.get("railing"):
         view["railing_kind"] = _rail_kind(railing.get("kind"))
+        if view["railing_kind"] == "open_work":
+            view["railing_material"] = _rail_material(railing.get("material"))
     if p.get("supports"):
         view["supports_count"] = int(supports.get("count") or 0)
     return view
@@ -234,7 +263,10 @@ def ir_to_tokens(
     if p.get("enclosure"):
         toks.append(f"enclosure={ir.get('enclosure')}")
     if p.get("railing"):
-        toks.append(f"railing={_rail_kind(railing.get('kind'))}")
+        kind = _rail_kind(railing.get("kind"))
+        toks.append(f"railing={kind}")
+        if kind == "open_work":
+            toks.append(f"material={_rail_material(railing.get('material'))}")
     if p.get("supports"):
         toks.append(f"supports={int((ir.get('supports') or {}).get('count') or 0)}")
     return toks
@@ -251,10 +283,13 @@ def infer_balcony_ir(
     image_size: tuple[int, int],
     profile_name: str | None = None,
     rail_kind_override: str | None = None,
+    rail_material_override: str | None = None,
 ) -> dict[str, Any]:
     """Appearance cues → BDSL IR. Disabled axes use FIXED_DEFAULTS.
 
-    ``rail_kind_override`` skips the opaque-run heuristic (classifier or tests).
+    ``rail_kind_override`` / ``rail_material_override`` skip the opaque-run
+    heuristic (classifier or tests). Material applies only when kind is
+    ``open_work`` (default ``metal``).
     """
     p = resolve_profile(profile_name)
     arr = _to_np(crop)
@@ -310,12 +345,20 @@ def infer_balcony_ir(
     else:
         rail_kind = "open_work"
 
+    if rail_kind == "open_work":
+        if rail_material_override is not None:
+            rail_material = _rail_material(rail_material_override)
+        else:
+            rail_material = "metal"
+    else:
+        rail_material = None
+
     if p.get("supports"):
         supports_count = 4 if structure == "free_standing" else 0
     else:
         supports_count = int(FIXED_DEFAULTS["supports_count"])
 
-    depth = max(0.4, min(1.6, 0.8 * (bh / max(bw, 1.0))))
+    depth = 1.5
     width = max(0.8, bw / max(iw, 1) * 12.0)
 
     if rail_kind == "solid":
@@ -342,5 +385,8 @@ def infer_balcony_ir(
         },
     }
     if enclosure != "enclosed" or p.get("railing"):
-        ir["railing"] = {"kind": rail_kind, "height": 1.1}
+        railing: dict[str, Any] = {"kind": rail_kind, "height": 1.1}
+        if rail_material is not None:
+            railing["material"] = rail_material
+        ir["railing"] = railing
     return ir

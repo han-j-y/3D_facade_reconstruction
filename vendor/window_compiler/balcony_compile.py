@@ -12,20 +12,33 @@ from mathutils import Vector
 from balcony_plan import (  # noqa: E402
     BALUSTER_DIAMETER_M,
     BALUSTER_SPACING_M,
+    DEFAULT_SLAB_DEPTH_M,
     ENCLOSED_CLEAR_H_M,
+    MASONRY_BALUSTER_DIAMETER_M,
+    MASONRY_BALUSTER_GAP_M,
+    MASONRY_BALUSTER_SPACING_M,
+    MASONRY_POST_M,
+    MASONRY_RAIL_INSET_M,
+    MASONRY_TOP_RAIL_HEIGHT_M,
+    MASONRY_TOP_RAIL_WIDTH_M,
     MULLION_SPACING_M,
     MULLION_WIDTH_M,
     SURFACE_PANEL_M,
     TOP_RAIL_DIAMETER_M,
     centroid,
     even_along_polyline,
+    extend_segment_ends,
     glass_bays,
     grid_stations,
     inset_edge,
     inset_point,
+    is_front_edge,
+    masonry_baluster_centers,
+    masonry_inset_rail_frame,
     outer_edges,
     polyline_length,
     rect_corner_posts,
+    shorten_segment_end,
     slab_outline,
     spaced_count,
     support_polyline,
@@ -465,6 +478,13 @@ def _rail_kind(raw: str) -> str:
     return "open_work"
 
 
+def _rail_material(raw: Any) -> str:
+    m = str(raw or "metal").strip().lower()
+    if m in ("masonry", "stone", "concrete_post"):
+        return "masonry"
+    return "metal"
+
+
 def _add_baluster_guard(
     *,
     prefix: str,
@@ -517,6 +537,141 @@ def _add_baluster_guard(
             parent=parent,
             vertices=16,
         )
+
+
+def _add_masonry_openwork_guard(
+    *,
+    prefix: str,
+    outline: list[tuple[float, float]],
+    y_wall: float,
+    z_slab_top: float,
+    rail_h: float,
+    parent: bpy.types.Collection,
+    mat_key: str = "slab",
+    front_only: bool = False,
+) -> None:
+    """Masonry open_work: 250 mm posts, φ150 balusters (100 mm gaps), 300×150 top rail.
+
+    Builds one inset open-U frame (shared corners) so each corner has a single
+    post. Front top rail spans to the slab left/right edges; side rails butt
+    the front rail (no corner notch).
+    """
+    if len(outline) < 2:
+        return
+    post = float(MASONRY_POST_M)
+    half_post = post / 2.0
+    bal_r = float(MASONRY_BALUSTER_DIAMETER_M) / 2.0
+    pitch = float(MASONRY_BALUSTER_SPACING_M)
+    top_w = float(MASONRY_TOP_RAIL_WIDTH_M)
+    top_h = float(MASONRY_TOP_RAIL_HEIGHT_M)
+    rail_inset = float(MASONRY_RAIL_INSET_M)
+    clear_h = max(0.2, float(rail_h) - top_h)
+    z_post_top = z_slab_top + clear_h
+    z_rail0 = z_post_top
+    z_rail1 = z_rail0 + top_h
+    half_rail = top_w / 2.0
+
+    corners, edges = masonry_inset_rail_frame(
+        outline, y_wall, rail_inset, front_only=front_only
+    )
+    if not edges:
+        return
+
+    for i, (x, y) in enumerate(corners):
+        _cube(
+            name=f"{prefix}_m_post_{i}",
+            cx=x,
+            cy=y,
+            cz=z_slab_top + clear_h / 2.0,
+            sx=post,
+            sy=post,
+            sz=clear_h,
+            mat_key=mat_key,
+            parent=parent,
+        )
+
+    bal_i = 0
+    for e, (p0, p1) in enumerate(edges):
+        length = math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+        if length < post + 0.05:
+            continue
+        front = front_only or is_front_edge(p0, p1, y_wall)
+        if front:
+            # Span inset post centers, then continue to the slab left/right edges.
+            rail_seg = extend_segment_ends(
+                p0, p1, ext0=rail_inset, ext1=rail_inset
+            )
+        else:
+            # Stop at the inner face of the front rail (plus a hairline gap).
+            trim = half_rail + 1e-3
+            d0 = abs(p0[1] - y_wall)
+            d1 = abs(p1[1] - y_wall)
+            if d1 >= d0:
+                rail_seg = shorten_segment_end(p0, p1, trim0=0.0, trim1=trim)
+            else:
+                rail_seg = shorten_segment_end(p0, p1, trim0=trim, trim1=0.0)
+        if rail_seg is not None:
+            _box_along_xy(
+                name=f"{prefix}_m_top_{e}",
+                p0=rail_seg[0],
+                p1=rail_seg[1],
+                z_lo=z_rail0,
+                z_hi=z_rail1,
+                thickness=top_w,
+                mat_key=mat_key,
+                parent=parent,
+            )
+
+        end_clear = half_post + bal_r + float(MASONRY_BALUSTER_GAP_M) * 0.5
+        for x, y in masonry_baluster_centers(
+            p0, p1, end_clear=end_clear, pitch=pitch
+        ):
+            _cylinder_between(
+                name=f"{prefix}_m_bal_{bal_i}",
+                p0=(x, y, z_slab_top),
+                p1=(x, y, z_post_top),
+                radius=bal_r,
+                mat_key=mat_key,
+                parent=parent,
+                vertices=16,
+            )
+            bal_i += 1
+
+
+def _add_open_work_guard(
+    *,
+    prefix: str,
+    outline: list[tuple[float, float]],
+    y_wall: float,
+    z_slab_top: float,
+    rail_h: float,
+    parent: bpy.types.Collection,
+    material: str = "metal",
+    mat_key: str = "railing",
+    front_only: bool = False,
+) -> None:
+    if _rail_material(material) == "masonry":
+        _add_masonry_openwork_guard(
+            prefix=prefix,
+            outline=outline,
+            y_wall=y_wall,
+            z_slab_top=z_slab_top,
+            rail_h=rail_h,
+            parent=parent,
+            mat_key="slab",
+            front_only=front_only,
+        )
+        return
+    _add_baluster_guard(
+        prefix=prefix,
+        outline=outline,
+        y_wall=y_wall,
+        z_slab_top=z_slab_top,
+        rail_h=rail_h,
+        parent=parent,
+        mat_key=mat_key,
+        front_only=front_only,
+    )
 
 
 def _add_surface_panel_guard(
@@ -698,10 +853,11 @@ def add_balcony_meshes(
         floor = ir.get("floor") or {}
         params = floor.get("params") or {}
         shape = str(floor.get("shape") or "rectangle").lower()
-        depth = max(0.05, float(params.get("depth") or 0.8))
+        depth = float(DEFAULT_SLAB_DEPTH_M)
         thick = float((ir.get("output") or {}).get("slab_thickness") or 0.12)
         rail_h = float((ir.get("railing") or {}).get("height") or 1.1)
         kind = _rail_kind(str((ir.get("railing") or {}).get("kind") or "open_work"))
+        rail_material = _rail_material((ir.get("railing") or {}).get("material"))
         structure = str(ir.get("structure") or "projecting")
         enclosure = str(ir.get("enclosure") or "open")
 
@@ -715,7 +871,7 @@ def add_balcony_meshes(
         bx0, bx1 = x0 + pad, x1 - pad
 
         prefix = f"Balc_{i}_{name}"
-        if kind == "solid":
+        if kind == "solid" or (kind == "open_work" and rail_material == "masonry"):
             rail_mat = "slab"
         else:
             rail_mat = "railing"
@@ -773,13 +929,14 @@ def add_balcony_meshes(
                     structure="projecting",
                 )
                 if kind == "open_work":
-                    _add_baluster_guard(
+                    _add_open_work_guard(
                         prefix=prefix,
                         outline=proj_outline,
                         y_wall=front_y,
                         z_slab_top=z_floor,
                         rail_h=rail_h,
                         parent=balc_coll,
+                        material=rail_material,
                         mat_key=rail_mat,
                     )
                 elif kind == "surface_panel":
@@ -811,13 +968,14 @@ def add_balcony_meshes(
                         parent=balc_coll,
                     )
             elif kind == "open_work":
-                _add_baluster_guard(
+                _add_open_work_guard(
                     prefix=prefix,
                     outline=[(vx0, front_y), (vx1, front_y)],
                     y_wall=front_y,
                     z_slab_top=z_floor,
                     rail_h=rail_h,
                     parent=balc_coll,
+                    material=rail_material,
                     mat_key=rail_mat,
                     front_only=True,
                 )
@@ -911,13 +1069,14 @@ def add_balcony_meshes(
                     parent=balc_coll,
                 )
         elif kind == "open_work":
-            _add_baluster_guard(
+            _add_open_work_guard(
                 prefix=prefix,
                 outline=outline,
                 y_wall=y_wall,
                 z_slab_top=sill_z + thick,
                 rail_h=rail_h,
                 parent=balc_coll,
+                material=rail_material,
                 mat_key=rail_mat,
             )
         elif kind == "surface_panel" and shape not in {"triangle", "circle"}:

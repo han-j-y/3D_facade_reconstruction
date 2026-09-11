@@ -40,7 +40,9 @@ class RailingOnlyProfileTests(unittest.TestCase):
             },
             profile_name="railing_only",
         )
-        self.assertEqual(view, {"railing_kind": "open_work"})
+        self.assertEqual(
+            view, {"railing_kind": "open_work", "railing_material": "metal"}
+        )
 
     def test_infer_fixed_axes(self) -> None:
         crop = Image.new("RGB", (64, 48), (200, 200, 200))
@@ -148,6 +150,10 @@ class RailingOnlyProfileTests(unittest.TestCase):
                 profile_name="railing_only",
             )
             self.assertEqual(view["railing_kind"], kind, msg=kind)
+            if kind == "open_work":
+                self.assertEqual(view.get("railing_material"), "metal", msg=kind)
+            else:
+                self.assertNotIn("railing_material", view)
         self.assertEqual(
             balcony_view(
                 {"railing": {"kind": "baluster"}, "floor": {}, "supports": {}},
@@ -188,12 +194,22 @@ class RailingOnlyProfileTests(unittest.TestCase):
         )
         heuristic = infer_balcony_ir(crop, **kwargs)
         self.assertEqual(heuristic["railing"]["kind"], "open_work")
+        self.assertEqual(heuristic["railing"]["material"], "metal")
         forced = infer_balcony_ir(crop, rail_kind_override="solid", **kwargs)
         self.assertEqual(forced["railing"]["kind"], "solid")
+        self.assertNotIn("material", forced["railing"])
         self.assertEqual(forced["output"]["railing_thickness"], 0.20)
         panel = infer_balcony_ir(crop, rail_kind_override="surface_panel", **kwargs)
         self.assertEqual(panel["railing"]["kind"], "surface_panel")
         self.assertEqual(panel["output"]["railing_thickness"], 0.025)
+        masonry = infer_balcony_ir(
+            crop,
+            rail_kind_override="open_work",
+            rail_material_override="masonry",
+            **kwargs,
+        )
+        self.assertEqual(masonry["railing"]["kind"], "open_work")
+        self.assertEqual(masonry["railing"]["material"], "masonry")
 
 
 if __name__ == "__main__":

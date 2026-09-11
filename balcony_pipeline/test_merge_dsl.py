@@ -214,7 +214,7 @@ class PhotoNormTests(unittest.TestCase):
             units=units,
             per_unit_railing=True,
         )
-        self.assertEqual(out["layout"]["balconies"][0]["type"], "balc_open_work")
+        self.assertEqual(out["layout"]["balconies"][0]["type"], "balc_open_work_metal")
         self.assertEqual(out["layout"]["balconies"][1]["type"], "balc_solid")
 
 

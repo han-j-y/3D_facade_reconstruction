@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from heuristic_ir import railing_kind_from_ir
+from heuristic_ir import balcony_type_token
 
 from partners import mean_window_center_norm, partner_windows_for_unit
 from snap import _bands_from_windows_dsl
@@ -100,7 +100,7 @@ def merge_balcony_into_windows_dsl(
     for u in units:
         if per_unit_railing:
             ir = u.get("structure_ir") or {}
-            name = f"balc_{railing_kind_from_ir(ir)}"
+            name = f"balc_{balcony_type_token(ir)}"
         else:
             name = f"balc_type_{int(u['type_id']):02d}"
         box = u.get("box_xyxy") or [0, 0, 1, 1]

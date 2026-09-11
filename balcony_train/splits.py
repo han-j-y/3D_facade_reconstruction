@@ -1,4 +1,4 @@
-"""Stratified train/val/test splits for railing classifier crops."""
+"""Stratified train/val/test splits for multitask railing crops."""
 
 from __future__ import annotations
 
@@ -7,7 +7,17 @@ import random
 from pathlib import Path
 from typing import Any, Literal
 
-from balcony_train.labels import CLASSES, class_counts, iter_labeled_samples
+from balcony_train.labels import (
+    CLASSES,
+    MATERIAL_IGNORE_INDEX,
+    MATERIALS,
+    MultitaskSample,
+    class_counts,
+    iter_multitask_samples,
+    material_counts,
+    strat_key,
+)
+from balcony_train.paths import DEFAULT_LABELS_JSONL
 
 SplitName = Literal["train", "val", "test"]
 
@@ -17,7 +27,7 @@ DEFAULT_TEST_FRAC = 0.1
 
 
 def _class_sizes(n: int, train_frac: float, val_frac: float, test_frac: float) -> tuple[int, int, int]:
-    """Per-class train/val/test counts (at least one train; val/test when n allows)."""
+    """Per-stratum train/val/test counts (at least one train; val/test when n allows)."""
     if n <= 0:
         return 0, 0, 0
     if n == 1:
@@ -40,25 +50,29 @@ def _class_sizes(n: int, train_frac: float, val_frac: float, test_frac: float) -
 
 
 def stratified_split_indices(
-    samples: list[tuple[Path, int]],
+    samples: list[MultitaskSample] | list[tuple[Path, int]],
     *,
     train_frac: float = DEFAULT_TRAIN_FRAC,
     val_frac: float = DEFAULT_VAL_FRAC,
     test_frac: float = DEFAULT_TEST_FRAC,
     seed: int = 42,
 ) -> dict[SplitName, list[int]]:
-    """Stratified split indices into train / val / test."""
-    by_label: dict[int, list[int]] = {i: [] for i in range(len(CLASSES))}
-    for idx, (_, label) in enumerate(samples):
-        by_label[int(label)].append(idx)
+    """Stratified split. Multitask rows use open_work|metal / open_work|masonry keys."""
+    by_key: dict[str, list[int]] = {}
+    for idx, row in enumerate(samples):
+        if len(row) >= 3:
+            key = strat_key(int(row[1]), int(row[2]))
+        else:
+            key = CLASSES[int(row[1])]
+        by_key.setdefault(key, []).append(idx)
 
     train_idx: list[int] = []
     val_idx: list[int] = []
     test_idx: list[int] = []
     rng = random.Random(int(seed))
 
-    for label in sorted(by_label):
-        indices = by_label[label]
+    for key in sorted(by_key):
+        indices = by_key[key]
         if not indices:
             continue
         ordered = list(indices)
@@ -87,8 +101,21 @@ def _resolve_path(rel: str, base: Path) -> Path:
     return p if p.is_file() else base / rel
 
 
+def _row_payload(path: Path, kind_idx: int, mat_idx: int, base: Path) -> dict[str, Any]:
+    kind = CLASSES[int(kind_idx)]
+    material = None
+    if kind == "open_work" and int(mat_idx) >= 0:
+        material = MATERIALS[int(mat_idx)]
+    return {
+        "path": _rel_path(path, base),
+        "label": kind,
+        "kind": kind,
+        "material": material,
+    }
+
+
 def build_split_record(
-    samples: list[tuple[Path, int]],
+    samples: list[MultitaskSample] | list[tuple[Path, int]],
     indices: dict[SplitName, list[int]],
     *,
     data_dir: Path,
@@ -97,30 +124,37 @@ def build_split_record(
     val_frac: float,
     test_frac: float,
 ) -> dict[str, Any]:
-    """JSON-serializable split manifest."""
+    """JSON-serializable split manifest (version 2 = multitask)."""
     base = Path(data_dir).resolve()
-    splits: dict[str, list[dict[str, str]]] = {}
+    normed: list[MultitaskSample] = []
+    for row in samples:
+        if len(row) >= 3:
+            normed.append((Path(row[0]), int(row[1]), int(row[2])))
+        else:
+            normed.append((Path(row[0]), int(row[1]), MATERIAL_IGNORE_INDEX))
+
+    splits: dict[str, list[dict[str, Any]]] = {}
     for name in ("train", "val", "test"):
-        rows: list[dict[str, str]] = []
+        rows: list[dict[str, Any]] = []
         for idx in indices[name]:
-            path, label = samples[idx]
-            rows.append(
-                {
-                    "path": _rel_path(path, base),
-                    "label": CLASSES[int(label)],
-                }
-            )
+            path, kind_idx, mat_idx = normed[idx]
+            rows.append(_row_payload(path, kind_idx, mat_idx, base))
         splits[name] = rows
     return {
-        "version": 1,
+        "version": 2,
         "seed": int(seed),
         "train_frac": float(train_frac),
         "val_frac": float(val_frac),
         "test_frac": float(test_frac),
         "data_dir": str(base),
-        "counts": class_counts(samples),
+        "counts": class_counts(normed),
+        "material_counts": material_counts(normed),
         "split_counts": {
-            name: class_counts([(samples[i][0], samples[i][1]) for i in indices[name]])
+            name: class_counts([normed[i] for i in indices[name]])
+            for name in ("train", "val", "test")
+        },
+        "split_material_counts": {
+            name: material_counts([normed[i] for i in indices[name]])
             for name in ("train", "val", "test")
         },
         "splits": splits,
@@ -144,15 +178,21 @@ def load_split(path: Path) -> dict[str, Any]:
 def samples_from_split_record(
     record: dict[str, Any],
     split: SplitName,
-) -> list[tuple[Path, int]]:
-    """Load (path, label_idx) for one fold from a saved split.json."""
+) -> list[MultitaskSample]:
+    """Load multitask samples for one fold from a saved split.json."""
     base = Path(record["data_dir"])
     rows = record["splits"][split]
-    out: list[tuple[Path, int]] = []
+    out: list[MultitaskSample] = []
     for row in rows:
         path = _resolve_path(row["path"], base)
-        label = CLASSES.index(str(row["label"]))
-        out.append((path, label))
+        kind = str(row.get("kind") or row.get("label") or "")
+        kind_idx = CLASSES.index(kind)
+        mat_raw = row.get("material")
+        if kind == "open_work" and mat_raw in MATERIALS:
+            mat_idx = MATERIALS.index(str(mat_raw))
+        else:
+            mat_idx = MATERIAL_IGNORE_INDEX
+        out.append((path, kind_idx, mat_idx))
     return out
 
 
@@ -160,21 +200,24 @@ def make_or_load_split(
     data_dir: Path,
     split_path: Path,
     *,
+    labels_jsonl: Path | None = None,
     seed: int = 42,
     train_frac: float = DEFAULT_TRAIN_FRAC,
     val_frac: float = DEFAULT_VAL_FRAC,
     test_frac: float = DEFAULT_TEST_FRAC,
     refresh: bool = False,
-) -> tuple[dict[str, Any], list[tuple[Path, int]]]:
-    """Create stratified split (or load existing) and return record + all samples."""
+) -> tuple[dict[str, Any], list[MultitaskSample]]:
+    """Create stratified multitask split (or load existing)."""
     data_dir = Path(data_dir)
     split_path = Path(split_path)
-    samples = iter_labeled_samples(data_dir)
+    jsonl = Path(labels_jsonl) if labels_jsonl else DEFAULT_LABELS_JSONL
+    samples = iter_multitask_samples(data_dir, jsonl)
     if not samples:
         raise ValueError(f"no labeled images under {data_dir}")
 
     if split_path.is_file() and not refresh:
         record = load_split(split_path)
+        # Prefer rebuilding sample list from current crops+jsonl; indices map by path.
         return record, samples
 
     indices = stratified_split_indices(
@@ -199,10 +242,10 @@ def make_or_load_split(
 
 def indices_from_record(
     record: dict[str, Any],
-    samples: list[tuple[Path, int]],
+    samples: list[MultitaskSample] | list[tuple[Path, int]],
 ) -> dict[SplitName, list[int]]:
-    """Map saved split paths back to indices in ``samples`` (order may differ)."""
-    path_to_idx = {Path(p).resolve(): i for i, (p, _) in enumerate(samples)}
+    """Map saved split paths back to indices in ``samples``."""
+    path_to_idx = {Path(p).resolve(): i for i, row in enumerate(samples) for p in [row[0]]}
     base = Path(record["data_dir"])
     out: dict[SplitName, list[int]] = {"train": [], "val": [], "test": []}
     for name in ("train", "val", "test"):

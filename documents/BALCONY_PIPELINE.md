@@ -63,17 +63,19 @@ Standalone track; does not edit window e2e internals.
 Same **methods** as windows: SAM3 detect, box merge, DINO cluster, cosine medoid, majority vote. Floor/bay are **not** re-clustered; they come from the window DSL (`layout.floors` / `layout.bays`, plus `meta.columns_xy` / `meta.floors_y` from the same structural column layout as main; `--layout-mode centroid` for the old assign_bays grid). Multi-bay balconies store `bay_start`–`bay_end` plus `bays[]` (15% width overlap for span). Instance **width** stays from the photo box (`width_norm`). Horizontal center (default **`--balcony-center window`**) uses the same **2D overlap Pair** as decoration filters (`filter._partner_windows`: window box expanded 10%, overlap with balcony); nearest row above the slab; mean box center → `window_cx_norm` (with `partner_window_unit_ids`). Fallback when no partner: bay-band mean. **`--balcony-center bay`**: `bays_center[]` → `bay_cx_norm`. **`--balcony-center photo`**: detection box `cx_norm`. Wall door vs window is the window `placement` token on those cells, not a BDSL `opening` field.
 
 Vote fingerprint (`balcony_view`): controlled by `--recovery-profile`
-(default **`railing_only`** → vote `railing.kind` only: **`baluster` | `solid`**).
-`glass` is never inferred; legacy `glass` fingerprints map to `solid`.
-`metal` ≡ `baluster`. Disabled axes use fixed defaults (`projecting` / `open` /
+(default **`railing_only`** → vote `railing.kind`: **`open_work` | `surface_panel` |
+`solid`**, and for open_work also `railing.material`: **`metal` | `masonry`**).
+Legacy `glass` fingerprints map to `surface_panel`; `baluster` / bare `metal` →
+`open_work`. Disabled axes use fixed defaults (`projecting` / `open` /
 `rectangle` / supports 0). Use `--recovery-profile full` to restore other axes.
 
-`railing.kind` uses `checkpoints/railing_best.pt` when present (frozen DINOv2 +
-linear head; see `balcony_train/README.md`). Otherwise the opaque-run heuristic
-in `heuristic_ir.py`. Other IR axes stay heuristic / fixed defaults. Force the
-heuristic with `--no-railing-ckpt`. Meshes compile in `balcony_compile.py`
-(catalog rules: baluster rods, 200 mm solid parapet, 10 mm glass, enclosed 1 m
-mullions + matching ceiling slab).
+`railing.kind` / `railing.material` use `checkpoints/railing_best.pt` when present
+(frozen DINOv2 + multitask heads; see `balcony_train/README.md`). Otherwise the
+opaque-run heuristic in `heuristic_ir.py` (kind only; material defaults to
+`metal`). Force the heuristic with `--no-railing-ckpt`. Meshes compile in
+`balcony_compile.py` (open_work metal rods, open_work masonry 250/φ150/100 mm gaps/
+300×150 with front-full / side-trimmed rails, surface panel, solid parapet).
+All balcony slabs use **1.5 m** depth.
 
 ## How to run
 

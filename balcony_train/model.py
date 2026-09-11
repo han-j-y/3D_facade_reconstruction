@@ -1,4 +1,4 @@
-"""Frozen DINOv2 + linear head: crop → railing.kind (see labels.CLASSES)."""
+"""Frozen DINOv2 + multitask heads: kind (3) + material (2, open_work only)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from PIL import Image
 
-from balcony_train.labels import CLASSES
+from balcony_train.labels import CLASSES, MATERIALS
 from balcony_train.paths import DEFAULT_RAILING_CKPT
 
 BACKBONE = "dinov2_vits14"
@@ -33,35 +33,44 @@ def make_transform(image_size: int = IMAGE_SIZE):
 
 
 class RailingClassifier(nn.Module):
-    """DINOv2 ViT-S/14 (frozen) + Linear(384, n_classes). Only the head is trained."""
+    """DINOv2 ViT-S/14 (frozen) + kind head + material head."""
 
     def __init__(self, *, pretrained: bool = True, freeze_backbone: bool = True) -> None:
         super().__init__()
         self.classes = CLASSES
+        self.materials = MATERIALS
         self.freeze_backbone = bool(freeze_backbone)
         self.backbone = torch.hub.load(
             "facebookresearch/dinov2", BACKBONE, pretrained=bool(pretrained)
         )
         self.feat_dim = int(getattr(self.backbone, "embed_dim", FEAT_DIM))
-        self.head = nn.Linear(self.feat_dim, len(CLASSES))
+        self.kind_head = nn.Linear(self.feat_dim, len(CLASSES))
+        self.material_head = nn.Linear(self.feat_dim, len(MATERIALS))
+        # Legacy alias used by older single-head checkpoints / code paths.
+        self.head = self.kind_head
         if self.freeze_backbone:
             for p in self.backbone.parameters():
                 p.requires_grad = False
             self.backbone.eval()
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
         if self.freeze_backbone:
             with torch.no_grad():
                 feat = self.backbone(x)
-            feat = feat.detach()
-        else:
-            feat = self.backbone(x)
-        return self.head(feat)
+            return feat.detach()
+        return self.backbone(x)
+
+    def forward(
+        self, x: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        feat = self.encode(x)
+        return self.kind_head(feat), self.material_head(feat)
 
 
 def load_backbone(model: RailingClassifier, device: torch.device) -> None:
     model.backbone.to(device)
-    model.head.to(device)
+    model.kind_head.to(device)
+    model.material_head.to(device)
     if model.freeze_backbone:
         model.backbone.eval()
 
@@ -70,8 +79,13 @@ def save_checkpoint(model: RailingClassifier, path: Path, **extra: Any) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "head": model.head.state_dict(),
+        "multitask": True,
+        "kind_head": model.kind_head.state_dict(),
+        "material_head": model.material_head.state_dict(),
+        # Keep legacy key for tools that only inspect classes.
+        "head": model.kind_head.state_dict(),
         "classes": list(model.classes),
+        "materials": list(model.materials),
         "backbone": BACKBONE,
         "image_size": IMAGE_SIZE,
         **extra,
@@ -90,17 +104,28 @@ def load_classifier(
         raise FileNotFoundError(ckpt_path)
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     model = RailingClassifier(pretrained=pretrained_backbone, freeze_backbone=True)
-    model.head.load_state_dict(ckpt["head"])
     saved = tuple(ckpt.get("classes") or CLASSES)
     if saved != CLASSES:
         raise ValueError(f"ckpt classes {saved} != {CLASSES}")
+    if "kind_head" in ckpt:
+        model.kind_head.load_state_dict(ckpt["kind_head"])
+    elif "head" in ckpt:
+        model.kind_head.load_state_dict(ckpt["head"])
+    else:
+        raise ValueError(f"checkpoint missing kind head: {ckpt_path}")
+    mats = tuple(ckpt.get("materials") or ())
+    if "material_head" in ckpt and mats == MATERIALS:
+        model.material_head.load_state_dict(ckpt["material_head"])
+        model._material_trained = True  # type: ignore[attr-defined]
+    else:
+        model._material_trained = False  # type: ignore[attr-defined]
     load_backbone(model, device)
     model.eval()
     return model
 
 
 class RailingPredictor:
-    """One-shot crop → railing kind. Load once per pipeline run."""
+    """One-shot crop → railing kind (+ material when open_work)."""
 
     def __init__(self, ckpt_path: Path, device: torch.device) -> None:
         self.ckpt_path = Path(ckpt_path)
@@ -109,10 +134,21 @@ class RailingPredictor:
         self.tfm = make_transform()
 
     @torch.no_grad()
-    def predict(self, crop: Image.Image) -> str:
+    def predict_full(self, crop: Image.Image) -> dict[str, str | None]:
         x = self.tfm(crop.convert("RGB")).unsqueeze(0).to(self.device)
-        idx = int(self.model(x).argmax(dim=1).item())
-        return CLASSES[idx]
+        kind_logits, mat_logits = self.model(x)
+        kind = CLASSES[int(kind_logits.argmax(dim=1).item())]
+        material: str | None = None
+        if kind == "open_work":
+            if getattr(self.model, "_material_trained", False):
+                material = MATERIALS[int(mat_logits.argmax(dim=1).item())]
+            else:
+                material = "metal"
+        return {"kind": kind, "material": material}
+
+    @torch.no_grad()
+    def predict(self, crop: Image.Image) -> str:
+        return str(self.predict_full(crop)["kind"])
 
     def __call__(self, crop: Image.Image) -> str:
         return self.predict(crop)

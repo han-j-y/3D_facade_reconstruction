@@ -1,7 +1,0 @@
-# Optional: SDXL synthetic solid balcony crops (balcony_train/generate_sdxl.py).
-# Install: pip install -r requirements-sdxl.txt
-# Requires NVIDIA GPU + CUDA PyTorch (see main requirements.txt).
-diffusers>=0.27.0
-transformers>=4.40.0
-accelerate>=0.27.0
-safetensors>=0.4.0

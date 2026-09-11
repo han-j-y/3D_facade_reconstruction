@@ -47,7 +47,7 @@ def parse_bdsl(text: str) -> dict[str, Any]:
         "debug": False,
         "structure": "projecting",
         "enclosure": "open",
-        "floor": {"shape": "rectangle", "params": {"width": 1.0, "depth": 0.8}},
+        "floor": {"shape": "rectangle", "params": {"width": 1.0, "depth": 1.5}},
         "railing": {"kind": "open_work", "height": 1.1},
         "supports": {"count": 0},
         "opening": "door",
@@ -284,7 +284,7 @@ def _parse_balcony_line(text: str) -> dict[str, Any]:
             if len(args) > 1:
                 params.setdefault("depth", args[1])
         params.setdefault("diameter", params.pop("size", params.get("diameter", 1.0)))
-        params.setdefault("depth", params.pop("d", params.get("depth", 0.8)))
+        params.setdefault("depth", params.pop("d", params.get("depth", 1.5)))
         params["width"] = params["diameter"]
     else:
         if args:
@@ -294,7 +294,7 @@ def _parse_balcony_line(text: str) -> dict[str, Any]:
             if len(args) > 2:
                 params.setdefault("height", args[2])
         params.setdefault("width", params.pop("w", params.get("width", 1.0)))
-        params.setdefault("depth", params.pop("d", params.get("depth", 0.8)))
+        params.setdefault("depth", params.pop("d", params.get("depth", 1.5)))
         if "h" in params and "height" not in params:
             params["height"] = params.pop("h")
     return {"shape": shape, "params": params}

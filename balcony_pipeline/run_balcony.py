@@ -39,7 +39,13 @@ from draw import (  # noqa: E402
     save,
 )
 from filter import filter_balcony_boxes  # noqa: E402
-from heuristic_ir import infer_balcony_ir, ir_to_tokens, railing_kind_from_ir  # noqa: E402
+from heuristic_ir import (  # noqa: E402
+    balcony_type_token,
+    infer_balcony_ir,
+    ir_to_tokens,
+    railing_kind_from_ir,
+    railing_material_from_ir,
+)
 from merge_dsl import merge_balcony_into_windows_dsl  # noqa: E402
 from recovery_profile import DEFAULT_PROFILE, PROFILES, resolve_profile  # noqa: E402
 from snap import snap_units  # noqa: E402
@@ -188,13 +194,22 @@ def infer_unit_ir(
     profile_name: str,
     predictor,
 ) -> dict:
-    override = predictor.predict(crop) if predictor is not None else None
+    kind_override = None
+    material_override = None
+    if predictor is not None:
+        if hasattr(predictor, "predict_full"):
+            pred = predictor.predict_full(crop)
+            kind_override = pred.get("kind")
+            material_override = pred.get("material")
+        else:
+            kind_override = predictor.predict(crop)
     return infer_balcony_ir(
         crop,
         box=unit["box_xyxy"],
         image_size=image_size,
         profile_name=profile_name,
-        rail_kind_override=override,
+        rail_kind_override=kind_override,
+        rail_material_override=material_override,
     )
 
 
@@ -401,22 +416,25 @@ def run(args: argparse.Namespace) -> Path | None:
                 predictor=predictor,
             )
             tokens = ir_to_tokens(ir, profile_name=profile_name)
+            token = balcony_type_token(ir)
             kind = railing_kind_from_ir(ir)
+            material = railing_material_from_ir(ir)
             u["structure_ir_member"] = ir
             u["structure_ir"] = ir
             u["structure_tokens"] = tokens
-            by_kind[kind].append(u)
-            print(f"  unit_{int(u['unit_id']):03d}: railing={kind}")
+            by_kind[token].append(u)
+            mat_s = f" material={material}" if material else ""
+            print(f"  unit_{int(u['unit_id']):03d}: railing={kind}{mat_s}")
 
-        for tid, kind in enumerate(sorted(by_kind)):
-            members = by_kind[kind]
+        for tid, token in enumerate(sorted(by_kind)):
+            members = by_kind[token]
             rep = members[0]
-            canon = crops_dir / f"balc_{kind}_exemplar.png"
+            canon = crops_dir / f"balc_{token}_exemplar.png"
             shutil.copy(out_dir / rep["asset"], canon)
             types_out.append(
                 {
                     "type_id": tid,
-                    "name": f"balc_{kind}",
+                    "name": f"balc_{token}",
                     "n_instances": len(members),
                     "exemplar_unit": int(rep["unit_id"]),
                     "exemplar_asset": str(canon.relative_to(out_dir)),
@@ -424,7 +442,10 @@ def run(args: argparse.Namespace) -> Path | None:
                     "structure_tokens": rep["structure_tokens"],
                     "structure_vote": {
                         "mode": "per_unit",
-                        "railing_kind": kind,
+                        "railing_kind": railing_kind_from_ir(rep["structure_ir"]),
+                        "railing_material": railing_material_from_ir(
+                            rep["structure_ir"]
+                        ),
                         "n_members": len(members),
                         "unit_ids": [int(u["unit_id"]) for u in members],
                     },
