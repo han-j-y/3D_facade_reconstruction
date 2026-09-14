@@ -28,6 +28,17 @@ Outputs go to `crops/unlabeled/`. Full weights need a large GPU; `--quantized`
 uses `diffusers/FLUX.2-dev-bnb-4bit` and loads on CPU first then offloads
 (avoids OOM on ~24–32 GB cards during `from_pretrained`).
 
+Optional: tighten synth frames with the same SAM3 ``balcony`` detect as the
+pipeline (max-score box crop; originals go to `unlabeled_precrop/`):
+
+```text
+python balcony_train/recrop_sam3.py --device cuda ^
+  --in-dir "runs/balcony_clf/Before crops" ^
+  --out-dir runs/balcony_clf/crops/unlabeled
+```
+
+Reads ``png`` / ``jpg`` / ``jpeg`` / ``webp`` (default pattern = all of them).
+
 ## 2. Label (kind + open_work material)
 
 ```text

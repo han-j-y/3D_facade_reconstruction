@@ -23,7 +23,7 @@ from balcony_train.prompts_masonry import (  # noqa: E402
 
 class GenerateFlux2HelperTests(unittest.TestCase):
     def test_prompts_non_empty(self) -> None:
-        self.assertGreaterEqual(len(MASONRY_OPENWORK_PROMPTS), 8)
+        self.assertGreaterEqual(len(MASONRY_OPENWORK_PROMPTS), 12)
         joined = " ".join(MASONRY_OPENWORK_PROMPTS).lower()
         for p in MASONRY_OPENWORK_PROMPTS:
             pl = p.lower()
@@ -64,11 +64,36 @@ class GenerateFlux2HelperTests(unittest.TestCase):
                 ),
                 msg=f"missing wider framing / full-window cue: {p}",
             )
+            self.assertTrue(
+                any(
+                    k in pl
+                    for k in (
+                        "2nd",
+                        "second",
+                        "third",
+                        "upper",
+                        "above the ground",
+                        "above ground",
+                    )
+                ),
+                msg=f"missing upper-story cue: {p}",
+            )
         self.assertTrue(
             any(k in joined for k in ("concrete", "stone", "masonry", "limestone"))
         )
-        self.assertTrue("post" in joined or "pier" in joined)
-        self.assertLess(len(NEGATIVE_PROMPT), 400)
+        self.assertTrue("post" in joined or "pier" in joined or "baluster" in joined)
+        for shape in (
+            "rectangular",
+            "elliptical",
+            "semicircular",
+            "triangular",
+            "hexagonal",
+            "trapezoid",
+        ):
+            self.assertIn(shape, joined, msg=f"missing slab shape: {shape}")
+        self.assertTrue("classical" in joined)
+        self.assertTrue("cornice" in joined or "bracket" in joined)
+        self.assertLess(len(NEGATIVE_PROMPT), 500)
 
     def test_next_index_skips_existing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
