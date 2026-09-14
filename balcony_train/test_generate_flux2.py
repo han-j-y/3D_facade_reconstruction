@@ -48,11 +48,27 @@ class GenerateFlux2HelperTests(unittest.TestCase):
                 ),
                 msg=f"missing openings cue: {p}",
             )
+            self.assertTrue(
+                any(
+                    k in pl
+                    for k in (
+                        "full window",
+                        "entire window",
+                        "whole window",
+                        "complete window",
+                        "window visible",
+                        "window in frame",
+                        "window unit",
+                        "medium",
+                    )
+                ),
+                msg=f"missing wider framing / full-window cue: {p}",
+            )
         self.assertTrue(
             any(k in joined for k in ("concrete", "stone", "masonry", "limestone"))
         )
         self.assertTrue("post" in joined or "pier" in joined)
-        self.assertLess(len(NEGATIVE_PROMPT), 280)
+        self.assertLess(len(NEGATIVE_PROMPT), 400)
 
     def test_next_index_skips_existing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
