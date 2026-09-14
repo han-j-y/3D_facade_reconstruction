@@ -161,6 +161,7 @@ def generate_masonry_crops(
         idx = start + i
         prompt = MASONRY_OPENWORK_PROMPTS[i % len(MASONRY_OPENWORK_PROMPTS)]
         generator = torch.Generator(device=gen_device).manual_seed(seed + i)
+        print(f"prompt[{i % len(MASONRY_OPENWORK_PROMPTS)}]: {prompt}", flush=True)
         image = pipe(
             prompt=prompt,
             width=int(width),

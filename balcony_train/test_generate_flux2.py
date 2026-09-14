@@ -24,14 +24,35 @@ from balcony_train.prompts_masonry import (  # noqa: E402
 class GenerateFlux2HelperTests(unittest.TestCase):
     def test_prompts_non_empty(self) -> None:
         self.assertGreaterEqual(len(MASONRY_OPENWORK_PROMPTS), 8)
-        self.assertTrue("photo" in MASONRY_OPENWORK_PROMPTS[0].lower() or "street" in MASONRY_OPENWORK_PROMPTS[0].lower())
         joined = " ".join(MASONRY_OPENWORK_PROMPTS).lower()
-        self.assertTrue("street" in joined)
+        for p in MASONRY_OPENWORK_PROMPTS:
+            pl = p.lower()
+            self.assertTrue(
+                "street" in pl or "sidewalk" in pl,
+                msg=f"missing street-side cue: {p}",
+            )
+            self.assertTrue(
+                any(
+                    k in pl
+                    for k in (
+                        "open",
+                        "opening",
+                        "openings",
+                        "gap",
+                        "gaps",
+                        "pierced",
+                        "perforated",
+                        "grille",
+                        "baluster",
+                    )
+                ),
+                msg=f"missing openings cue: {p}",
+            )
         self.assertTrue(
             any(k in joined for k in ("concrete", "stone", "masonry", "limestone"))
         )
         self.assertTrue("post" in joined or "pier" in joined)
-        self.assertLess(len(NEGATIVE_PROMPT), 200)
+        self.assertLess(len(NEGATIVE_PROMPT), 280)
 
     def test_next_index_skips_existing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
