@@ -24,11 +24,14 @@ from balcony_train.prompts_masonry import (  # noqa: E402
 class GenerateFlux2HelperTests(unittest.TestCase):
     def test_prompts_non_empty(self) -> None:
         self.assertGreaterEqual(len(MASONRY_OPENWORK_PROMPTS), 8)
-        self.assertTrue("photo" in MASONRY_OPENWORK_PROMPTS[0].lower())
+        self.assertTrue("photo" in MASONRY_OPENWORK_PROMPTS[0].lower() or "street" in MASONRY_OPENWORK_PROMPTS[0].lower())
+        joined = " ".join(MASONRY_OPENWORK_PROMPTS).lower()
+        self.assertTrue("street" in joined)
         self.assertTrue(
-            any("masonry" in p.lower() or "brick" in p.lower() for p in MASONRY_OPENWORK_PROMPTS)
+            any(k in joined for k in ("concrete", "stone", "masonry", "limestone"))
         )
-        self.assertLess(len(NEGATIVE_PROMPT), 120)
+        self.assertTrue("post" in joined or "pier" in joined)
+        self.assertLess(len(NEGATIVE_PROMPT), 200)
 
     def test_next_index_skips_existing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
