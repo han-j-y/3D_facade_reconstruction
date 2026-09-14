@@ -11,11 +11,11 @@ Setup (once)::
 
 Examples::
 
-    # Quick test (consumer GPU: quantized + offload)
-    python balcony_train/generate_flux2.py -n 2 --quantized --cpu-offload --device cuda
+    # Quick test (consumer GPU: 4-bit; CPU-first load + offload is automatic)
+    python balcony_train/generate_flux2.py -n 2 --quantized --device cuda
 
     # Batch for labeling
-    python balcony_train/generate_flux2.py --count 40 --quantized --cpu-offload --device cuda
+    python balcony_train/generate_flux2.py --count 40 --quantized --device cuda
 """
 
 from __future__ import annotations
@@ -55,6 +55,55 @@ def _next_index(dest_dir: Path, prefix: str) -> int:
     return best + 1
 
 
+def _load_pipeline_cpu_first(model_id: str, dtype):
+    """Load weights onto CPU first so bnb-4bit does not spike VRAM during init.
+
+    Quantized FLUX.2 checkpoints otherwise place shards on CUDA inside
+    ``from_pretrained``, which OOMs on ~24–32 GB cards before offload starts.
+    """
+    from diffusers import Flux2Pipeline
+
+    # Newer diffusers: whole pipe on CPU, then enable_model_cpu_offload().
+    try:
+        return Flux2Pipeline.from_pretrained(
+            model_id, torch_dtype=dtype, device_map="cpu"
+        )
+    except (TypeError, ValueError):
+        pass
+
+    # Explicit component load (BFL / DataCamp pattern for bnb-4bit).
+    from transformers import Mistral3ForConditionalGeneration
+
+    try:
+        from diffusers import Flux2Transformer2DModel as TransformerCls
+    except ImportError:  # pragma: no cover
+        from diffusers import AutoModel as TransformerCls
+
+    text_kwargs = {
+        "subfolder": "text_encoder",
+        "device_map": "cpu",
+    }
+    # transformers APIs differ slightly across versions.
+    try:
+        text_encoder = Mistral3ForConditionalGeneration.from_pretrained(
+            model_id, torch_dtype=dtype, **text_kwargs
+        )
+    except TypeError:
+        text_encoder = Mistral3ForConditionalGeneration.from_pretrained(
+            model_id, dtype=dtype, **text_kwargs
+        )
+
+    transformer = TransformerCls.from_pretrained(
+        model_id, subfolder="transformer", torch_dtype=dtype, device_map="cpu"
+    )
+    return Flux2Pipeline.from_pretrained(
+        model_id,
+        text_encoder=text_encoder,
+        transformer=transformer,
+        torch_dtype=dtype,
+    )
+
+
 def _load_pipeline(model_id: str, device: str, *, cpu_offload: bool):
     try:
         import torch
@@ -72,10 +121,15 @@ def _load_pipeline(model_id: str, device: str, *, cpu_offload: bool):
     else:
         dtype = torch.float32
 
-    pipe = Flux2Pipeline.from_pretrained(model_id, torch_dtype=dtype)
     if cpu_offload:
+        if device.startswith("cuda") and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print(f"Loading {model_id} on CPU first (cpu-offload)...", flush=True)
+        pipe = _load_pipeline_cpu_first(model_id, dtype)
         pipe.enable_model_cpu_offload()
     else:
+        print(f"Loading {model_id} onto {device}...", flush=True)
+        pipe = Flux2Pipeline.from_pretrained(model_id, torch_dtype=dtype)
         pipe.to(device)
     return pipe, torch
 
@@ -178,7 +232,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--cpu-offload",
         action="store_true",
-        help="model CPU offload (needed for full / 4-bit on many consumer GPUs)",
+        help="model CPU offload (auto-on with --quantized; needed on ~24–32 GB GPUs)",
+    )
+    ap.add_argument(
+        "--no-cpu-offload",
+        action="store_true",
+        help="force full GPU residency (large VRAM only; overrides --cpu-offload)",
     )
     return ap.parse_args()
 
@@ -191,6 +250,11 @@ def main() -> None:
         model_id = DEFAULT_QUANTIZED_MODEL
     else:
         model_id = DEFAULT_MODEL
+
+    # 4-bit still OOMs if shards land on CUDA during from_pretrained; default offload on.
+    cpu_offload = bool(args.cpu_offload) or bool(args.quantized)
+    if args.no_cpu_offload:
+        cpu_offload = False
 
     ensure_crop_dirs(args.crops_dir)
     dest_dir = Path(args.crops_dir) / args.out_subdir
@@ -205,7 +269,7 @@ def main() -> None:
         steps=int(args.steps),
         guidance_scale=float(args.guidance_scale),
         device=str(args.device),
-        cpu_offload=bool(args.cpu_offload),
+        cpu_offload=cpu_offload,
     )
     print(f"saved={stats['saved']} -> {stats['dest']}")
     print(

@@ -21,11 +21,12 @@ FLUX.2 [dev] (images stay under `runs/`; not published):
 ```text
 C:\Users\hiroo\anaconda3\envs\glodon\python.exe -m pip install -r requirements-flux2.txt
 # Accept https://huggingface.co/black-forest-labs/FLUX.2-dev then: huggingface-cli login
-python balcony_train/generate_flux2.py -n 40 --quantized --cpu-offload --device cuda
+python balcony_train/generate_flux2.py -n 40 --quantized --device cuda
 ```
 
 Outputs go to `crops/unlabeled/`. Full weights need a large GPU; `--quantized`
-uses `diffusers/FLUX.2-dev-bnb-4bit` for consumer cards.
+uses `diffusers/FLUX.2-dev-bnb-4bit` and loads on CPU first then offloads
+(avoids OOM on ~24–32 GB cards during `from_pretrained`).
 
 ## 2. Label (kind + open_work material)
 
