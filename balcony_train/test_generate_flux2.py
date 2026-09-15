@@ -19,6 +19,7 @@ from balcony_train.prompts_masonry import (  # noqa: E402
     MASONRY_OPENWORK_PROMPTS,
     NEGATIVE_PROMPT,
 )
+from balcony_train.prompts_metal import METAL_OPENWORK_PROMPTS  # noqa: E402
 from balcony_train.prompts_solid import SOLID_PROMPTS  # noqa: E402
 from balcony_train.prompts_surface_panel import SURFACE_PANEL_PROMPTS  # noqa: E402
 
@@ -98,11 +99,15 @@ class GenerateFlux2HelperTests(unittest.TestCase):
         self.assertLess(len(NEGATIVE_PROMPT), 500)
 
     def test_surface_panel_and_solid_prompt_sets(self) -> None:
-        self.assertEqual(set(PROMPT_SETS), {"masonry", "surface_panel", "solid"})
+        self.assertEqual(
+            set(PROMPT_SETS), {"masonry", "metal", "surface_panel", "solid"}
+        )
         self.assertGreaterEqual(len(SURFACE_PANEL_PROMPTS), 8)
         self.assertGreaterEqual(len(SOLID_PROMPTS), 8)
+        self.assertGreaterEqual(len(METAL_OPENWORK_PROMPTS), 8)
         surf = " ".join(SURFACE_PANEL_PROMPTS).lower()
         solid = " ".join(SOLID_PROMPTS).lower()
+        metal = " ".join(METAL_OPENWORK_PROMPTS).lower()
         for p in SURFACE_PANEL_PROMPTS:
             pl = p.lower()
             self.assertTrue("street" in pl or "sidewalk" in pl, msg=p)
@@ -110,7 +115,13 @@ class GenerateFlux2HelperTests(unittest.TestCase):
                 any(k in pl for k in ("glass", "frosted", "metal", "privacy", "panel")),
                 msg=p,
             )
-            self.assertTrue("baluster" not in pl or "no baluster" in pl or "not baluster" in pl or "no open baluster" in pl, msg=p)
+            self.assertTrue(
+                "baluster" not in pl
+                or "no baluster" in pl
+                or "not baluster" in pl
+                or "no open baluster" in pl,
+                msg=p,
+            )
         self.assertTrue("frame" in surf)
         self.assertTrue("panel" in surf)
         for p in SOLID_PROMPTS:
@@ -139,8 +150,35 @@ class GenerateFlux2HelperTests(unittest.TestCase):
         self.assertTrue(
             any(k in solid for k in ("concrete", "stone", "plaster", "stucco", "mortar"))
         )
+        for p in METAL_OPENWORK_PROMPTS:
+            pl = p.lower()
+            self.assertTrue("street" in pl or "sidewalk" in pl, msg=p)
+            self.assertTrue(
+                any(
+                    k in pl
+                    for k in (
+                        "metal",
+                        "iron",
+                        "steel",
+                        "wrought",
+                        "filigree",
+                        "lattice",
+                        "picket",
+                    )
+                ),
+                msg=p,
+            )
+            self.assertTrue(
+                any(
+                    k in pl
+                    for k in ("open", "opening", "openings", "gap", "gaps", "see-through")
+                ),
+                msg=p,
+            )
+        self.assertTrue("open" in metal or "gap" in metal)
         self.assertEqual(PROMPT_SETS["surface_panel"]["prefix"], "flux2_surface_")
         self.assertEqual(PROMPT_SETS["solid"]["prefix"], "flux2_solid_")
+        self.assertEqual(PROMPT_SETS["metal"]["prefix"], "flux2_metal_")
 
     def test_next_index_skips_existing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

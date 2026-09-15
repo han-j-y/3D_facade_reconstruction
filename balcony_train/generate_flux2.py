@@ -5,6 +5,7 @@ then train with ``--refresh-split``.
 
 Prompt sets (``--prompt-set``):
   - ``masonry`` — open_work + masonry (default)
+  - ``metal`` — open_work + metal (bars / wrought iron / open patterns)
   - ``surface_panel`` — modern frame + glass/metal/privacy panels
   - ``solid`` — opaque wall / parapet mass
 
@@ -17,6 +18,7 @@ Setup (once)::
 Examples::
 
     python balcony_train/generate_flux2.py -n 2 --quantized --device cuda --prompt-set masonry
+    python balcony_train/generate_flux2.py -n 300 --quantized --device cuda --prompt-set metal
     python balcony_train/generate_flux2.py -n 40 --quantized --device cuda --prompt-set surface_panel
     python balcony_train/generate_flux2.py -n 40 --quantized --device cuda --prompt-set solid
 """
@@ -36,6 +38,7 @@ if str(ROOT) not in sys.path:
 from balcony_train.labels import ensure_crop_dirs  # noqa: E402
 from balcony_train.paths import DEFAULT_CROPS_DIR  # noqa: E402
 from balcony_train.prompts_masonry import MASONRY_OPENWORK_PROMPTS  # noqa: E402
+from balcony_train.prompts_metal import METAL_OPENWORK_PROMPTS  # noqa: E402
 from balcony_train.prompts_solid import SOLID_PROMPTS  # noqa: E402
 from balcony_train.prompts_surface_panel import SURFACE_PANEL_PROMPTS  # noqa: E402
 
@@ -47,6 +50,11 @@ PROMPT_SETS: dict[str, dict[str, object]] = {
         "prompts": MASONRY_OPENWORK_PROMPTS,
         "prefix": "flux2_masonry_",
         "label_hint": "Label as open_work + masonry",
+    },
+    "metal": {
+        "prompts": METAL_OPENWORK_PROMPTS,
+        "prefix": "flux2_metal_",
+        "label_hint": "Label as open_work + metal",
     },
     "surface_panel": {
         "prompts": SURFACE_PANEL_PROMPTS,
