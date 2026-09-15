@@ -21,8 +21,13 @@ FLUX.2 [dev] (images stay under `runs/`; not published):
 ```text
 C:\Users\hiroo\anaconda3\envs\glodon\python.exe -m pip install -r requirements-flux2.txt
 # Accept https://huggingface.co/black-forest-labs/FLUX.2-dev then: huggingface-cli login
-python balcony_train/generate_flux2.py -n 40 --quantized --device cuda
+python balcony_train/generate_flux2.py -n 40 --quantized --device cuda --prompt-set masonry
+python balcony_train/generate_flux2.py -n 40 --quantized --device cuda --prompt-set surface_panel
+python balcony_train/generate_flux2.py -n 40 --quantized --device cuda --prompt-set solid
 ```
+
+Prefixes: `flux2_masonry_`, `flux2_surface_`, `flux2_solid_`. Label in UI as
+`open_work`+`masonry`, `surface_panel`, or `solid` respectively.
 
 Outputs go to `crops/unlabeled/`. Full weights need a large GPU; `--quantized`
 uses `diffusers/FLUX.2-dev-bnb-4bit` and loads on CPU first then offloads

@@ -14,11 +14,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from balcony_train import generate_flux2 as gen  # noqa: E402
-from balcony_train.generate_flux2 import DEFAULT_PREFIX, _next_index  # noqa: E402
+from balcony_train.generate_flux2 import DEFAULT_PREFIX, PROMPT_SETS, _next_index  # noqa: E402
 from balcony_train.prompts_masonry import (  # noqa: E402
     MASONRY_OPENWORK_PROMPTS,
     NEGATIVE_PROMPT,
 )
+from balcony_train.prompts_solid import SOLID_PROMPTS  # noqa: E402
+from balcony_train.prompts_surface_panel import SURFACE_PANEL_PROMPTS  # noqa: E402
 
 
 class GenerateFlux2HelperTests(unittest.TestCase):
@@ -94,6 +96,51 @@ class GenerateFlux2HelperTests(unittest.TestCase):
         self.assertTrue("classical" in joined)
         self.assertTrue("cornice" in joined or "bracket" in joined)
         self.assertLess(len(NEGATIVE_PROMPT), 500)
+
+    def test_surface_panel_and_solid_prompt_sets(self) -> None:
+        self.assertEqual(set(PROMPT_SETS), {"masonry", "surface_panel", "solid"})
+        self.assertGreaterEqual(len(SURFACE_PANEL_PROMPTS), 8)
+        self.assertGreaterEqual(len(SOLID_PROMPTS), 8)
+        surf = " ".join(SURFACE_PANEL_PROMPTS).lower()
+        solid = " ".join(SOLID_PROMPTS).lower()
+        for p in SURFACE_PANEL_PROMPTS:
+            pl = p.lower()
+            self.assertTrue("street" in pl or "sidewalk" in pl, msg=p)
+            self.assertTrue(
+                any(k in pl for k in ("glass", "frosted", "metal", "privacy", "panel")),
+                msg=p,
+            )
+            self.assertTrue("baluster" not in pl or "no baluster" in pl or "not baluster" in pl or "no open baluster" in pl, msg=p)
+        self.assertTrue("frame" in surf)
+        self.assertTrue("panel" in surf)
+        for p in SOLID_PROMPTS:
+            pl = p.lower()
+            self.assertTrue("street" in pl or "sidewalk" in pl, msg=p)
+            self.assertTrue(
+                any(k in pl for k in ("solid", "parapet", "waist wall", "mass", "opaque")),
+                msg=p,
+            )
+            self.assertTrue(
+                any(
+                    k in pl
+                    for k in (
+                        "no opening",
+                        "no openings",
+                        "without gaps",
+                        "opaque",
+                        "mass wall",
+                        "wall-like",
+                        "waist wall",
+                        "solid",
+                    )
+                ),
+                msg=p,
+            )
+        self.assertTrue(
+            any(k in solid for k in ("concrete", "stone", "plaster", "stucco", "mortar"))
+        )
+        self.assertEqual(PROMPT_SETS["surface_panel"]["prefix"], "flux2_surface_")
+        self.assertEqual(PROMPT_SETS["solid"]["prefix"], "flux2_solid_")
 
     def test_next_index_skips_existing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

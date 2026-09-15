@@ -1,7 +1,12 @@
-"""Generate synthetic open_work+masonry balcony crops with FLUX.2 [dev].
+"""Generate synthetic balcony railing crops with FLUX.2 [dev].
 
-Writes PNGs into ``runs/balcony_clf/crops/unlabeled/`` for Label UI review
-(label as open_work + masonry), then train with ``--refresh-split``.
+Writes PNGs into ``runs/balcony_clf/crops/unlabeled/`` for Label UI review,
+then train with ``--refresh-split``.
+
+Prompt sets (``--prompt-set``):
+  - ``masonry`` — open_work + masonry (default)
+  - ``surface_panel`` — modern frame + glass/metal/privacy panels
+  - ``solid`` — opaque wall / parapet mass
 
 Setup (once)::
 
@@ -11,11 +16,9 @@ Setup (once)::
 
 Examples::
 
-    # Quick test (consumer GPU: 4-bit; CPU-first load + offload is automatic)
-    python balcony_train/generate_flux2.py -n 2 --quantized --device cuda
-
-    # Batch for labeling
-    python balcony_train/generate_flux2.py --count 40 --quantized --device cuda
+    python balcony_train/generate_flux2.py -n 2 --quantized --device cuda --prompt-set masonry
+    python balcony_train/generate_flux2.py -n 40 --quantized --device cuda --prompt-set surface_panel
+    python balcony_train/generate_flux2.py -n 40 --quantized --device cuda --prompt-set solid
 """
 
 from __future__ import annotations
@@ -33,10 +36,31 @@ if str(ROOT) not in sys.path:
 from balcony_train.labels import ensure_crop_dirs  # noqa: E402
 from balcony_train.paths import DEFAULT_CROPS_DIR  # noqa: E402
 from balcony_train.prompts_masonry import MASONRY_OPENWORK_PROMPTS  # noqa: E402
+from balcony_train.prompts_solid import SOLID_PROMPTS  # noqa: E402
+from balcony_train.prompts_surface_panel import SURFACE_PANEL_PROMPTS  # noqa: E402
 
 DEFAULT_MODEL = "black-forest-labs/FLUX.2-dev"
 DEFAULT_QUANTIZED_MODEL = "diffusers/FLUX.2-dev-bnb-4bit"
-DEFAULT_PREFIX = "flux2_masonry_"
+
+PROMPT_SETS: dict[str, dict[str, object]] = {
+    "masonry": {
+        "prompts": MASONRY_OPENWORK_PROMPTS,
+        "prefix": "flux2_masonry_",
+        "label_hint": "Label as open_work + masonry",
+    },
+    "surface_panel": {
+        "prompts": SURFACE_PANEL_PROMPTS,
+        "prefix": "flux2_surface_",
+        "label_hint": "Label as surface_panel",
+    },
+    "solid": {
+        "prompts": SOLID_PROMPTS,
+        "prefix": "flux2_solid_",
+        "label_hint": "Label as solid",
+    },
+}
+
+DEFAULT_PREFIX = str(PROMPT_SETS["masonry"]["prefix"])
 
 
 def _next_index(dest_dir: Path, prefix: str) -> int:
@@ -134,11 +158,12 @@ def _load_pipeline(model_id: str, device: str, *, cpu_offload: bool):
     return pipe, torch
 
 
-def generate_masonry_crops(
+def generate_balcony_crops(
     dest_dir: Path,
     *,
     count: int,
     seed: int,
+    prompts: list[str],
     prefix: str = DEFAULT_PREFIX,
     model_id: str = DEFAULT_MODEL,
     width: int = 640,
@@ -148,6 +173,8 @@ def generate_masonry_crops(
     device: str = "cuda",
     cpu_offload: bool = False,
 ) -> dict[str, int | str]:
+    if not prompts:
+        raise ValueError("prompts must be non-empty")
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -159,9 +186,9 @@ def generate_masonry_crops(
     saved = 0
     for i in range(count):
         idx = start + i
-        prompt = MASONRY_OPENWORK_PROMPTS[i % len(MASONRY_OPENWORK_PROMPTS)]
+        prompt = prompts[i % len(prompts)]
         generator = torch.Generator(device=gen_device).manual_seed(seed + i)
-        print(f"prompt[{i % len(MASONRY_OPENWORK_PROMPTS)}]: {prompt}", flush=True)
+        print(f"prompt[{i % len(prompts)}]: {prompt}", flush=True)
         image = pipe(
             prompt=prompt,
             width=int(width),
@@ -178,6 +205,10 @@ def generate_masonry_crops(
     return {"saved": saved, "dest": str(dest_dir), "start_index": start}
 
 
+# Back-compat alias.
+generate_masonry_crops = generate_balcony_crops
+
+
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -187,6 +218,12 @@ def parse_args() -> argparse.Namespace:
         default=10,
         metavar="N",
         help="number of images to generate (default: 10)",
+    )
+    ap.add_argument(
+        "--prompt-set",
+        choices=sorted(PROMPT_SETS.keys()),
+        default="masonry",
+        help="which prompt bank + default filename prefix to use",
     )
     ap.add_argument(
         "--crops-dir",
@@ -199,7 +236,11 @@ def parse_args() -> argparse.Namespace:
         default="unlabeled",
         help="subdir under crops-dir (default: unlabeled for Label UI)",
     )
-    ap.add_argument("--prefix", default=DEFAULT_PREFIX, help="output filename prefix")
+    ap.add_argument(
+        "--prefix",
+        default=None,
+        help="output filename prefix (default depends on --prompt-set)",
+    )
     ap.add_argument("--seed", type=int, default=3000, help="base RNG seed")
     ap.add_argument(
         "--model",
@@ -245,6 +286,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    spec = PROMPT_SETS[str(args.prompt_set)]
+    prompts = list(spec["prompts"])  # type: ignore[arg-type]
+    prefix = str(args.prefix) if args.prefix else str(spec["prefix"])
+    label_hint = str(spec["label_hint"])
+
     if args.model:
         model_id = str(args.model)
     elif args.quantized:
@@ -259,11 +305,12 @@ def main() -> None:
 
     ensure_crop_dirs(args.crops_dir)
     dest_dir = Path(args.crops_dir) / args.out_subdir
-    stats = generate_masonry_crops(
+    stats = generate_balcony_crops(
         dest_dir,
         count=max(1, int(args.count)),
         seed=int(args.seed),
-        prefix=str(args.prefix),
+        prompts=prompts,
+        prefix=prefix,
         model_id=model_id,
         width=int(args.width),
         height=int(args.height),
@@ -272,9 +319,10 @@ def main() -> None:
         device=str(args.device),
         cpu_offload=cpu_offload,
     )
+    print(f"prompt_set={args.prompt_set}  prefix={prefix}")
     print(f"saved={stats['saved']} -> {stats['dest']}")
     print(
-        "Label in Label UI as open_work + masonry, then: "
+        f"{label_hint}, then: "
         "python balcony_train/train.py --device cuda --refresh-split"
     )
 
