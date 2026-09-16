@@ -26,8 +26,16 @@ from balcony_train.prompts_surface_panel import SURFACE_PANEL_PROMPTS  # noqa: E
 
 class GenerateFlux2HelperTests(unittest.TestCase):
     def test_prompts_non_empty(self) -> None:
-        self.assertGreaterEqual(len(MASONRY_OPENWORK_PROMPTS), 12)
+        self.assertEqual(len(MASONRY_OPENWORK_PROMPTS), 100)
         joined = " ".join(MASONRY_OPENWORK_PROMPTS).lower()
+        self.assertTrue(
+            any(
+                k in joined
+                for k in ("looking up", "looking upward", "upward perspective")
+            )
+        )
+        for floor in ("2nd-floor", "5th-floor", "10th-floor"):
+            self.assertIn(floor, joined)
         for p in MASONRY_OPENWORK_PROMPTS:
             pl = p.lower()
             self.assertTrue(
@@ -102,9 +110,9 @@ class GenerateFlux2HelperTests(unittest.TestCase):
         self.assertEqual(
             set(PROMPT_SETS), {"masonry", "metal", "surface_panel", "solid"}
         )
-        self.assertGreaterEqual(len(SURFACE_PANEL_PROMPTS), 8)
-        self.assertGreaterEqual(len(SOLID_PROMPTS), 8)
-        self.assertGreaterEqual(len(METAL_OPENWORK_PROMPTS), 8)
+        self.assertEqual(len(SURFACE_PANEL_PROMPTS), 100)
+        self.assertEqual(len(SOLID_PROMPTS), 100)
+        self.assertEqual(len(METAL_OPENWORK_PROMPTS), 100)
         surf = " ".join(SURFACE_PANEL_PROMPTS).lower()
         solid = " ".join(SOLID_PROMPTS).lower()
         metal = " ".join(METAL_OPENWORK_PROMPTS).lower()

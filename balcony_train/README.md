@@ -45,13 +45,34 @@ python balcony_train/recrop_sam3.py --device cuda ^
 
 Reads ``png`` / ``jpg`` / ``jpeg`` / ``webp`` (default pattern = all of them).
 
+### Bulk: all balconies from ``data/base`` (SAM3)
+
+Crop **every** detected balcony box (not just max-score) into ``crops/unlabeled/``
+as ``{stem}_bal_000.png``, ``…_001.png``, …:
+
+```text
+C:\Users\hiroo\anaconda3\envs\glodon\python.exe balcony_train/crop_balconies_sam3.py --device cuda
+```
+
+Defaults: ``--in-dir data/base`` → ``--out-dir runs/balcony_clf/crops/unlabeled``.
+If few boxes, try ``--threshold 0.35``.
+
 ## 2. Label (kind + open_work material)
+
+Interactive UI:
 
 ```text
 python balcony_train/label_ui.py
 ```
 
-Writes `runs/balcony_clf/labels.jsonl` and moves images into `crops/{kind}/`.
+Or bulk-label FLUX.2 synth crops from filename prefixes (no UI):
+
+```text
+C:\Users\hiroo\anaconda3\envs\glodon\python.exe balcony_train/label_from_prefix.py --unlabeled-dir runs/balcony_clf/crops/unlabeled
+```
+
+Optional dry-run: add `--dry-run`. Writes `runs/balcony_clf/labels.jsonl` and moves
+images into `crops/{kind}/`.
 
 ## 3. Train (multitask)
 
