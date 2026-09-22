@@ -1,124 +1,117 @@
 """Prompts for synthetic solid balcony railing crops (FLUX.2).
 
 Target look:
-- integral parapet / waist wall; no openings; mass / wall-like appearance
+- opaque concrete parapet, no openings, color near RGB 137, 122, 99
+- slight yellow or orange variation, still mainly concrete
+- a thin metal handrail along the top of the wall
+- occasional wall decoration, and sometimes a person or plant at the edge
 
 Shared photo constraints:
-- street-side viewpoint (including low-angle looking-up / strong perspective)
-- medium facade crop with full window visible
+- street-side viewpoint
+- distant, dim, horizontal crop with only part of the window
 - balcony on floors 2–10
 """
 
 from __future__ import annotations
 
+_FLOORS = (
+    "2nd",
+    "3rd",
+    "4th",
+    "5th",
+    "6th",
+    "7th",
+    "8th",
+    "9th",
+    "10th",
+    "5th",
+)
+
+# viewpoint, concrete color, wall decoration, edge interference
+_SCENES: tuple[tuple[str, str, str, str], ...] = (
+    (
+        "street-side photo",
+        "dusty warm gray-brown concrete RGB 137, 122, 99",
+        "a small tile decoration band on the wall",
+        "no pedestrian",
+    ),
+    (
+        "sidewalk view looking up",
+        "concrete mainly RGB 137, 122, 99 with a slight yellow stain",
+        "a plain concrete face with a faint horizontal joint",
+        "a small pedestrian at the far left edge, not the subject",
+    ),
+    (
+        "distant street photo",
+        "concrete RGB 137, 122, 99 with slight orange weathering on one side",
+        "a stained patch on the concrete",
+        "a potted plant at the right end",
+    ),
+    (
+        "street view from across the road",
+        "warm gray-brown concrete close to RGB 137, 122, 99, a bit more yellow",
+        "a decorative relief panel on the wall",
+        "no person",
+    ),
+    (
+        "sidewalk facade crop",
+        "concrete around RGB 137, 122, 99 with a small orange patch",
+        "a narrow ornament band",
+        "ivy climbing one corner",
+    ),
+    (
+        "street photo",
+        "mostly plain concrete RGB 137, 122, 99",
+        "a small cornice",
+        "a hanging plant and a tiny distant pedestrian near the edge",
+    ),
+    (
+        "looking up from the sidewalk",
+        "dusty concrete with slight yellow-brown variation around RGB 137, 122, 99",
+        "a small wall emblem",
+        "no people",
+    ),
+    (
+        "street-side view",
+        "solid concrete mainly RGB 137, 122, 99 with faint orange discoloration",
+        "a stained concrete decoration",
+        "one planter with a green plant",
+    ),
+    (
+        "medium-far street crop",
+        "concrete RGB 137, 122, 99, a little yellower",
+        "ornamental molding on the wall",
+        "a person partly cut off at the frame edge, not a portrait",
+    ),
+    (
+        "distant street-side crop",
+        "plain dusty gray-brown concrete RGB 137, 122, 99, almost no extra color",
+        "no extra ornament",
+        "one small potted plant and no pedestrian",
+    ),
+)
+
+
+def _solid_prompt(floor: str, scene: tuple[str, str, str, str]) -> str:
+    viewpoint, color, decoration, interference = scene
+    return (
+        f"{viewpoint} of a {floor}-floor balcony, opaque solid concrete parapet "
+        f"with no openings, {color}, a thin metal handrail mounted along the top "
+        f"of the concrete wall, {decoration}, {interference}, dim overcast daylight, "
+        "distant horizontal crop, partial window behind, low-resolution phone photo, "
+        "street-side exterior only, not from on the balcony"
+    )
+
+
 SOLID_PROMPTS: list[str] = [
-    'street-side medium shot of a 2nd-floor balcony, beige stucco facade, solid concrete parapet wall, no openings, heavy mass wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 3rd-floor balcony, grey concrete facade, solid stone waist wall, opaque parapet with no gaps, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 4th-floor balcony, strong perspective foreshortening, red brick facade, continuous plastered solid parapet, wall-like mass with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 5th-floor balcony, tall facade perspective, white painted facade, solid mortar-finished parapet wall, thick opaque enclosure, no rail openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 6th-floor balcony, perspective foreshortening, ochre plaster facade, solid stucco parapet, integral wall appearance with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 7th-floor balcony, dark charcoal modern facade, solid concrete block parapet, mass wall look, no balusters or open panels, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 8th-floor balcony, sandstone historic facade, solid masonry balcony parapet, opaque wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 9th-floor balcony with perspective, pale blue apartment facade, white solid plaster parapet, continuous waist wall with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 10th-floor balcony, strong upward perspective, terracotta tiled facade accents, thick solid stone parapet reading as one wall mass, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 2nd-floor balcony, limestone classical facade, solid rendered concrete parapet finish, no openings, wall-like appearance, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 3rd-floor balcony, beige stucco facade, solid concrete parapet wall, no openings, heavy mass wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 4th-floor balcony, grey concrete facade, solid stone waist wall, opaque parapet with no gaps, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 5th-floor balcony, strong perspective foreshortening, red brick facade, continuous plastered solid parapet, wall-like mass with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 6th-floor balcony, tall facade perspective, white painted facade, solid mortar-finished parapet wall, thick opaque enclosure, no rail openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 7th-floor balcony, perspective foreshortening, ochre plaster facade, solid stucco parapet, integral wall appearance with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 8th-floor balcony, dark charcoal modern facade, solid concrete block parapet, mass wall look, no balusters or open panels, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 9th-floor balcony, sandstone historic facade, solid masonry balcony parapet, opaque wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 10th-floor balcony with perspective, pale blue apartment facade, white solid plaster parapet, continuous waist wall with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 2nd-floor balcony, strong upward perspective, terracotta tiled facade accents, thick solid stone parapet reading as one wall mass, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 3rd-floor balcony, limestone classical facade, solid rendered concrete parapet finish, no openings, wall-like appearance, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 4th-floor balcony, beige stucco facade, solid concrete parapet wall, no openings, heavy mass wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 5th-floor balcony, grey concrete facade, solid stone waist wall, opaque parapet with no gaps, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 6th-floor balcony, strong perspective foreshortening, red brick facade, continuous plastered solid parapet, wall-like mass with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 7th-floor balcony, tall facade perspective, white painted facade, solid mortar-finished parapet wall, thick opaque enclosure, no rail openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 8th-floor balcony, perspective foreshortening, ochre plaster facade, solid stucco parapet, integral wall appearance with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 9th-floor balcony, dark charcoal modern facade, solid concrete block parapet, mass wall look, no balusters or open panels, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 10th-floor balcony, sandstone historic facade, solid masonry balcony parapet, opaque wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 2nd-floor balcony with perspective, pale blue apartment facade, white solid plaster parapet, continuous waist wall with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 3rd-floor balcony, strong upward perspective, terracotta tiled facade accents, thick solid stone parapet reading as one wall mass, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 4th-floor balcony, limestone classical facade, solid rendered concrete parapet finish, no openings, wall-like appearance, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 5th-floor balcony, beige stucco facade, solid concrete parapet wall, no openings, heavy mass wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 6th-floor balcony, grey concrete facade, solid stone waist wall, opaque parapet with no gaps, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 7th-floor balcony, strong perspective foreshortening, red brick facade, continuous plastered solid parapet, wall-like mass with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 8th-floor balcony, tall facade perspective, white painted facade, solid mortar-finished parapet wall, thick opaque enclosure, no rail openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 9th-floor balcony, perspective foreshortening, ochre plaster facade, solid stucco parapet, integral wall appearance with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 10th-floor balcony, dark charcoal modern facade, solid concrete block parapet, mass wall look, no balusters or open panels, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 2nd-floor balcony, sandstone historic facade, solid masonry balcony parapet, opaque wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 3rd-floor balcony with perspective, pale blue apartment facade, white solid plaster parapet, continuous waist wall with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 4th-floor balcony, strong upward perspective, terracotta tiled facade accents, thick solid stone parapet reading as one wall mass, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 5th-floor balcony, limestone classical facade, solid rendered concrete parapet finish, no openings, wall-like appearance, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 6th-floor balcony, beige stucco facade, solid concrete parapet wall, no openings, heavy mass wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 7th-floor balcony, grey concrete facade, solid stone waist wall, opaque parapet with no gaps, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 8th-floor balcony, strong perspective foreshortening, red brick facade, continuous plastered solid parapet, wall-like mass with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 9th-floor balcony, tall facade perspective, white painted facade, solid mortar-finished parapet wall, thick opaque enclosure, no rail openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 10th-floor balcony, perspective foreshortening, ochre plaster facade, solid stucco parapet, integral wall appearance with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 2nd-floor balcony, dark charcoal modern facade, solid concrete block parapet, mass wall look, no balusters or open panels, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 3rd-floor balcony, sandstone historic facade, solid masonry balcony parapet, opaque wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 4th-floor balcony with perspective, pale blue apartment facade, white solid plaster parapet, continuous waist wall with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 5th-floor balcony, strong upward perspective, terracotta tiled facade accents, thick solid stone parapet reading as one wall mass, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 6th-floor balcony, limestone classical facade, solid rendered concrete parapet finish, no openings, wall-like appearance, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 7th-floor balcony, beige stucco facade, solid concrete parapet wall, no openings, heavy mass wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 8th-floor balcony, grey concrete facade, solid stone waist wall, opaque parapet with no gaps, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 9th-floor balcony, strong perspective foreshortening, red brick facade, continuous plastered solid parapet, wall-like mass with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 10th-floor balcony, tall facade perspective, white painted facade, solid mortar-finished parapet wall, thick opaque enclosure, no rail openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 2nd-floor balcony, perspective foreshortening, ochre plaster facade, solid stucco parapet, integral wall appearance with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 3rd-floor balcony, dark charcoal modern facade, solid concrete block parapet, mass wall look, no balusters or open panels, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 4th-floor balcony, sandstone historic facade, solid masonry balcony parapet, opaque wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 5th-floor balcony with perspective, pale blue apartment facade, white solid plaster parapet, continuous waist wall with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 6th-floor balcony, strong upward perspective, terracotta tiled facade accents, thick solid stone parapet reading as one wall mass, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 7th-floor balcony, limestone classical facade, solid rendered concrete parapet finish, no openings, wall-like appearance, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 8th-floor balcony, beige stucco facade, solid concrete parapet wall, no openings, heavy mass wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 9th-floor balcony, grey concrete facade, solid stone waist wall, opaque parapet with no gaps, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 10th-floor balcony, strong perspective foreshortening, red brick facade, continuous plastered solid parapet, wall-like mass with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 2nd-floor balcony, tall facade perspective, white painted facade, solid mortar-finished parapet wall, thick opaque enclosure, no rail openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 3rd-floor balcony, perspective foreshortening, ochre plaster facade, solid stucco parapet, integral wall appearance with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 4th-floor balcony, dark charcoal modern facade, solid concrete block parapet, mass wall look, no balusters or open panels, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 5th-floor balcony, sandstone historic facade, solid masonry balcony parapet, opaque wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 6th-floor balcony with perspective, pale blue apartment facade, white solid plaster parapet, continuous waist wall with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 7th-floor balcony, strong upward perspective, terracotta tiled facade accents, thick solid stone parapet reading as one wall mass, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 8th-floor balcony, limestone classical facade, solid rendered concrete parapet finish, no openings, wall-like appearance, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 9th-floor balcony, beige stucco facade, solid concrete parapet wall, no openings, heavy mass wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 10th-floor balcony, grey concrete facade, solid stone waist wall, opaque parapet with no gaps, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 2nd-floor balcony, strong perspective foreshortening, red brick facade, continuous plastered solid parapet, wall-like mass with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 3rd-floor balcony, tall facade perspective, white painted facade, solid mortar-finished parapet wall, thick opaque enclosure, no rail openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 4th-floor balcony, perspective foreshortening, ochre plaster facade, solid stucco parapet, integral wall appearance with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 5th-floor balcony, dark charcoal modern facade, solid concrete block parapet, mass wall look, no balusters or open panels, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 6th-floor balcony, sandstone historic facade, solid masonry balcony parapet, opaque wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 7th-floor balcony with perspective, pale blue apartment facade, white solid plaster parapet, continuous waist wall with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 8th-floor balcony, strong upward perspective, terracotta tiled facade accents, thick solid stone parapet reading as one wall mass, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 9th-floor balcony, limestone classical facade, solid rendered concrete parapet finish, no openings, wall-like appearance, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 10th-floor balcony, beige stucco facade, solid concrete parapet wall, no openings, heavy mass wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 2nd-floor balcony, grey concrete facade, solid stone waist wall, opaque parapet with no gaps, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 3rd-floor balcony, strong perspective foreshortening, red brick facade, continuous plastered solid parapet, wall-like mass with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 4th-floor balcony, tall facade perspective, white painted facade, solid mortar-finished parapet wall, thick opaque enclosure, no rail openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 5th-floor balcony, perspective foreshortening, ochre plaster facade, solid stucco parapet, integral wall appearance with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 6th-floor balcony, dark charcoal modern facade, solid concrete block parapet, mass wall look, no balusters or open panels, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 7th-floor balcony, sandstone historic facade, solid masonry balcony parapet, opaque wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 8th-floor balcony with perspective, pale blue apartment facade, white solid plaster parapet, continuous waist wall with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 9th-floor balcony, strong upward perspective, terracotta tiled facade accents, thick solid stone parapet reading as one wall mass, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 10th-floor balcony, limestone classical facade, solid rendered concrete parapet finish, no openings, wall-like appearance, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 2nd-floor balcony, beige stucco facade, solid concrete parapet wall, no openings, heavy mass wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 3rd-floor balcony, grey concrete facade, solid stone waist wall, opaque parapet with no gaps, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 4th-floor balcony, strong perspective foreshortening, red brick facade, continuous plastered solid parapet, wall-like mass with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 5th-floor balcony, tall facade perspective, white painted facade, solid mortar-finished parapet wall, thick opaque enclosure, no rail openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 6th-floor balcony, perspective foreshortening, ochre plaster facade, solid stucco parapet, integral wall appearance with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 7th-floor balcony, dark charcoal modern facade, solid concrete block parapet, mass wall look, no balusters or open panels, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 8th-floor balcony, sandstone historic facade, solid masonry balcony parapet, opaque wall-like railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 9th-floor balcony with perspective, pale blue apartment facade, white solid plaster parapet, continuous waist wall with no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 10th-floor balcony, strong upward perspective, terracotta tiled facade accents, thick solid stone parapet reading as one wall mass, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 2nd-floor balcony, limestone classical facade, solid rendered concrete parapet finish, no openings, wall-like appearance, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
+    _solid_prompt(floor, scene) for floor in _FLOORS for scene in _SCENES
 ]
 
 NEGATIVE_PROMPT = (
-    'glass panels, frosted glass, metal plate privacy screen, thin frame and panel, '
-    'openwork balusters, vertical balusters, pierced grille, decorative iron, '
-    'gaps between posts, see-through railing, '
-    'ground-floor porch, view from on the balcony looking out, '
-    'extreme close-up of railing only, cropped window, cartoon, blurry'
+    "glass panels, frosted glass, metal plate privacy screen, "
+    "openwork balusters, vertical baluster railing, pierced grille, "
+    "see-through railing instead of a wall, "
+    "white facade, red brick parapet, pale blue wall, charcoal black wall, "
+    "ground-floor porch, view from on the balcony looking out, "
+    "extreme close-up of railing only, cartoon, cgi, sharp studio render"
 )
-
