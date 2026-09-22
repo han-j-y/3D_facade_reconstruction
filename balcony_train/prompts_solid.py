@@ -1,14 +1,16 @@
 """Prompts for synthetic solid balcony railing crops (FLUX.2).
 
 Target look:
-- opaque concrete parapet, no openings, color near RGB 137, 122, 99
-- slight yellow or orange variation, still mainly concrete
-- a thin metal handrail along the top of the wall
-- occasional wall decoration, and sometimes a person or plant at the edge
+- solid parapet on a historic building, no openings
+- color from paint or render (ochre, cream, pale yellow, pinkish plaster),
+  or weathered grey stone
+- heavy relief ornament across the parapet surface, recessed but not pierced
+- carved stone brackets under the slab; a metal handrail only sometimes
+- sometimes a person or plant at the edge
 
 Shared photo constraints:
 - street-side viewpoint
-- distant, dim, horizontal crop with only part of the window
+- distant, dim, horizontal crop
 - balcony on floors 2–10
 """
 
@@ -27,67 +29,67 @@ _FLOORS = (
     "5th",
 )
 
-# viewpoint, concrete color, wall decoration, edge interference
+# viewpoint, painted color, relief decoration, edge interference
 _SCENES: tuple[tuple[str, str, str, str], ...] = (
     (
         "street-side photo",
-        "dusty warm gray-brown concrete RGB 137, 122, 99",
-        "a small tile decoration band on the wall",
+        "painted ochre yellow render",
+        "a continuous row of recessed quatrefoil relief panels",
         "no pedestrian",
     ),
     (
         "sidewalk view looking up",
-        "concrete mainly RGB 137, 122, 99 with a slight yellow stain",
-        "a plain concrete face with a faint horizontal joint",
+        "cream painted stucco",
+        "a diamond lattice pattern carved into square panels",
         "a small pedestrian at the far left edge, not the subject",
     ),
     (
         "distant street photo",
-        "concrete RGB 137, 122, 99 with slight orange weathering on one side",
-        "a stained patch on the concrete",
+        "warm pale yellow painted stone",
+        "blind balusters carved in low relief on the wall surface, a thin metal handrail on top",
         "a potted plant at the right end",
     ),
     (
         "street view from across the road",
-        "warm gray-brown concrete close to RGB 137, 122, 99, a bit more yellow",
-        "a decorative relief panel on the wall",
+        "pinkish painted plaster",
+        "a blind gothic arcade of small pointed trefoil arches in relief",
         "no person",
     ),
     (
         "sidewalk facade crop",
-        "concrete around RGB 137, 122, 99 with a small orange patch",
-        "a narrow ornament band",
+        "weathered grey stone darkened by soot",
+        "a row of carved circular rosette medallions",
         "ivy climbing one corner",
     ),
     (
         "street photo",
-        "mostly plain concrete RGB 137, 122, 99",
-        "a small cornice",
+        "beige painted render",
+        "recessed rectangular panels with carved floral motifs",
         "a hanging plant and a tiny distant pedestrian near the edge",
     ),
     (
         "looking up from the sidewalk",
-        "dusty concrete with slight yellow-brown variation around RGB 137, 122, 99",
-        "a small wall emblem",
+        "pale yellow painted wall",
+        "a blind lattice grille pattern carved into solid stone",
         "no people",
     ),
     (
         "street-side view",
-        "solid concrete mainly RGB 137, 122, 99 with faint orange discoloration",
-        "a stained concrete decoration",
+        "dark grey stone",
+        "geometric relief panels under a heavy cornice, a thin metal handrail on top",
         "one planter with a green plant",
     ),
     (
         "medium-far street crop",
-        "concrete RGB 137, 122, 99, a little yellower",
-        "ornamental molding on the wall",
+        "ochre painted plaster",
+        "carved garlands and scroll ornaments across the parapet",
         "a person partly cut off at the frame edge, not a portrait",
     ),
     (
         "distant street-side crop",
-        "plain dusty gray-brown concrete RGB 137, 122, 99, almost no extra color",
-        "no extra ornament",
-        "one small potted plant and no pedestrian",
+        "cream painted stone",
+        "small pilasters dividing ornate relief panels",
+        "no pedestrian",
     ),
 )
 
@@ -95,11 +97,13 @@ _SCENES: tuple[tuple[str, str, str, str], ...] = (
 def _solid_prompt(floor: str, scene: tuple[str, str, str, str]) -> str:
     viewpoint, color, decoration, interference = scene
     return (
-        f"{viewpoint} of a {floor}-floor balcony, opaque solid concrete parapet "
-        f"with no openings, {color}, a thin metal handrail mounted along the top "
-        f"of the concrete wall, {decoration}, {interference}, dim overcast daylight, "
-        "distant horizontal crop, partial window behind, low-resolution phone photo, "
-        "street-side exterior only, not from on the balcony"
+        f"{viewpoint} of a {floor}-floor balcony on a historic building, "
+        f"solid parapet with no openings, {color}, {decoration} on the parapet "
+        "surface, the ornament is recessed but not pierced, no sky or window "
+        "visible through the parapet, heavy carved stone brackets under the "
+        f"balcony slab, {interference}, dim overcast daylight, distant horizontal "
+        "crop, low-resolution phone photo, street-side exterior only, "
+        "not from on the balcony"
     )
 
 
@@ -109,9 +113,9 @@ SOLID_PROMPTS: list[str] = [
 
 NEGATIVE_PROMPT = (
     "glass panels, frosted glass, metal plate privacy screen, "
-    "openwork balusters, vertical baluster railing, pierced grille, "
-    "see-through railing instead of a wall, "
-    "white facade, red brick parapet, pale blue wall, charcoal black wall, "
+    "openwork balusters, pierced grille, see-through openings, "
+    "sky visible through the railing, plain unornamented concrete, "
+    "modern facade, red brick parapet, pale blue wall, "
     "ground-floor porch, view from on the balcony looking out, "
     "extreme close-up of railing only, cartoon, cgi, sharp studio render"
 )
