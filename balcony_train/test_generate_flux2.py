@@ -111,7 +111,7 @@ class GenerateFlux2HelperTests(unittest.TestCase):
             set(PROMPT_SETS), {"masonry", "metal", "surface_panel", "solid"}
         )
         self.assertEqual(len(SURFACE_PANEL_PROMPTS), 100)
-        self.assertEqual(len(SOLID_PROMPTS), 100)
+        self.assertEqual(len(SOLID_PROMPTS), 50)
         self.assertEqual(len(METAL_OPENWORK_PROMPTS), 100)
         surf = " ".join(SURFACE_PANEL_PROMPTS).lower()
         solid = " ".join(SOLID_PROMPTS).lower()
