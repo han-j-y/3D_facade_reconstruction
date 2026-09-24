@@ -110,12 +110,16 @@ class GenerateFlux2HelperTests(unittest.TestCase):
         self.assertEqual(
             set(PROMPT_SETS), {"masonry", "metal", "surface_panel", "solid"}
         )
-        self.assertEqual(len(SURFACE_PANEL_PROMPTS), 100)
+        self.assertEqual(len(SURFACE_PANEL_PROMPTS), 50)
+        self.assertEqual(len(set(SURFACE_PANEL_PROMPTS)), 50)
         self.assertEqual(len(SOLID_PROMPTS), 50)
         self.assertEqual(len(METAL_OPENWORK_PROMPTS), 100)
         surf = " ".join(SURFACE_PANEL_PROMPTS).lower()
         solid = " ".join(SOLID_PROMPTS).lower()
         metal = " ".join(METAL_OPENWORK_PROMPTS).lower()
+        self.assertIn("103,104,99", surf)
+        self.assertTrue(any(k in surf for k in ("white", "grey", "glass", "dark red", "light blue")))
+        self.assertTrue("plant" in surf or "pedestrian" in surf or "tree" in surf)
         for p in SURFACE_PANEL_PROMPTS:
             pl = p.lower()
             self.assertTrue("street" in pl or "sidewalk" in pl, msg=p)

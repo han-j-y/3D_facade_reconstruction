@@ -23,7 +23,7 @@ C:\Users\hiroo\anaconda3\envs\glodon\python.exe -m pip install -r requirements-f
 # Accept https://huggingface.co/black-forest-labs/FLUX.2-dev then: huggingface-cli login
 python balcony_train/generate_flux2.py -n 40 --quantized --device cuda --prompt-set masonry
 python balcony_train/generate_flux2.py -n 300 --quantized --device cuda --prompt-set metal
-python balcony_train/generate_flux2.py -n 40 --quantized --device cuda --prompt-set surface_panel
+python balcony_train/generate_flux2.py -n 50 --quantized --device cuda --prompt-set surface_panel
 python balcony_train/generate_flux2.py -n 40 --quantized --device cuda --prompt-set solid
 ```
 

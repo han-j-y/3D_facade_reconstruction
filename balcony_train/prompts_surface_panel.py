@@ -1,124 +1,93 @@
-"""Prompts for synthetic surface_panel balcony railing crops (FLUX.2).
+"""50 surface_panel FLUX.2 prompts (wide balcony-band crops).
 
-Target look:
-- continuous panel (glass / frosted / metal plate / privacy screen), frame + panel
+Constraints baked into every prompt:
+- street-side, floors 2–10, frame + continuous panel (not openwork)
+- wall near olive-grey RGB 103,104,99
+- panel colors: white, grey, glass, dark red, light blue
+- panel height:width from about 1:2 to 2:1
+- some prompts add plant or pedestrian occlusion
 
-Shared photo constraints:
-- street-side viewpoint (including low-angle looking-up / strong perspective)
-- medium facade crop with full window visible
-- balcony on floors 2–10
+After generation, match real crops with ``resize_flux_images.py`` (120×44).
 """
 
 from __future__ import annotations
 
-SURFACE_PANEL_PROMPTS: list[str] = [
-    'street-side medium shot of a 2nd-floor balcony, beige stucco facade, modern flat clear glass panels in a thin metal frame, continuous panel surface not balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 3rd-floor balcony, grey concrete facade, frosted glass privacy panels in a dark frame, seamless panel look, almost no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 4th-floor balcony, strong perspective foreshortening, red brick facade, flat metal plate panels in a slim frame, modern continuous surface railing, not openwork, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 5th-floor balcony, tall facade perspective, white painted facade, frosted privacy-glass panels in aluminum frames, flat modern look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 6th-floor balcony, perspective foreshortening, ochre plaster facade, tinted glass surface panels in a thin black frame, continuous panel band, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 7th-floor balcony, dark charcoal modern facade, flat sheet-metal privacy panels in a frame, modern flush look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 8th-floor balcony, sandstone historic facade, continuous frosted glass panel railing in a metal frame, no balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 9th-floor balcony with perspective, pale blue apartment facade, white-framed frosted glass balcony panels, flat surface-panel railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 10th-floor balcony, strong upward perspective, terracotta tiled facade accents, dark metal frame with opaque privacy screen panels, continuous modern surface, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 2nd-floor balcony, limestone classical facade, brushed metal plate panels in a rectangular frame, continuous panel feel, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 3rd-floor balcony, beige stucco facade, modern flat clear glass panels in a thin metal frame, continuous panel surface not balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 4th-floor balcony, grey concrete facade, frosted glass privacy panels in a dark frame, seamless panel look, almost no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 5th-floor balcony, strong perspective foreshortening, red brick facade, flat metal plate panels in a slim frame, modern continuous surface railing, not openwork, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 6th-floor balcony, tall facade perspective, white painted facade, frosted privacy-glass panels in aluminum frames, flat modern look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 7th-floor balcony, perspective foreshortening, ochre plaster facade, tinted glass surface panels in a thin black frame, continuous panel band, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 8th-floor balcony, dark charcoal modern facade, flat sheet-metal privacy panels in a frame, modern flush look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 9th-floor balcony, sandstone historic facade, continuous frosted glass panel railing in a metal frame, no balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 10th-floor balcony with perspective, pale blue apartment facade, white-framed frosted glass balcony panels, flat surface-panel railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 2nd-floor balcony, strong upward perspective, terracotta tiled facade accents, dark metal frame with opaque privacy screen panels, continuous modern surface, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 3rd-floor balcony, limestone classical facade, brushed metal plate panels in a rectangular frame, continuous panel feel, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 4th-floor balcony, beige stucco facade, modern flat clear glass panels in a thin metal frame, continuous panel surface not balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 5th-floor balcony, grey concrete facade, frosted glass privacy panels in a dark frame, seamless panel look, almost no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 6th-floor balcony, strong perspective foreshortening, red brick facade, flat metal plate panels in a slim frame, modern continuous surface railing, not openwork, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 7th-floor balcony, tall facade perspective, white painted facade, frosted privacy-glass panels in aluminum frames, flat modern look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 8th-floor balcony, perspective foreshortening, ochre plaster facade, tinted glass surface panels in a thin black frame, continuous panel band, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 9th-floor balcony, dark charcoal modern facade, flat sheet-metal privacy panels in a frame, modern flush look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 10th-floor balcony, sandstone historic facade, continuous frosted glass panel railing in a metal frame, no balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 2nd-floor balcony with perspective, pale blue apartment facade, white-framed frosted glass balcony panels, flat surface-panel railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 3rd-floor balcony, strong upward perspective, terracotta tiled facade accents, dark metal frame with opaque privacy screen panels, continuous modern surface, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 4th-floor balcony, limestone classical facade, brushed metal plate panels in a rectangular frame, continuous panel feel, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 5th-floor balcony, beige stucco facade, modern flat clear glass panels in a thin metal frame, continuous panel surface not balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 6th-floor balcony, grey concrete facade, frosted glass privacy panels in a dark frame, seamless panel look, almost no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 7th-floor balcony, strong perspective foreshortening, red brick facade, flat metal plate panels in a slim frame, modern continuous surface railing, not openwork, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 8th-floor balcony, tall facade perspective, white painted facade, frosted privacy-glass panels in aluminum frames, flat modern look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 9th-floor balcony, perspective foreshortening, ochre plaster facade, tinted glass surface panels in a thin black frame, continuous panel band, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 10th-floor balcony, dark charcoal modern facade, flat sheet-metal privacy panels in a frame, modern flush look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 2nd-floor balcony, sandstone historic facade, continuous frosted glass panel railing in a metal frame, no balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 3rd-floor balcony with perspective, pale blue apartment facade, white-framed frosted glass balcony panels, flat surface-panel railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 4th-floor balcony, strong upward perspective, terracotta tiled facade accents, dark metal frame with opaque privacy screen panels, continuous modern surface, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 5th-floor balcony, limestone classical facade, brushed metal plate panels in a rectangular frame, continuous panel feel, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 6th-floor balcony, beige stucco facade, modern flat clear glass panels in a thin metal frame, continuous panel surface not balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 7th-floor balcony, grey concrete facade, frosted glass privacy panels in a dark frame, seamless panel look, almost no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 8th-floor balcony, strong perspective foreshortening, red brick facade, flat metal plate panels in a slim frame, modern continuous surface railing, not openwork, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 9th-floor balcony, tall facade perspective, white painted facade, frosted privacy-glass panels in aluminum frames, flat modern look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 10th-floor balcony, perspective foreshortening, ochre plaster facade, tinted glass surface panels in a thin black frame, continuous panel band, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 2nd-floor balcony, dark charcoal modern facade, flat sheet-metal privacy panels in a frame, modern flush look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 3rd-floor balcony, sandstone historic facade, continuous frosted glass panel railing in a metal frame, no balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 4th-floor balcony with perspective, pale blue apartment facade, white-framed frosted glass balcony panels, flat surface-panel railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 5th-floor balcony, strong upward perspective, terracotta tiled facade accents, dark metal frame with opaque privacy screen panels, continuous modern surface, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 6th-floor balcony, limestone classical facade, brushed metal plate panels in a rectangular frame, continuous panel feel, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 7th-floor balcony, beige stucco facade, modern flat clear glass panels in a thin metal frame, continuous panel surface not balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 8th-floor balcony, grey concrete facade, frosted glass privacy panels in a dark frame, seamless panel look, almost no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 9th-floor balcony, strong perspective foreshortening, red brick facade, flat metal plate panels in a slim frame, modern continuous surface railing, not openwork, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 10th-floor balcony, tall facade perspective, white painted facade, frosted privacy-glass panels in aluminum frames, flat modern look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 2nd-floor balcony, perspective foreshortening, ochre plaster facade, tinted glass surface panels in a thin black frame, continuous panel band, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 3rd-floor balcony, dark charcoal modern facade, flat sheet-metal privacy panels in a frame, modern flush look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 4th-floor balcony, sandstone historic facade, continuous frosted glass panel railing in a metal frame, no balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 5th-floor balcony with perspective, pale blue apartment facade, white-framed frosted glass balcony panels, flat surface-panel railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 6th-floor balcony, strong upward perspective, terracotta tiled facade accents, dark metal frame with opaque privacy screen panels, continuous modern surface, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 7th-floor balcony, limestone classical facade, brushed metal plate panels in a rectangular frame, continuous panel feel, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 8th-floor balcony, beige stucco facade, modern flat clear glass panels in a thin metal frame, continuous panel surface not balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 9th-floor balcony, grey concrete facade, frosted glass privacy panels in a dark frame, seamless panel look, almost no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 10th-floor balcony, strong perspective foreshortening, red brick facade, flat metal plate panels in a slim frame, modern continuous surface railing, not openwork, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 2nd-floor balcony, tall facade perspective, white painted facade, frosted privacy-glass panels in aluminum frames, flat modern look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 3rd-floor balcony, perspective foreshortening, ochre plaster facade, tinted glass surface panels in a thin black frame, continuous panel band, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 4th-floor balcony, dark charcoal modern facade, flat sheet-metal privacy panels in a frame, modern flush look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 5th-floor balcony, sandstone historic facade, continuous frosted glass panel railing in a metal frame, no balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 6th-floor balcony with perspective, pale blue apartment facade, white-framed frosted glass balcony panels, flat surface-panel railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 7th-floor balcony, strong upward perspective, terracotta tiled facade accents, dark metal frame with opaque privacy screen panels, continuous modern surface, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 8th-floor balcony, limestone classical facade, brushed metal plate panels in a rectangular frame, continuous panel feel, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 9th-floor balcony, beige stucco facade, modern flat clear glass panels in a thin metal frame, continuous panel surface not balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 10th-floor balcony, grey concrete facade, frosted glass privacy panels in a dark frame, seamless panel look, almost no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 2nd-floor balcony, strong perspective foreshortening, red brick facade, flat metal plate panels in a slim frame, modern continuous surface railing, not openwork, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 3rd-floor balcony, tall facade perspective, white painted facade, frosted privacy-glass panels in aluminum frames, flat modern look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 4th-floor balcony, perspective foreshortening, ochre plaster facade, tinted glass surface panels in a thin black frame, continuous panel band, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 5th-floor balcony, dark charcoal modern facade, flat sheet-metal privacy panels in a frame, modern flush look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 6th-floor balcony, sandstone historic facade, continuous frosted glass panel railing in a metal frame, no balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 7th-floor balcony with perspective, pale blue apartment facade, white-framed frosted glass balcony panels, flat surface-panel railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 8th-floor balcony, strong upward perspective, terracotta tiled facade accents, dark metal frame with opaque privacy screen panels, continuous modern surface, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 9th-floor balcony, limestone classical facade, brushed metal plate panels in a rectangular frame, continuous panel feel, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 10th-floor balcony, beige stucco facade, modern flat clear glass panels in a thin metal frame, continuous panel surface not balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 2nd-floor balcony, grey concrete facade, frosted glass privacy panels in a dark frame, seamless panel look, almost no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 3rd-floor balcony, strong perspective foreshortening, red brick facade, flat metal plate panels in a slim frame, modern continuous surface railing, not openwork, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 4th-floor balcony, tall facade perspective, white painted facade, frosted privacy-glass panels in aluminum frames, flat modern look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 5th-floor balcony, perspective foreshortening, ochre plaster facade, tinted glass surface panels in a thin black frame, continuous panel band, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 6th-floor balcony, dark charcoal modern facade, flat sheet-metal privacy panels in a frame, modern flush look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 7th-floor balcony, sandstone historic facade, continuous frosted glass panel railing in a metal frame, no balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 8th-floor balcony with perspective, pale blue apartment facade, white-framed frosted glass balcony panels, flat surface-panel railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 9th-floor balcony, strong upward perspective, terracotta tiled facade accents, dark metal frame with opaque privacy screen panels, continuous modern surface, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 10th-floor balcony, limestone classical facade, brushed metal plate panels in a rectangular frame, continuous panel feel, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'street-side medium shot of a 2nd-floor balcony, beige stucco facade, modern flat clear glass panels in a thin metal frame, continuous panel surface not balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'street view facade crop of a 3rd-floor balcony, grey concrete facade, frosted glass privacy panels in a dark frame, seamless panel look, almost no openings, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from the sidewalk looking up at a 4th-floor balcony, strong perspective foreshortening, red brick facade, flat metal plate panels in a slim frame, modern continuous surface railing, not openwork, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'street-level sidewalk looking upward toward a 5th-floor balcony, tall facade perspective, white painted facade, frosted privacy-glass panels in aluminum frames, flat modern look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'angled street photo looking up at a 6th-floor balcony, perspective foreshortening, ochre plaster facade, tinted glass surface panels in a thin black frame, continuous panel band, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-    'frontal street crop of a 7th-floor balcony, dark charcoal modern facade, flat sheet-metal privacy panels in a frame, modern flush look, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, overcast daylight',
-    'sidewalk street-side view of a 8th-floor balcony, sandstone historic facade, continuous frosted glass panel railing in a metal frame, no balusters, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, clear afternoon light',
-    'from across the street, looking up at a 9th-floor balcony with perspective, pale blue apartment facade, white-framed frosted glass balcony panels, flat surface-panel railing, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, soft morning light',
-    'low-angle street photo of a 10th-floor balcony, strong upward perspective, terracotta tiled facade accents, dark metal frame with opaque privacy screen panels, continuous modern surface, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, diffuse cloudy light',
-    'medium facade crop from the sidewalk of a 2nd-floor balcony, limestone classical facade, brushed metal plate panels in a rectangular frame, continuous panel feel, upper-story balcony unit, full window visible behind the railing, medium facade crop, street-side exterior only, not from on the balcony, not a railing-only close-up, bright daylight with soft shadows',
-]
-
-NEGATIVE_PROMPT = (
-    'openwork balusters, vertical baluster posts, pierced masonry grille, '
-    'decorative iron scrolls, many open gaps between rails, '
-    'solid concrete parapet wall without frame, thick masonry mass wall, '
-    'ground-floor porch, view from on the balcony looking out, '
-    'extreme close-up of railing only, cropped window, cartoon, blurry'
+FLOORS = (
+    "2nd-floor",
+    "3rd-floor",
+    "4th-floor",
+    "5th-floor",
+    "6th-floor",
+    "7th-floor",
+    "8th-floor",
+    "9th-floor",
+    "10th-floor",
 )
 
+VIEWS = (
+    "street-side wide crop of a {floor} balcony, looking slightly up",
+    "from the sidewalk looking up at a {floor} balcony, strong perspective, wide short crop",
+    "frontal street photo of a {floor} balcony railing band",
+    "low-angle sidewalk view of a {floor} balcony, foreshortened facade",
+    "across-the-street view looking up at a {floor} balcony, medium-wide crop",
+)
+
+# height:width in [1:2, 2:1]
+PANEL_SHAPES = (
+    "one wide frosted panel about twice as wide as tall (height:width near 1:2) in a thin metal frame",
+    "white opaque privacy panels, each nearly twice as wide as tall, continuous frame",
+    "grey metal plate panels with height:width near 1:1, slim dark frame, no gaps",
+    "clear glass panels in a black frame, slightly wider than tall",
+    "light blue tinted glass panels, height:width near 2:1 (taller than wide), thin aluminum frame",
+    "dark red solid privacy panels, moderately wide, height:width between 1:2 and 1:1, metal frame",
+    "white framed glass panels, almost square to slightly wide, continuous surface",
+    "grey frosted panels, wide band, height much smaller than width, no balusters",
+    "light blue metal privacy plates, height:width near 1:2, flush modern frame",
+    "dark red glass-look panels, height:width near 2:1, narrow vertical modules in one frame",
+)
+
+OCCLUSIONS = (
+    "",
+    "",
+    " a leafy plant partly overlaps the left of the railing",
+    " a pedestrian in the foreground partly blocks the lower panel",
+    " small tree branches cross the foreground in front of the panel",
+    " a potted shrub on the balcony edge occludes part of the panel",
+)
+
+LIGHTS = (
+    "overcast daylight",
+    "soft afternoon light",
+    "diffuse cloudy light",
+    "bright daylight with soft shadows",
+    "morning light",
+)
+
+TAIL = (
+    "olive-grey plaster wall close to RGB 103,104,99 behind the balcony, "
+    "continuous surface panel railing not openwork, no balusters, "
+    "full window still partly visible, street exterior only, not a close-up of the rail alone"
+)
+
+
+def _build_prompts(n: int = 50) -> list[str]:
+    prompts: list[str] = []
+    for i in range(n):
+        floor = FLOORS[i % len(FLOORS)]
+        view = VIEWS[i % len(VIEWS)].format(floor=floor)
+        shape = PANEL_SHAPES[i % len(PANEL_SHAPES)]
+        occ = OCCLUSIONS[i % len(OCCLUSIONS)]
+        light = LIGHTS[i % len(LIGHTS)]
+        prompts.append(f"{view}, {shape},{occ}, {TAIL}, {light}")
+    return prompts
+
+
+SURFACE_PANEL_PROMPTS: list[str] = _build_prompts(50)
+
+NEGATIVE_PROMPT = (
+    "openwork balusters, vertical baluster posts, pierced masonry grille, "
+    "decorative iron scrolls, many open gaps between rails, "
+    "solid concrete parapet wall without frame, thick masonry mass wall, "
+    "ground-floor porch, view from on the balcony looking out, "
+    "extreme close-up of railing only, cropped window, cartoon, blurry"
+)
