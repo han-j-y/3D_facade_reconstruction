@@ -5,6 +5,7 @@ Constraints baked into every prompt:
 - wall near olive-grey RGB 103,104,99
 - panel colors: white, grey, glass, dark red, light blue
 - panel height:width from about 1:2 to 2:1
+- about one in three prompts is a continuous panel with very weak seams
 - some prompts add plant or pedestrian occlusion
 
 After generation, match real crops with ``resize_flux_images.py`` (120×44).
@@ -46,6 +47,16 @@ PANEL_SHAPES = (
     "dark red glass-look panels, height:width near 2:1, narrow vertical modules in one frame",
 )
 
+# About 1/3 of prompts: continuous panel, joints almost invisible (still a panel, not a parapet).
+WEAK_SEAM_SHAPES = (
+    "weak seams, one nearly seamless frosted panel band, only faint hairline joints, very thin frame, height:width near 1:2, continuous surface panel not a solid parapet",
+    "weak seams, white continuous privacy panel with barely visible seams, low flush edge, almost no mullions, wide panel",
+    "weak seams, grey glass panel reading as one smooth sheet, joints easy to miss, slim frame, height:width near 1:1",
+    "weak seams, light blue tinted continuous panel, faint seams, minimal frame, slightly taller modules blended into one surface",
+    "weak seams, dark red continuous privacy panel, joints nearly invisible, thin metal lip only, not a masonry wall",
+    "weak seams, clear glass as one wide continuous panel, hairline joints, almost frameless look, height much smaller than width",
+)
+
 OCCLUSIONS = (
     "",
     "",
@@ -75,7 +86,11 @@ def _build_prompts(n: int = 50) -> list[str]:
     for i in range(n):
         floor = FLOORS[i % len(FLOORS)]
         view = VIEWS[i % len(VIEWS)].format(floor=floor)
-        shape = PANEL_SHAPES[i % len(PANEL_SHAPES)]
+        # Every third prompt: weak seams (indices 0, 3, 6, ... → 17/50).
+        if i % 3 == 0:
+            shape = WEAK_SEAM_SHAPES[(i // 3) % len(WEAK_SEAM_SHAPES)]
+        else:
+            shape = PANEL_SHAPES[i % len(PANEL_SHAPES)]
         occ = OCCLUSIONS[i % len(OCCLUSIONS)]
         light = LIGHTS[i % len(LIGHTS)]
         prompts.append(f"{view}, {shape},{occ}, {TAIL}, {light}")

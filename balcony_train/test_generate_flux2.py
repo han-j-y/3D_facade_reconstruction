@@ -120,6 +120,8 @@ class GenerateFlux2HelperTests(unittest.TestCase):
         self.assertIn("103,104,99", surf)
         self.assertTrue(any(k in surf for k in ("white", "grey", "glass", "dark red", "light blue")))
         self.assertTrue("plant" in surf or "pedestrian" in surf or "tree" in surf)
+        weak = sum(1 for p in SURFACE_PANEL_PROMPTS if "weak seams" in p.lower())
+        self.assertEqual(weak, 17)
         for p in SURFACE_PANEL_PROMPTS:
             pl = p.lower()
             self.assertTrue("street" in pl or "sidewalk" in pl, msg=p)
