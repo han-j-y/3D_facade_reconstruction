@@ -8,14 +8,14 @@ Prompt sets (``--prompt-set``):
   - ``metal`` — open_work + metal (bars / wrought iron / open patterns)
   - ``surface_panel`` — modern frame + glass/metal/privacy panels
   - ``solid`` — opaque wall / parapet mass
-  - ``triangle`` / ``trapezoid`` / ``hexagon`` — rare floor plans.
-    Four images per set (metal, masonry, solid, surface). Keep the full
-    frame; do not resize these to 120×44.
+  - ``triangle`` / ``trapezoid`` — the floor slab only. Three images
+    (metal, masonry, solid). ``hexagon`` adds a surface image (four).
+    Keep the full frame; do not resize these to 120×44.
 
-Remote GPU test (one of each railing kind)::
+Remote GPU test::
 
-    python balcony_train/generate_flux2.py -n 4 --quantized --device cuda --prompt-set triangle
-    python balcony_train/generate_flux2.py -n 4 --quantized --device cuda --prompt-set trapezoid
+    python balcony_train/generate_flux2.py -n 3 --quantized --device cuda --prompt-set triangle
+    python balcony_train/generate_flux2.py -n 3 --quantized --device cuda --prompt-set trapezoid
     python balcony_train/generate_flux2.py -n 4 --quantized --device cuda --prompt-set hexagon
 
 These sets always write ``crops/unlabeled/`` and stay there.
@@ -236,7 +236,7 @@ def iter_prompt_outputs(
     """Planned ``(path, prompt)`` pairs. Does not write files.
 
     When ``prefixes`` is set it must match ``prompts`` one-for-one, and each
-    image cycles that pair (metal, masonry, solid, surface for floor plans).
+    image uses that pair (metal, masonry, solid, and surface only for hexagon).
     A single ``prefix`` keeps the old sequential ``{prefix}NNN.png`` names.
     """
     if not prompts:

@@ -235,13 +235,25 @@ class GenerateFlux2HelperTests(unittest.TestCase):
             prefixes = prefixes_for(shape)
             self.assertEqual(PROMPT_SETS[shape]["prompts"], prompts)
             self.assertEqual(PROMPT_SETS[shape]["prefixes"], prefixes)
-            self.assertEqual(len(prompts), 4)
-            self.assertEqual(len(set(prompts)), 4)
+            self.assertEqual(len(prompts), len(prefixes))
+            self.assertEqual(len(set(prompts)), len(prefixes))
             joined = " ".join(prompts).lower()
             for cue in cues[shape]:
                 self.assertIn(cue, joined, msg=shape)
+            if shape in ("triangle", "trapezoid"):
+                self.assertEqual(
+                    prefixes,
+                    [
+                        f"flux2_{shape}_metal_",
+                        f"flux2_{shape}_masonry_",
+                        f"flux2_{shape}_solid_",
+                    ],
+                )
+                self.assertIn("floor", joined)
+                self.assertNotIn("privacy panel", joined)
             if shape == "trapezoid":
                 self.assertIn("floor plan", joined)
+                self.assertIn("only the", joined)
             for prompt in prompts:
                 lower = prompt.lower()
                 self.assertIn("not a corner balcony", lower, msg=prompt)
@@ -252,7 +264,7 @@ class GenerateFlux2HelperTests(unittest.TestCase):
                 )
             with tempfile.TemporaryDirectory() as tmp:
                 planned = iter_prompt_outputs(
-                    Path(tmp), 4, prompts, f"flux2_{shape}_", prefixes
+                    Path(tmp), len(prefixes), prompts, f"flux2_{shape}_", prefixes
                 )
             names = [path.name for path, _prompt in planned]
             self.assertEqual(
@@ -273,7 +285,11 @@ class GenerateFlux2HelperTests(unittest.TestCase):
         self.assertTrue("window" in closed or "windows" in closed)
         self.assertIn("not open to the outside air", closed)
         for prompt in (*HALF_ENCLOSED_PROMPTS, *ENCLOSED_PROMPTS):
-            self.assertIn("not a corner balcony", prompt.lower())
+            lower = prompt.lower()
+            self.assertIn("not a corner balcony", lower)
+            self.assertIn("beyond the exterior wall line", lower)
+            self.assertIn("not recessed", lower)
+        self.assertNotIn("loggia", half)
         self.assertNotIn("curved bay", closed)
         self.assertTrue(PROMPT_SETS["triangle"]["stay_unlabeled"])
         self.assertTrue(PROMPT_SETS["enclosed"]["stay_unlabeled"])

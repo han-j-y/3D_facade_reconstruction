@@ -1,5 +1,8 @@
 """FLUX.2 prompts for half-enclosed and enclosed balconies.
 
+Both kinds project past the exterior wall. The slab and the enclosure sit
+in front of the facade, carried on brackets, and are not recessed into it.
+
 Half-enclosed: columns or similar elements cover the balcony, and the gaps
 stay open to the outside air.
 Enclosed: walls or windows close the balcony, so it is not open to the air.
@@ -16,35 +19,47 @@ ENCLOSURE_PREFIXES: tuple[str, ...] = (
     "flux2_enclosed_",
 )
 
+_PROJECTING = (
+    "the balcony floor cantilevers out beyond the exterior wall line, the whole "
+    "balcony volume sits in front of the facade, stone brackets under the "
+    "projecting slab, not recessed into the wall, not a niche inside the facade, "
+    "the room wall is behind the balcony"
+)
+
 HALF_ENCLOSED_PROMPTS: list[str] = [
     (
-        "street-side photo of a 3rd-floor balcony on a pale yellow historic facade, "
-        "half-enclosed balcony covered by classical columns and round arches, "
-        "open air visible between the columns, no glass walls, stone balustrade "
-        "along the front, both side columns in frame, medium facade crop, "
-        f"street exterior only, not from on the balcony, {ONE_FACADE}, overcast daylight"
+        "three-quarter street photo of a 3rd-floor balcony on a pale yellow "
+        f"historic facade, {ONE_FACADE}, {_PROJECTING}, half-enclosed balcony "
+        "standing on that projecting slab, classical columns and a stone "
+        "balustrade in front of the wall, open air visible between the columns, "
+        "no glass walls, still open to the outside air, street exterior only, "
+        "overcast daylight"
     ),
     (
         "oblique sidewalk view of a 4th-floor balcony on a cream stone facade, "
-        "half-enclosed loggia carried on columns with arched openings, still open "
-        "to the outside air through the arches, masonry balustrade, no windows "
-        "closing the balcony, full window of the room visible behind, street "
-        f"exterior only, {ONE_FACADE}, clear afternoon light"
+        f"{ONE_FACADE}, {_PROJECTING}, half-enclosed balcony carried out past the "
+        "wall on corbels, columns with arched openings on the projecting slab, "
+        "open to the outside air through the arches, masonry balustrade, no glass "
+        "walls, no windows closing the balcony, the flat wall continues on both "
+        "sides behind the projection, street exterior only, clear afternoon light"
     ),
 ]
 
 ENCLOSED_PROMPTS: list[str] = [
     (
-        "street-side photo of a 5th-floor enclosed balcony on a white ornate facade, "
-        "balcony on one flat wall closed by tall windows with white frames, glass "
-        "walls so the balcony is not open to the outside air, no open railing "
-        "gaps, interior visible only through the glass, medium facade crop, "
-        f"street exterior only, not from on the balcony, {ONE_FACADE}, soft daylight"
+        "three-quarter street photo of a 5th-floor enclosed balcony on a white "
+        f"ornate facade, {ONE_FACADE}, {_PROJECTING}, tall windows with white "
+        "frames stand on the projecting slab in front of the wall, glass walls "
+        "so the balcony is not open to the outside air, no open railing gaps, "
+        "the enclosure sticks out from the facade like a glazed bay on brackets, "
+        "street exterior only, soft daylight"
     ),
     (
-        "three-quarter street photo of a 2nd-floor enclosed balcony on a pale "
-        "yellow and white facade, straight projecting balcony closed by continuous "
-        "windows, walls and glazing enclose the balcony, not open to the outside "
-        f"air, no open balustrade, street exterior only, {ONE_FACADE}, diffuse cloudy light"
+        "oblique sidewalk view of a 2nd-floor enclosed balcony on a pale yellow "
+        f"facade, {ONE_FACADE}, {_PROJECTING}, continuous windows close the "
+        "projecting balcony, walls and glazing enclose it, not open to the "
+        "outside air, no open balustrade, the glazed box is outside the wall "
+        "line, the same flat wall is visible on both sides of the projection, "
+        "street exterior only, diffuse cloudy light"
     ),
 ]
