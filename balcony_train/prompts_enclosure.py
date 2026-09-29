@@ -28,38 +28,36 @@ _PROJECTING = (
 
 HALF_ENCLOSED_PROMPTS: list[str] = [
     (
-        "three-quarter street photo of a 3rd-floor balcony on a pale yellow "
-        f"historic facade, {ONE_FACADE}, {_PROJECTING}, half-enclosed balcony "
+        f"{ONE_FACADE}, three-quarter street photo of a 3rd-floor balcony on a "
+        f"pale yellow historic facade, {_PROJECTING}, half-enclosed balcony "
         "standing on that projecting slab, classical columns and a stone "
         "balustrade in front of the wall, open air visible between the columns, "
         "no glass walls, still open to the outside air, street exterior only, "
         "overcast daylight"
     ),
     (
-        "oblique sidewalk view of a 4th-floor balcony on a cream stone facade, "
-        f"{ONE_FACADE}, {_PROJECTING}, half-enclosed balcony carried out past the "
+        f"{ONE_FACADE}, oblique sidewalk view of a 4th-floor balcony on a cream "
+        f"stone facade, {_PROJECTING}, half-enclosed balcony carried out past the "
         "wall on corbels, columns with arched openings on the projecting slab, "
         "open to the outside air through the arches, masonry balustrade, no glass "
-        "walls, no windows closing the balcony, the flat wall continues on both "
-        "sides behind the projection, street exterior only, clear afternoon light"
+        "walls, no windows closing the balcony, clear afternoon light"
     ),
 ]
 
 ENCLOSED_PROMPTS: list[str] = [
     (
-        "three-quarter street photo of a 5th-floor enclosed balcony on a white "
-        f"ornate facade, {ONE_FACADE}, {_PROJECTING}, tall windows with white "
-        "frames stand on the projecting slab in front of the wall, glass walls "
-        "so the balcony is not open to the outside air, no open railing gaps, "
-        "the enclosure sticks out from the facade like a glazed bay on brackets, "
-        "street exterior only, soft daylight"
+        f"{ONE_FACADE}, three-quarter street photo of a 5th-floor enclosed "
+        f"balcony on a white ornate facade, {_PROJECTING}, tall windows with "
+        "white frames stand on the projecting slab in front of the wall, glass "
+        "walls so the balcony is not open to the outside air, no open railing "
+        "gaps, the enclosure sticks out from the facade on brackets, street "
+        "exterior only, soft daylight"
     ),
     (
-        "oblique sidewalk view of a 2nd-floor enclosed balcony on a pale yellow "
-        f"facade, {ONE_FACADE}, {_PROJECTING}, continuous windows close the "
+        f"{ONE_FACADE}, oblique sidewalk view of a 2nd-floor enclosed balcony "
+        f"on a pale yellow facade, {_PROJECTING}, continuous windows close the "
         "projecting balcony, walls and glazing enclose it, not open to the "
         "outside air, no open balustrade, the glazed box is outside the wall "
-        "line, the same flat wall is visible on both sides of the projection, "
-        "street exterior only, diffuse cloudy light"
+        "line, street exterior only, diffuse cloudy light"
     ),
 ]

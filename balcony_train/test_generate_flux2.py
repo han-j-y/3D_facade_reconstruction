@@ -251,11 +251,15 @@ class GenerateFlux2HelperTests(unittest.TestCase):
                 )
                 self.assertIn("floor", joined)
                 self.assertNotIn("privacy panel", joined)
+            if shape == "triangle":
+                self.assertIn("the floor shape is a triangle", joined)
             if shape == "trapezoid":
+                self.assertIn("the floor shape is a trapezoid", joined)
                 self.assertIn("floor plan", joined)
                 self.assertIn("only the", joined)
             for prompt in prompts:
                 lower = prompt.lower()
+                self.assertTrue(lower.startswith("never on a building corner"), msg=prompt)
                 self.assertIn("not a corner balcony", lower, msg=prompt)
                 self.assertTrue("street" in lower or "sidewalk" in lower, msg=prompt)
                 self.assertTrue(
@@ -286,6 +290,7 @@ class GenerateFlux2HelperTests(unittest.TestCase):
         self.assertIn("not open to the outside air", closed)
         for prompt in (*HALF_ENCLOSED_PROMPTS, *ENCLOSED_PROMPTS):
             lower = prompt.lower()
+            self.assertTrue(lower.startswith("never on a building corner"), msg=prompt)
             self.assertIn("not a corner balcony", lower)
             self.assertIn("beyond the exterior wall line", lower)
             self.assertIn("not recessed", lower)

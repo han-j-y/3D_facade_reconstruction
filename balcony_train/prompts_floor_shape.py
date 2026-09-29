@@ -31,13 +31,12 @@ _KIND_SUFFIXES: dict[str, tuple[str, ...]] = {
 }
 
 # Every crop is one balcony on one flat wall. FLUX otherwise draws the
-# building corner, where two facades meet.
+# building corner, where two facades meet. This clause is first in every prompt.
 ONE_FACADE = (
-    "one balcony in the middle of a single straight facade, the photo shows "
-    "only that one flat wall, the same wall continues past both ends of the "
-    "balcony, the building corner is outside the frame, no second facade, "
-    "no corner pier, the balcony does not turn a corner, not a corner balcony, "
-    "not wrapped around two walls"
+    "never on a building corner, absolutely not a corner balcony, "
+    "centered on one flat wall, that same wall and its windows continue "
+    "on both the left and the right, the vertical corner where two facades "
+    "meet is outside the frame, no second wall, the balcony does not wrap"
 )
 
 NEGATIVE_PROMPT = (
@@ -48,90 +47,93 @@ NEGATIVE_PROMPT = (
 
 TRIANGLE_PROMPTS: list[str] = [
     (
-        "three-quarter street photo of a 4th-floor balcony, beige stucco facade, "
-        "only the balcony floor slab is an isosceles triangle: the long base of "
-        "that floor is fixed to the wall and the apex of the floor is at the front "
-        "center, the concrete floor plan is the triangle, the window behind is an "
-        "ordinary rectangle, the dark metal railing is straight vertical bars that "
-        "follow the two sloping edges of the floor, the bars themselves are not "
-        "triangles, no triangular window, no triangular wall panel, both side "
-        f"returns of the floor visible, street exterior only, {ONE_FACADE}, "
-        "overcast daylight"
+        f"{ONE_FACADE}, the floor shape is a triangle, the top surface of the "
+        "concrete balcony floor is an isosceles triangle and that triangular "
+        "floor is what the photo shows, apex of the floor points away from the "
+        "wall at the front center, the floor comes to a point, not a rectangular "
+        "floor, three-quarter street photo of a 4th-floor balcony, beige stucco, "
+        "dark metal vertical bars follow only the two sloping edges of that "
+        "triangular floor, the bars are not triangles, the window is an ordinary "
+        "rectangle, overcast daylight"
     ),
     (
-        "oblique sidewalk view of a 6th-floor balcony, limestone facade, only the "
-        "stone floor slab is triangular, wall edge of the floor is the base, apex "
-        "of the floor points away from the wall at the front center, masonry "
-        "balusters are ordinary vertical posts following that floor edge, the "
-        "balusters are not triangles, the window and the wall stay rectangular, "
-        f"the triangle is the floor plan alone, {ONE_FACADE}, clear afternoon light"
+        f"{ONE_FACADE}, the floor shape is a triangle, looking slightly down from "
+        "the street you see the top of a triangular stone floor, the base of that "
+        "floor is on the wall and the apex points outward to one front point, "
+        "not a rectangular floor, oblique sidewalk view of a 6th-floor balcony, "
+        "limestone facade, ordinary vertical masonry balusters follow that floor "
+        "edge, the window stays rectangular, clear afternoon light"
     ),
     (
-        "angled street photo of a 3rd-floor balcony, ochre historic facade, solid "
-        "parapet standing on a floor slab whose plan is an isosceles triangle, "
-        "the parapet is a normal vertical wall that follows the two sloping edges "
-        "of the floor and meets at the front point of the floor, the triangle is "
-        "the floor slab, not the parapet face and not a window, carved brackets "
-        f"under the floor, {ONE_FACADE}, soft morning light"
+        f"{ONE_FACADE}, the floor shape is a triangle, the concrete floor slab "
+        "you see from above is an isosceles triangle with a pointed front apex, "
+        "not a rectangular floor, angled street photo of a 3rd-floor balcony, "
+        "ochre facade, a plain solid parapet follows the two sloping edges of "
+        "that triangular floor and meets at the front point, the parapet face "
+        "itself is not a triangle, soft morning light"
     ),
 ]
 
 TRAPEZOID_PROMPTS: list[str] = [
     (
-        "three-quarter street photo of a 5th-floor balcony, sandstone facade, "
-        "only the balcony floor slab is a trapezoid: the long parallel edge of "
-        "the floor is fixed to the wall, the short parallel edge of the floor is "
-        "at the front, the two non-parallel sides of the floor meet the wall at "
-        "about 75 degrees, this trapezoid is the floor plan, not a rectangle "
-        "distorted by perspective, the window behind is an ordinary rectangle, "
-        "the dark metal railing is straight bars that follow the floor edge, the "
-        "railing is not a trapezoid panel, no trapezoidal window, no trapezoidal "
-        f"wall, {ONE_FACADE}, overcast daylight"
+        f"{ONE_FACADE}, the floor shape is a trapezoid, the top surface of the "
+        "concrete balcony floor is a trapezoid and that floor plan is what the "
+        "photo shows, only the floor is a trapezoid, long edge of the floor on "
+        "the wall, short front edge of the floor parallel to the wall, sides of "
+        "the floor meet the wall at about 75 degrees, not a rectangular floor "
+        "seen in perspective, three-quarter street photo of a 5th-floor balcony, "
+        "sandstone facade, dark metal bars follow that floor edge, the railing "
+        "is not a trapezoid panel, the window is an ordinary rectangle, "
+        "overcast daylight"
     ),
     (
-        "oblique sidewalk view of a 2nd-floor balcony, red brick facade, only the "
-        "stone floor is a trapezoid, wider along the wall and narrower at the "
-        "front, front edge of the floor parallel to the wall, floor sides at "
-        "about 75 degrees, masonry balusters are ordinary vertical posts along "
-        "that floor outline, the balusters and the brick wall are not trapezoids, "
-        f"the trapezoid is the floor plan alone, {ONE_FACADE}, clear afternoon light"
+        f"{ONE_FACADE}, the floor shape is a trapezoid, looking slightly down "
+        "from the street you see the top of a trapezoidal stone floor, wider "
+        "along the wall and narrower at the front, front edge parallel to the "
+        "wall, floor sides at about 75 degrees, this floor plan is not a "
+        "rectangle, oblique sidewalk view of a 2nd-floor balcony, red brick "
+        "facade, ordinary vertical masonry balusters follow only that floor "
+        "outline, clear afternoon light"
     ),
     (
-        "angled street photo of a 7th-floor balcony, cream historic facade, solid "
-        "parapet standing on a floor slab whose plan is a trapezoid, long base of "
-        "the floor on the wall, short front of the floor parallel to the wall, "
-        "the parapet is a normal vertical wall following that floor, the trapezoid "
-        "is the floor slab, not the parapet face and not a window, heavy brackets "
-        f"under the floor, {ONE_FACADE}, soft daylight"
+        f"{ONE_FACADE}, the floor shape is a trapezoid, the concrete floor slab "
+        "seen from above is a trapezoid, only the floor has that plan, long "
+        "base on the wall, short front parallel to the wall, sides near 75 "
+        "degrees, not a rectangular floor, angled street photo of a 7th-floor "
+        "balcony, cream facade, a plain solid parapet follows that floor, the "
+        "parapet face itself is not a trapezoid, soft daylight"
     ),
 ]
 
 HEXAGON_PROMPTS: list[str] = [
     (
-        "three-quarter street photo of a 4th-floor balcony, beige stucco facade, "
-        "hexagonal concrete balcony made from a rectangle with both front corners "
-        "cut off, side edges stay perpendicular to the wall, then a diagonal chamfer "
-        "on each front corner meeting the short front edge at about 30 degrees, "
-        "dark metal railing follows all five outer edges, six-sided plan obvious, "
-        f"not a rectangle, not a curve, {ONE_FACADE}, overcast daylight"
+        f"{ONE_FACADE}, three-quarter street photo of a 4th-floor balcony, beige "
+        "stucco facade, the floor shape is a hexagon made from a rectangle with "
+        "both front corners of the floor cut off, side edges of the floor stay "
+        "perpendicular to the wall, then a diagonal chamfer on each front corner "
+        "of the floor meets the short front edge at about 30 degrees, dark metal "
+        "railing follows that floor, six-sided floor plan, not a rectangle, not "
+        "a curve, overcast daylight"
     ),
     (
-        "oblique sidewalk view of a 6th-floor balcony, limestone facade, stone "
-        "balcony with clipped front corners, straight sides, two diagonal corner "
-        "cuts, short straight front, masonry balusters follow that hexagon outline, "
-        f"both chamfers visible, {ONE_FACADE}, clear afternoon light"
+        f"{ONE_FACADE}, oblique sidewalk view of a 6th-floor balcony, limestone "
+        "facade, stone floor with clipped front corners, straight sides, two "
+        "diagonal chamfers, short straight front, masonry balusters follow that "
+        "hexagon floor outline, both chamfers of the floor visible, about 30 "
+        "degree cuts, clear afternoon light"
     ),
     (
-        "three-quarter street crop of a 3rd-floor balcony, ochre facade, solid "
-        "parapet on a hexagon slab, parapet turns at two chamfered front corners, "
-        "short front face, perpendicular side returns, no openings, the "
-        f"clipped-corner plan is readable, {ONE_FACADE}, soft morning light"
+        f"{ONE_FACADE}, three-quarter street crop of a 3rd-floor balcony, ochre "
+        "facade, solid parapet on a hexagon floor slab, the parapet turns where "
+        "the floor is chamfered, short front of the floor, perpendicular side "
+        "returns, those chamfers are about 30 degrees, no openings, soft morning light"
     ),
     (
-        "angled street photo of a 8th-floor balcony, grey concrete facade, frosted "
-        "glass panels following a hexagonal balcony, panels change direction at "
-        "both cut front corners, short front panel, side panels square to the wall, "
-        f"not a bow window, {ONE_FACADE}, diffuse cloudy light"
+        f"{ONE_FACADE}, angled street photo of an 8th-floor balcony, grey concrete "
+        "facade, frosted glass panels follow a hexagonal floor, panels change "
+        "direction at both chamfered front corners of the floor, short front "
+        "panel, side panels square to the wall, about 30 degrees, not a bow "
+        "window, diffuse cloudy light"
     ),
 ]
 
