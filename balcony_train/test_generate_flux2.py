@@ -240,8 +240,11 @@ class GenerateFlux2HelperTests(unittest.TestCase):
             joined = " ".join(prompts).lower()
             for cue in cues[shape]:
                 self.assertIn(cue, joined, msg=shape)
+            if shape == "trapezoid":
+                self.assertIn("floor plan", joined)
             for prompt in prompts:
                 lower = prompt.lower()
+                self.assertIn("not a corner balcony", lower, msg=prompt)
                 self.assertTrue("street" in lower or "sidewalk" in lower, msg=prompt)
                 self.assertTrue(
                     "three-quarter" in lower or "oblique" in lower or "angled" in lower,
@@ -269,6 +272,11 @@ class GenerateFlux2HelperTests(unittest.TestCase):
         self.assertIn("no glass walls", half)
         self.assertTrue("window" in closed or "windows" in closed)
         self.assertIn("not open to the outside air", closed)
+        for prompt in (*HALF_ENCLOSED_PROMPTS, *ENCLOSED_PROMPTS):
+            self.assertIn("not a corner balcony", prompt.lower())
+        self.assertNotIn("curved bay", closed)
+        self.assertTrue(PROMPT_SETS["triangle"]["stay_unlabeled"])
+        self.assertTrue(PROMPT_SETS["enclosed"]["stay_unlabeled"])
 
     def test_next_index_skips_existing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

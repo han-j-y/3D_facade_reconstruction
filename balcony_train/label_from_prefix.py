@@ -6,10 +6,12 @@ Maps::
     flux2_metal_*    -> open_work + metal
     flux2_surface_*  -> surface_panel
     flux2_solid_*    -> solid
-    flux2_{triangle,trapezoid,hexagon}_{metal,masonry,solid,surface}_*
-        -> that kind, and floor_shape set to the plan
 
-Moves files into ``crops/{kind}/`` and appends ``labels.jsonl`` via
+Floor-plan and enclosure names (``flux2_triangle_``, ``flux2_trapezoid_``,
+``flux2_hexagon_``, ``flux2_half_enclosed_``, ``flux2_enclosed_``) stay in
+``unlabeled``.
+
+Moves matched files into ``crops/{kind}/`` and appends ``labels.jsonl`` via
 ``save_annotation`` (same as Label UI).
 
 Example::
@@ -36,19 +38,10 @@ from balcony_train.paths import DEFAULT_CROPS_DIR, DEFAULT_LABELS_JSONL  # noqa:
 
 # Longest-prefix-first matching (order matters if names ever overlap).
 # Each row is (prefix, kind, material, floor_shape).
+# Floor-plan and enclosure crops stay in unlabeled for review. Their names
+# (flux2_triangle_, flux2_trapezoid_, flux2_hexagon_, flux2_half_enclosed_,
+# flux2_enclosed_) are intentionally absent here.
 PREFIX_LABELS: tuple[tuple[str, str, str | None, str | None], ...] = (
-    ("flux2_triangle_metal_", "open_work", "metal", "triangle"),
-    ("flux2_triangle_masonry_", "open_work", "masonry", "triangle"),
-    ("flux2_triangle_solid_", "solid", None, "triangle"),
-    ("flux2_triangle_surface_", "surface_panel", None, "triangle"),
-    ("flux2_trapezoid_metal_", "open_work", "metal", "trapezoid"),
-    ("flux2_trapezoid_masonry_", "open_work", "masonry", "trapezoid"),
-    ("flux2_trapezoid_solid_", "solid", None, "trapezoid"),
-    ("flux2_trapezoid_surface_", "surface_panel", None, "trapezoid"),
-    ("flux2_hexagon_metal_", "open_work", "metal", "hexagon"),
-    ("flux2_hexagon_masonry_", "open_work", "masonry", "hexagon"),
-    ("flux2_hexagon_solid_", "solid", None, "hexagon"),
-    ("flux2_hexagon_surface_", "surface_panel", None, "hexagon"),
     ("flux2_masonry_", "open_work", "masonry", None),
     ("flux2_metal_", "open_work", "metal", None),
     ("flux2_surface_", "surface_panel", None, None),

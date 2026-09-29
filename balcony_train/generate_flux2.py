@@ -18,6 +18,8 @@ Remote GPU test (one of each railing kind)::
     python balcony_train/generate_flux2.py -n 4 --quantized --device cuda --prompt-set trapezoid
     python balcony_train/generate_flux2.py -n 4 --quantized --device cuda --prompt-set hexagon
 
+These sets always write ``crops/unlabeled/`` and stay there.
+
 Half-enclosed (columns, still open to the air) and enclosed (windows or walls),
 two images each::
 
@@ -95,44 +97,34 @@ PROMPT_SETS: dict[str, dict[str, object]] = {
         "prompts": TRIANGLE_PROMPTS,
         "prefixes": prefixes_for("triangle"),
         "prefix": "flux2_triangle_",
-        "label_hint": (
-            "Keep the full frame (do not 120x44-resize). "
-            "Then: python balcony_train/label_from_prefix.py"
-        ),
+        "label_hint": "Saved in crops/unlabeled. Do not 120x44-resize.",
+        "stay_unlabeled": True,
     },
     "trapezoid": {
         "prompts": TRAPEZOID_PROMPTS,
         "prefixes": prefixes_for("trapezoid"),
         "prefix": "flux2_trapezoid_",
-        "label_hint": (
-            "Keep the full frame (do not 120x44-resize). "
-            "Then: python balcony_train/label_from_prefix.py"
-        ),
+        "label_hint": "Saved in crops/unlabeled. Do not 120x44-resize.",
+        "stay_unlabeled": True,
     },
     "hexagon": {
         "prompts": HEXAGON_PROMPTS,
         "prefixes": prefixes_for("hexagon"),
         "prefix": "flux2_hexagon_",
-        "label_hint": (
-            "Keep the full frame (do not 120x44-resize). "
-            "Then: python balcony_train/label_from_prefix.py"
-        ),
+        "label_hint": "Saved in crops/unlabeled. Do not 120x44-resize.",
+        "stay_unlabeled": True,
     },
     "half_enclosed": {
         "prompts": HALF_ENCLOSED_PROMPTS,
         "prefix": "flux2_half_enclosed_",
-        "label_hint": (
-            "Review in unlabeled. Columns, still open to the air. "
-            "Do not 120x44-resize."
-        ),
+        "label_hint": "Saved in crops/unlabeled. Columns, still open to the air.",
+        "stay_unlabeled": True,
     },
     "enclosed": {
         "prompts": ENCLOSED_PROMPTS,
         "prefix": "flux2_enclosed_",
-        "label_hint": (
-            "Review in unlabeled. Closed by windows or walls. "
-            "Do not 120x44-resize."
-        ),
+        "label_hint": "Saved in crops/unlabeled. Closed by windows or walls.",
+        "stay_unlabeled": True,
     },
 }
 
@@ -422,7 +414,12 @@ def main() -> None:
         cpu_offload = False
 
     ensure_crop_dirs(args.crops_dir)
-    dest_dir = Path(args.crops_dir) / args.out_subdir
+    # Floor-plan and enclosure crops stay in unlabeled so a later prefix
+    # label pass cannot move them into a kind folder.
+    if spec.get("stay_unlabeled"):
+        dest_dir = Path(args.crops_dir) / "unlabeled"
+    else:
+        dest_dir = Path(args.crops_dir) / args.out_subdir
     stats = generate_balcony_crops(
         dest_dir,
         count=max(1, int(args.count)),
@@ -440,10 +437,13 @@ def main() -> None:
     )
     print(f"prompt_set={args.prompt_set}  prefix={prefix}")
     print(f"saved={stats['saved']} -> {stats['dest']}")
-    print(
-        f"{label_hint}, then: "
-        "python balcony_train/train.py --device cuda --refresh-split"
-    )
+    if spec.get("stay_unlabeled"):
+        print(label_hint)
+    else:
+        print(
+            f"{label_hint}, then: "
+            "python balcony_train/train.py --device cuda --refresh-split"
+        )
 
 
 if __name__ == "__main__":

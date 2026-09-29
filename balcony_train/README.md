@@ -33,8 +33,9 @@ Rare floor plans (triangle, trapezoid, hexagon). On the remote GPU, `-n 4` write
 python balcony_train/generate_flux2.py -n 4 --quantized --device cuda --prompt-set triangle
 python balcony_train/generate_flux2.py -n 4 --quantized --device cuda --prompt-set trapezoid
 python balcony_train/generate_flux2.py -n 4 --quantized --device cuda --prompt-set hexagon
-python balcony_train/label_from_prefix.py
 ```
+
+These five sets always write into ``crops/unlabeled`` and are left there. ``label_from_prefix.py`` does not move them.
 
 Half-enclosed and enclosed, two images each. These stay in ``unlabeled`` for review and are skipped by the 120×44 resize.
 

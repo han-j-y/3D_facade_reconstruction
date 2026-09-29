@@ -28,18 +28,11 @@ class LabelFromPrefixTests(unittest.TestCase):
             match_prefix("flux2_solid_003.png"),
             ("flux2_solid_", "solid", None, None),
         )
-        self.assertEqual(
-            match_prefix("flux2_triangle_metal_000.png"),
-            ("flux2_triangle_metal_", "open_work", "metal", "triangle"),
-        )
-        self.assertEqual(
-            match_prefix("flux2_hexagon_solid_002.png"),
-            ("flux2_hexagon_solid_", "solid", None, "hexagon"),
-        )
-        self.assertEqual(
-            match_prefix("flux2_trapezoid_surface_001.png"),
-            ("flux2_trapezoid_surface_", "surface_panel", None, "trapezoid"),
-        )
+        self.assertIsNone(match_prefix("flux2_triangle_metal_000.png"))
+        self.assertIsNone(match_prefix("flux2_hexagon_solid_002.png"))
+        self.assertIsNone(match_prefix("flux2_trapezoid_surface_001.png"))
+        self.assertIsNone(match_prefix("flux2_half_enclosed_000.png"))
+        self.assertIsNone(match_prefix("flux2_enclosed_000.png"))
         self.assertIsNone(match_prefix("other_001.png"))
 
     def test_label_moves_and_writes_jsonl(self) -> None:
@@ -54,6 +47,7 @@ class LabelFromPrefixTests(unittest.TestCase):
             (unlab / "flux2_surface_000.png").write_bytes(b"x")
             (unlab / "flux2_solid_000.png").write_bytes(b"x")
             (unlab / "flux2_hexagon_masonry_000.png").write_bytes(b"x")
+            (unlab / "flux2_enclosed_000.png").write_bytes(b"x")
             (unlab / "ignore_me.png").write_bytes(b"x")
 
             stats = label_from_prefixes(
@@ -61,8 +55,8 @@ class LabelFromPrefixTests(unittest.TestCase):
                 unlabeled_dir=unlab,
                 jsonl_path=jsonl,
             )
-            self.assertEqual(stats["labeled"], 5)
-            self.assertEqual(stats["skipped_no_prefix"], 1)
+            self.assertEqual(stats["labeled"], 4)
+            self.assertEqual(stats["skipped_no_prefix"], 3)
             self.assertTrue((crops / "open_work" / "flux2_masonry_000.png").is_file())
             self.assertTrue((crops / "open_work" / "flux2_metal_000.png").is_file())
             self.assertTrue(
@@ -77,12 +71,9 @@ class LabelFromPrefixTests(unittest.TestCase):
             self.assertIsNone(labels["flux2_surface_000"]["material"])
             self.assertEqual(labels["flux2_solid_000"]["kind"], "solid")
             self.assertIsNone(labels["flux2_metal_000"]["floor_shape"])
-            self.assertEqual(labels["flux2_hexagon_masonry_000"]["kind"], "open_work")
-            self.assertEqual(labels["flux2_hexagon_masonry_000"]["material"], "masonry")
-            self.assertEqual(labels["flux2_hexagon_masonry_000"]["floor_shape"], "hexagon")
-            self.assertTrue(
-                (crops / "open_work" / "flux2_hexagon_masonry_000.png").is_file()
-            )
+            self.assertNotIn("flux2_hexagon_masonry_000", labels)
+            self.assertTrue((unlab / "flux2_hexagon_masonry_000.png").is_file())
+            self.assertTrue((unlab / "flux2_enclosed_000.png").is_file())
 
 
 if __name__ == "__main__":
