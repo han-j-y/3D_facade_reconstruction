@@ -1,10 +1,13 @@
-"""JSONL label store for railing kind (+ open_work material).
+"""JSONL label store for railing kind (+ open_work material, floor shape).
 
 Each line::
 
-    {"path": "relative/or/name.png", "kind": "open_work", "material": "masonry"}
+    {"path": "relative/or/name.png", "kind": "open_work", "material": "masonry",
+     "floor_shape": "rectangle"}
 
 ``material`` is set only for ``kind=open_work``; otherwise ``null``.
+``floor_shape`` is rectangle, triangle, circle, hexagon, or trapezoid.
+hexagon and trapezoid are stored for labeling; BDSL does not compile them yet.
 Folder layout under ``crops/`` (``open_work/`` etc.) stays in sync for the
 existing kind-only trainer.
 """
@@ -18,6 +21,7 @@ from typing import Any
 
 from balcony_train.labels import (
     CLASSES,
+    FLOOR_SHAPES,
     LABELED_IMAGE_SUFFIXES,
     MATERIALS,
     ensure_crop_dirs,
@@ -48,6 +52,18 @@ def normalize_material(raw: Any, *, kind: str | None) -> str | None:
     if m not in MATERIALS:
         raise ValueError(f"unknown material {raw!r}; expected {MATERIALS}")
     return m
+
+
+def normalize_floor_shape(raw: Any) -> str | None:
+    """Plan label. Unknown names raise. Empty stays unset."""
+    if raw is None:
+        return None
+    name = str(raw).strip().lower()
+    if not name or name in ("null", "none"):
+        return None
+    if name not in FLOOR_SHAPES:
+        raise ValueError(f"unknown floor shape {raw!r}; expected {FLOOR_SHAPES}")
+    return name
 
 
 def _is_image(path: Path) -> bool:
@@ -90,6 +106,7 @@ def load_labels(jsonl_path: Path) -> dict[str, dict[str, Any]]:
                 "path": str(rec.get("path") or f"{stem}.png"),
                 "kind": kind,
                 "material": material,
+                "floor_shape": normalize_floor_shape(rec.get("floor_shape")),
             }
     return by_stem
 
@@ -109,6 +126,7 @@ def labels_from_folders(crops_dir: Path) -> dict[str, dict[str, Any]]:
                 "path": path.name,
                 "kind": kind,
                 "material": None,
+                "floor_shape": None,
             }
     return by_stem
 
@@ -125,10 +143,14 @@ def merge_label_sources(
         material = normalize_material(rec.get("material"), kind=kind)
         if material is None and kind == "open_work":
             material = normalize_material(prev.get("material"), kind=kind)
+        floor = rec.get("floor_shape")
+        if floor is None:
+            floor = normalize_floor_shape(prev.get("floor_shape"))
         merged[stem] = {
             "path": rec.get("path") or prev.get("path") or f"{stem}.png",
             "kind": kind,
             "material": material,
+            "floor_shape": floor,
         }
     return merged
 
@@ -152,6 +174,7 @@ def write_labels_jsonl(
                     "path": str(rec.get("path") or f"{stem}.png"),
                     "kind": kind,
                     "material": material,
+                    "floor_shape": normalize_floor_shape(rec.get("floor_shape")),
                 },
                 ensure_ascii=False,
             )
@@ -199,6 +222,7 @@ def queue_stems(
     *,
     unlabeled_only: bool = True,
     need_material: bool = True,
+    need_floor_shape: bool = False,
 ) -> list[str]:
     """Stems to show in the UI, unlabeled / incomplete first."""
     images = {p.stem: p for p in iter_crop_images(crops_dir)}
@@ -208,8 +232,11 @@ def queue_stems(
         rec = labels.get(stem)
         kind = rec.get("kind") if rec else None
         material = rec.get("material") if rec else None
+        floor = rec.get("floor_shape") if rec else None
         incomplete = kind is None
         if need_material and kind == "open_work" and material is None:
+            incomplete = True
+        if need_floor_shape and floor not in FLOOR_SHAPES:
             incomplete = True
         if incomplete:
             todo.append(stem)
@@ -225,6 +252,7 @@ def save_annotation(
     image_path: Path,
     kind: str,
     material: str | None,
+    floor_shape: str | None = None,
     labels: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Update JSONL + move file into kind folder. Returns full label map."""
@@ -234,6 +262,7 @@ def save_annotation(
     mat_n = normalize_material(material, kind=kind_n)
     if kind_n == "open_work" and mat_n is None:
         raise ValueError("material required for open_work (metal or masonry)")
+    floor_n = normalize_floor_shape(floor_shape)
 
     crops_dir = Path(crops_dir)
     jsonl_path = Path(jsonl_path)
@@ -243,6 +272,7 @@ def save_annotation(
         "path": placed.name,
         "kind": kind_n,
         "material": mat_n,
+        "floor_shape": floor_n,
     }
     write_labels_jsonl(jsonl_path, records)
     return records

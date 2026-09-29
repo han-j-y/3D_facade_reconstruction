@@ -8,6 +8,21 @@ Prompt sets (``--prompt-set``):
   - ``metal`` — open_work + metal (bars / wrought iron / open patterns)
   - ``surface_panel`` — modern frame + glass/metal/privacy panels
   - ``solid`` — opaque wall / parapet mass
+  - ``triangle`` / ``trapezoid`` / ``hexagon`` — rare floor plans.
+    Four images per set (metal, masonry, solid, surface). Keep the full
+    frame; do not resize these to 120×44.
+
+Remote GPU test (one of each railing kind)::
+
+    python balcony_train/generate_flux2.py -n 4 --quantized --device cuda --prompt-set triangle
+    python balcony_train/generate_flux2.py -n 4 --quantized --device cuda --prompt-set trapezoid
+    python balcony_train/generate_flux2.py -n 4 --quantized --device cuda --prompt-set hexagon
+
+Half-enclosed (columns, still open to the air) and enclosed (windows or walls),
+two images each::
+
+    python balcony_train/generate_flux2.py -n 2 --quantized --device cuda --prompt-set half_enclosed
+    python balcony_train/generate_flux2.py -n 2 --quantized --device cuda --prompt-set enclosed
 
 Setup (once)::
 
@@ -37,6 +52,16 @@ if str(ROOT) not in sys.path:
 
 from balcony_train.labels import ensure_crop_dirs  # noqa: E402
 from balcony_train.paths import DEFAULT_CROPS_DIR  # noqa: E402
+from balcony_train.prompts_enclosure import (  # noqa: E402
+    ENCLOSED_PROMPTS,
+    HALF_ENCLOSED_PROMPTS,
+)
+from balcony_train.prompts_floor_shape import (  # noqa: E402
+    HEXAGON_PROMPTS,
+    TRAPEZOID_PROMPTS,
+    TRIANGLE_PROMPTS,
+    prefixes_for,
+)
 from balcony_train.prompts_masonry import MASONRY_OPENWORK_PROMPTS  # noqa: E402
 from balcony_train.prompts_metal import METAL_OPENWORK_PROMPTS  # noqa: E402
 from balcony_train.prompts_solid import SOLID_PROMPTS  # noqa: E402
@@ -65,6 +90,49 @@ PROMPT_SETS: dict[str, dict[str, object]] = {
         "prompts": SOLID_PROMPTS,
         "prefix": "flux2_solid_",
         "label_hint": "Label as solid",
+    },
+    "triangle": {
+        "prompts": TRIANGLE_PROMPTS,
+        "prefixes": prefixes_for("triangle"),
+        "prefix": "flux2_triangle_",
+        "label_hint": (
+            "Keep the full frame (do not 120x44-resize). "
+            "Then: python balcony_train/label_from_prefix.py"
+        ),
+    },
+    "trapezoid": {
+        "prompts": TRAPEZOID_PROMPTS,
+        "prefixes": prefixes_for("trapezoid"),
+        "prefix": "flux2_trapezoid_",
+        "label_hint": (
+            "Keep the full frame (do not 120x44-resize). "
+            "Then: python balcony_train/label_from_prefix.py"
+        ),
+    },
+    "hexagon": {
+        "prompts": HEXAGON_PROMPTS,
+        "prefixes": prefixes_for("hexagon"),
+        "prefix": "flux2_hexagon_",
+        "label_hint": (
+            "Keep the full frame (do not 120x44-resize). "
+            "Then: python balcony_train/label_from_prefix.py"
+        ),
+    },
+    "half_enclosed": {
+        "prompts": HALF_ENCLOSED_PROMPTS,
+        "prefix": "flux2_half_enclosed_",
+        "label_hint": (
+            "Review in unlabeled. Columns, still open to the air. "
+            "Do not 120x44-resize."
+        ),
+    },
+    "enclosed": {
+        "prompts": ENCLOSED_PROMPTS,
+        "prefix": "flux2_enclosed_",
+        "label_hint": (
+            "Review in unlabeled. Closed by windows or walls. "
+            "Do not 120x44-resize."
+        ),
     },
 }
 
@@ -166,6 +234,41 @@ def _load_pipeline(model_id: str, device: str, *, cpu_offload: bool):
     return pipe, torch
 
 
+def iter_prompt_outputs(
+    dest_dir: Path,
+    count: int,
+    prompts: list[str],
+    prefix: str,
+    prefixes: list[str] | None = None,
+) -> list[tuple[Path, str]]:
+    """Planned ``(path, prompt)`` pairs. Does not write files.
+
+    When ``prefixes`` is set it must match ``prompts`` one-for-one, and each
+    image cycles that pair (metal, masonry, solid, surface for floor plans).
+    A single ``prefix`` keeps the old sequential ``{prefix}NNN.png`` names.
+    """
+    if not prompts:
+        raise ValueError("prompts must be non-empty")
+    if count < 1:
+        raise ValueError("count must be >= 1")
+    dest_dir = Path(dest_dir)
+    if prefixes is None:
+        cycle = [prefix]
+    else:
+        cycle = list(prefixes)
+        if len(cycle) != len(prompts):
+            raise ValueError("prefixes and prompts must be the same length")
+    counters = {name: _next_index(dest_dir, name) for name in dict.fromkeys(cycle)}
+    planned: list[tuple[Path, str]] = []
+    for i in range(count):
+        slot = i % len(prompts)
+        name = cycle[slot % len(cycle)]
+        idx = counters[name]
+        counters[name] += 1
+        planned.append((dest_dir / f"{name}{idx:03d}.png", prompts[slot]))
+    return planned
+
+
 def generate_balcony_crops(
     dest_dir: Path,
     *,
@@ -173,6 +276,7 @@ def generate_balcony_crops(
     seed: int,
     prompts: list[str],
     prefix: str = DEFAULT_PREFIX,
+    prefixes: list[str] | None = None,
     model_id: str = DEFAULT_MODEL,
     width: int = 640,
     height: int = 384,
@@ -185,16 +289,14 @@ def generate_balcony_crops(
         raise ValueError("prompts must be non-empty")
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
+    planned = iter_prompt_outputs(dest_dir, count, prompts, prefix, prefixes)
 
     pipe, torch = _load_pipeline(model_id, device, cpu_offload=cpu_offload)
     # Generators for offloaded pipes are safer on CPU.
     gen_device = "cpu" if cpu_offload or not device.startswith("cuda") else "cuda"
 
-    start = _next_index(dest_dir, prefix)
     saved = 0
-    for i in range(count):
-        idx = start + i
-        prompt = prompts[i % len(prompts)]
+    for i, (out, prompt) in enumerate(planned):
         generator = torch.Generator(device=gen_device).manual_seed(seed + i)
         print(f"prompt[{i % len(prompts)}]: {prompt}", flush=True)
         image = pipe(
@@ -205,12 +307,15 @@ def generate_balcony_crops(
             guidance_scale=float(guidance_scale),
             generator=generator,
         ).images[0]
-        out = dest_dir / f"{prefix}{idx:03d}.png"
         image.save(out)
         saved += 1
         print(f"[{saved}/{count}] {out.name}")
 
-    return {"saved": saved, "dest": str(dest_dir), "start_index": start}
+    return {
+        "saved": saved,
+        "dest": str(dest_dir),
+        "start_index": _next_index(dest_dir, prefix) - saved if prefixes is None else 0,
+    }
 
 
 # Back-compat alias.
@@ -297,6 +402,11 @@ def main() -> None:
     spec = PROMPT_SETS[str(args.prompt_set)]
     prompts = list(spec["prompts"])  # type: ignore[arg-type]
     prefix = str(args.prefix) if args.prefix else str(spec["prefix"])
+    # An explicit --prefix collapses the run onto one stem. Floor-plan sets
+    # otherwise rotate metal/masonry/solid/surface prefixes with the prompts.
+    prefixes = None if args.prefix else spec.get("prefixes")
+    if prefixes is not None:
+        prefixes = list(prefixes)  # type: ignore[arg-type]
     label_hint = str(spec["label_hint"])
 
     if args.model:
@@ -319,6 +429,7 @@ def main() -> None:
         seed=int(args.seed),
         prompts=prompts,
         prefix=prefix,
+        prefixes=prefixes,
         model_id=model_id,
         width=int(args.width),
         height=int(args.height),

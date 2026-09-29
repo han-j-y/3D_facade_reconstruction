@@ -14,7 +14,22 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from balcony_train import generate_flux2 as gen  # noqa: E402
-from balcony_train.generate_flux2 import DEFAULT_PREFIX, PROMPT_SETS, _next_index  # noqa: E402
+from balcony_train.generate_flux2 import (  # noqa: E402
+    DEFAULT_PREFIX,
+    PROMPT_SETS,
+    _next_index,
+    iter_prompt_outputs,
+)
+from balcony_train.prompts_enclosure import (  # noqa: E402
+    ENCLOSED_PROMPTS,
+    HALF_ENCLOSED_PROMPTS,
+)
+from balcony_train.prompts_floor_shape import (  # noqa: E402
+    HEXAGON_PROMPTS,
+    TRAPEZOID_PROMPTS,
+    TRIANGLE_PROMPTS,
+    prefixes_for,
+)
 from balcony_train.prompts_masonry import (  # noqa: E402
     MASONRY_OPENWORK_PROMPTS,
     NEGATIVE_PROMPT,
@@ -108,7 +123,18 @@ class GenerateFlux2HelperTests(unittest.TestCase):
 
     def test_surface_panel_and_solid_prompt_sets(self) -> None:
         self.assertEqual(
-            set(PROMPT_SETS), {"masonry", "metal", "surface_panel", "solid"}
+            set(PROMPT_SETS),
+            {
+                "masonry",
+                "metal",
+                "surface_panel",
+                "solid",
+                "triangle",
+                "trapezoid",
+                "hexagon",
+                "half_enclosed",
+                "enclosed",
+            },
         )
         self.assertEqual(len(SURFACE_PANEL_PROMPTS), 50)
         self.assertEqual(len(set(SURFACE_PANEL_PROMPTS)), 50)
@@ -193,6 +219,56 @@ class GenerateFlux2HelperTests(unittest.TestCase):
         self.assertEqual(PROMPT_SETS["surface_panel"]["prefix"], "flux2_surface_")
         self.assertEqual(PROMPT_SETS["solid"]["prefix"], "flux2_solid_")
         self.assertEqual(PROMPT_SETS["metal"]["prefix"], "flux2_metal_")
+
+    def test_floor_plan_prompt_sets_rotate_kind_prefixes(self) -> None:
+        banks = {
+            "triangle": TRIANGLE_PROMPTS,
+            "trapezoid": TRAPEZOID_PROMPTS,
+            "hexagon": HEXAGON_PROMPTS,
+        }
+        cues = {
+            "triangle": ("triangular", "apex", "point"),
+            "trapezoid": ("trapezoid", "75"),
+            "hexagon": ("hexagon", "chamfer", "30"),
+        }
+        for shape, prompts in banks.items():
+            prefixes = prefixes_for(shape)
+            self.assertEqual(PROMPT_SETS[shape]["prompts"], prompts)
+            self.assertEqual(PROMPT_SETS[shape]["prefixes"], prefixes)
+            self.assertEqual(len(prompts), 4)
+            self.assertEqual(len(set(prompts)), 4)
+            joined = " ".join(prompts).lower()
+            for cue in cues[shape]:
+                self.assertIn(cue, joined, msg=shape)
+            for prompt in prompts:
+                lower = prompt.lower()
+                self.assertTrue("street" in lower or "sidewalk" in lower, msg=prompt)
+                self.assertTrue(
+                    "three-quarter" in lower or "oblique" in lower or "angled" in lower,
+                    msg=prompt,
+                )
+            with tempfile.TemporaryDirectory() as tmp:
+                planned = iter_prompt_outputs(
+                    Path(tmp), 4, prompts, f"flux2_{shape}_", prefixes
+                )
+            names = [path.name for path, _prompt in planned]
+            self.assertEqual(
+                names,
+                [f"{prefix}000.png" for prefix in prefixes],
+            )
+
+    def test_enclosure_prompt_sets_have_two_each(self) -> None:
+        self.assertEqual(PROMPT_SETS["half_enclosed"]["prompts"], HALF_ENCLOSED_PROMPTS)
+        self.assertEqual(PROMPT_SETS["enclosed"]["prompts"], ENCLOSED_PROMPTS)
+        self.assertEqual(len(HALF_ENCLOSED_PROMPTS), 2)
+        self.assertEqual(len(ENCLOSED_PROMPTS), 2)
+        half = " ".join(HALF_ENCLOSED_PROMPTS).lower()
+        closed = " ".join(ENCLOSED_PROMPTS).lower()
+        self.assertIn("column", half)
+        self.assertIn("open to the outside air", half)
+        self.assertIn("no glass walls", half)
+        self.assertTrue("window" in closed or "windows" in closed)
+        self.assertIn("not open to the outside air", closed)
 
     def test_next_index_skips_existing(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

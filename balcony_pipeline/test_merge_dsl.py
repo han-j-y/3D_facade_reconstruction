@@ -217,6 +217,60 @@ class PhotoNormTests(unittest.TestCase):
         self.assertEqual(out["layout"]["balconies"][0]["type"], "balc_open_work_metal")
         self.assertEqual(out["layout"]["balconies"][1]["type"], "balc_solid")
 
+    def test_merge_per_unit_floor_shape(self) -> None:
+        dsl = {
+            "schema": "facade_recovery_dsl_v1",
+            "meta": {"image_size": [1000, 800]},
+            "layout": {"floors": [], "bays": [], "placement": []},
+            "window_types": [],
+            "instances": [],
+        }
+        circle_ir = {
+            "railing": {"kind": "open_work", "material": "metal"},
+            "floor": {"shape": "circle"},
+        }
+        trap_ir = {
+            "railing": {"kind": "open_work", "material": "metal"},
+            "floor": {"shape": "trapezoid"},
+        }
+        units = [
+            {
+                "unit_id": 0,
+                "type_id": 0,
+                "floor": 1,
+                "bay_start": 0,
+                "bay_end": 0,
+                "bay": 0,
+                "box_xyxy": [100, 10, 200, 80],
+                "structure_ir": circle_ir,
+            },
+            {
+                "unit_id": 1,
+                "type_id": 0,
+                "floor": 2,
+                "bay_start": 0,
+                "bay_end": 0,
+                "bay": 0,
+                "box_xyxy": [100, 100, 200, 170],
+                "structure_ir": trap_ir,
+            },
+        ]
+        out = merge_balcony_into_windows_dsl(
+            dsl,
+            balcony_types=[
+                {"name": "balc_open_work_metal_circle", "structure_ir": circle_ir},
+                {"name": "balc_open_work_metal_trapezoid", "structure_ir": trap_ir},
+            ],
+            units=units,
+            per_unit_floor=True,
+        )
+        self.assertEqual(
+            out["layout"]["balconies"][0]["type"], "balc_open_work_metal_circle"
+        )
+        self.assertEqual(
+            out["layout"]["balconies"][1]["type"], "balc_open_work_metal_trapezoid"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,7 +24,7 @@ _GRID_RULE = re.compile(r"^(\w+)\s+grid\s*\(\s*(\d+)\s*x\s*(\d+)\s*\)\s*(.*)$", 
 _EPS_RULE = re.compile(r"^(\w+)\s+eps\s*$", re.I)
 _PANE_WRAP = re.compile(r"^pane\((.+)\)$", re.I)
 
-FLOOR_SHAPES = frozenset({"rectangle", "circle", "triangle"})
+FLOOR_SHAPES = frozenset({"rectangle", "circle", "triangle", "trapezoid", "hexagon"})
 STRUCTURES = frozenset({"projecting", "inset", "composite", "free_standing"})
 ENCLOSURES = frozenset({"open", "enclosed"})
 RAIL_KINDS = frozenset({"open_work", "surface_panel", "solid"})

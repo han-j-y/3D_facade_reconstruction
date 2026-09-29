@@ -50,11 +50,14 @@ class ResizeFluxImagesTests(unittest.TestCase):
             labeled = kind / "flux2_masonry_001.png"
             Image.new("RGB", (50, 20), (4, 5, 6)).save(labeled)
 
+            floor = unlabeled / "flux2_triangle_metal_000.png"
+            Image.new("RGB", (80, 60), (7, 8, 9)).save(floor)
             found = iter_flux_images(crops)
             self.assertEqual(
                 [p.name for p in found],
                 ["flux2_metal_000.png", "flux2_masonry_001.png"],
             )
+            self.assertTrue(floor.is_file())
 
             stats = replace_flux_with_resized(crops, target=(120, 44), jpeg_quality=60)
             self.assertEqual(stats["saved"], 2)
@@ -69,6 +72,8 @@ class ResizeFluxImagesTests(unittest.TestCase):
                 self.assertEqual(image.size, (120, 44))
             with Image.open(real) as image:
                 self.assertEqual(image.size, (80, 80))
+            with Image.open(floor) as image:
+                self.assertEqual(image.size, (80, 60))
 
             replace_flux_with_resized(crops, target=(120, 44), jpeg_quality=60)
             with Image.open(archive / "unlabeled" / "flux2_metal_000.png") as image:

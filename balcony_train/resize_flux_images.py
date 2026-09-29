@@ -28,6 +28,8 @@ if str(ROOT) not in sys.path:
 
 from balcony_train.labels import CLASSES, LABELED_IMAGE_SUFFIXES  # noqa: E402
 from balcony_train.paths import DEFAULT_CROPS_DIR  # noqa: E402
+from balcony_train.prompts_enclosure import ENCLOSURE_PREFIXES  # noqa: E402
+from balcony_train.prompts_floor_shape import FLOOR_PLAN_PREFIXES  # noqa: E402
 
 DEFAULT_WIDTH = 120
 DEFAULT_HEIGHT = 44
@@ -37,8 +39,18 @@ FLUX_ORIGINAL_DIRNAME = "_Flux Original"
 SOURCE_SUBDIRS: tuple[str, ...] = ("unlabeled", *CLASSES)
 
 
+def _keep_full_frame(name: str) -> bool:
+    """Floor-plan and enclosure crops must not be cut down to a railing band."""
+    lower = name.lower()
+    return any(lower.startswith(prefix) for prefix in (*FLOOR_PLAN_PREFIXES, *ENCLOSURE_PREFIXES))
+
+
 def iter_flux_images(crops_dir: Path, *, prefix: str = FLUX_PREFIX) -> list[Path]:
-    """``flux2_*`` images one level under unlabeled/ and kind folders."""
+    """``flux2_*`` images one level under unlabeled/ and kind folders.
+
+    Floor-plan names and ``flux2_half_enclosed_`` / ``flux2_enclosed_`` are
+    skipped so a later 120×44 pass cannot erase the slab or the enclosure.
+    """
     crops_dir = Path(crops_dir)
     needle = str(prefix).lower()
     found: list[Path] = []
@@ -50,6 +62,8 @@ def iter_flux_images(crops_dir: Path, *, prefix: str = FLUX_PREFIX) -> list[Path
             if not path.is_file():
                 continue
             if path.suffix.lower() not in LABELED_IMAGE_SUFFIXES:
+                continue
+            if _keep_full_frame(path.name):
                 continue
             if path.name.lower().startswith(needle):
                 found.append(path)

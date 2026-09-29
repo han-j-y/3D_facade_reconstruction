@@ -33,6 +33,24 @@ class ParseRailKindTests(unittest.TestCase):
         self.assertEqual(self._parse("railing metal"), "open_work")
         self.assertEqual(self._parse("railing glass"), "surface_panel")
 
+    def test_trapezoid_floor(self) -> None:
+        ir = parse_bdsl(
+            "balcony trapezoid(width=2.0, depth=1.5)\n"
+            "structure projecting\n"
+            "enclosure open\n"
+            "railing open_work height 1.1\n"
+        )
+        self.assertEqual(ir["floor"]["shape"], "trapezoid")
+
+    def test_hexagon_floor(self) -> None:
+        ir = parse_bdsl(
+            "balcony hexagon(width=3.0, depth=1.5)\n"
+            "structure projecting\n"
+            "enclosure open\n"
+            "railing open_work height 1.1\n"
+        )
+        self.assertEqual(ir["floor"]["shape"], "hexagon")
+
     def test_default_kind(self) -> None:
         ir = parse_bdsl("balcony rectangle(width=1, depth=0.8)\n")
         self.assertEqual(ir["railing"]["kind"], "open_work")

@@ -5,8 +5,9 @@ scored (excludes FLUX.2 synth ``flux2_*``). Use ``--include-synth`` to score
 everything in the fold. ``--list`` / ``--list-out`` / ``--copy-to`` print,
 save, or copy the images that would be evaluated (no GPU / checkpoint needed).
 ``--errors-to`` scores the checkpoint, then copies mistakes under a new
-``YYYY-MM-DD_HHMMSS`` folder there, as ``kind/true-{label}__pred-{label}/``
-and ``material/true-{label}__pred-{label}/``.
+``YYYY-MM-DD_HHMMSS`` folder there, as ``kind/true-{label}__pred-{label}/``,
+``material/true-{label}__pred-{label}/``, and
+``floor/true-{label}__pred-{label}/``.
 """
 
 from __future__ import annotations
@@ -30,10 +31,13 @@ if str(ROOT) not in sys.path:
 from balcony_train.dataset import MultitaskCropDataset  # noqa: E402
 from balcony_train.labels import (  # noqa: E402
     CLASSES,
+    FLOOR_IGNORE_INDEX,
+    FLOOR_SHAPES,
     MATERIAL_IGNORE_INDEX,
     MATERIALS,
     MultitaskSample,
     class_counts,
+    floor_counts,
     material_counts,
 )
 from balcony_train.model import load_classifier  # noqa: E402
@@ -99,13 +103,15 @@ def write_eval_list(
 
 
 class ScoredCrop(NamedTuple):
-    """One eval crop with kind and material predictions."""
+    """One eval crop with kind, material, and floor predictions."""
 
     path: Path
     kind_true: int
     kind_pred: int
     mat_true: int
     mat_pred: int
+    floor_true: int = FLOOR_IGNORE_INDEX
+    floor_pred: int = FLOOR_IGNORE_INDEX
 
 
 def misclass_folder_name(true_name: str, pred_name: str) -> str:
@@ -166,17 +172,20 @@ def copy_misclassified_images(
     *,
     stamp: str | None = None,
 ) -> int:
-    """Copy kind and material mistakes under a new timestamp folder.
+    """Copy kind, material, and floor mistakes under a new timestamp folder.
 
     Layout::
 
         dest_dir/YYYY-MM-DD_HHMMSS/kind/true-{label}__pred-{label}/<image>
         dest_dir/YYYY-MM-DD_HHMMSS/material/true-{label}__pred-{label}/<image>
+        dest_dir/YYYY-MM-DD_HHMMSS/floor/true-{label}__pred-{label}/<image>
 
     ``stamp`` overrides the clock (tests). A second run in the same second
     gets a ``_2`` suffix. Material is skipped when the true kind is not
-    open_work (``mat_true == MATERIAL_IGNORE_INDEX``). An image wrong on
-    both heads is copied into both trees. Returns the number of file copies.
+    open_work (``mat_true == MATERIAL_IGNORE_INDEX``). Floor is skipped when
+    the crop has no floor label (``floor_true == FLOOR_IGNORE_INDEX``). An
+    image wrong on more than one head is copied into each tree. Returns the
+    number of file copies.
     """
     buckets: dict[Path, list[Path]] = defaultdict(list)
     for row in rows:
@@ -186,12 +195,20 @@ def copy_misclassified_images(
                 CLASSES[int(row.kind_pred)],
             )
             buckets[rel].append(Path(row.path))
-        if int(row.mat_true) == MATERIAL_IGNORE_INDEX:
-            continue
-        if int(row.mat_true) != int(row.mat_pred):
+        if int(row.mat_true) != MATERIAL_IGNORE_INDEX and int(row.mat_true) != int(
+            row.mat_pred
+        ):
             rel = Path("material") / misclass_folder_name(
                 MATERIALS[int(row.mat_true)],
                 MATERIALS[int(row.mat_pred)],
+            )
+            buckets[rel].append(Path(row.path))
+        if int(row.floor_true) != FLOOR_IGNORE_INDEX and int(row.floor_true) != int(
+            row.floor_pred
+        ):
+            rel = Path("floor") / misclass_folder_name(
+                FLOOR_SHAPES[int(row.floor_true)],
+                FLOOR_SHAPES[int(row.floor_pred)],
             )
             buckets[rel].append(Path(row.path))
 
@@ -309,8 +326,9 @@ def parse_args() -> argparse.Namespace:
         help=(
             "after scoring, copy mistakes under this folder in a new "
             "YYYY-MM-DD_HHMMSS directory, as "
-            "kind/true-{label}__pred-{label}/ and "
-            "material/true-{label}__pred-{label}/"
+            "kind/true-{label}__pred-{label}/, "
+            "material/true-{label}__pred-{label}/, and "
+            "floor/true-{label}__pred-{label}/"
         ),
     )
     ap.add_argument("--ckpt", type=Path, default=DEFAULT_RAILING_CKPT)
@@ -354,6 +372,7 @@ def main() -> None:
     subset = [samples[i] for i in eval_idx]
     counts = class_counts(subset)
     mat_counts = material_counts(subset)
+    shape_counts = floor_counts(subset)
     device = torch.device(args.device)
     model = load_classifier(args.ckpt, device)
     loader = DataLoader(
@@ -363,21 +382,32 @@ def main() -> None:
     )
     kind_conf = torch.zeros((len(CLASSES), len(CLASSES)), dtype=torch.int64)
     mat_conf = torch.zeros((len(MATERIALS), len(MATERIALS)), dtype=torch.int64)
+    floor_conf = torch.zeros((len(FLOOR_SHAPES), len(FLOOR_SHAPES)), dtype=torch.int64)
+    floor_trained = bool(getattr(model, "_floor_trained", False))
     scored: list[ScoredCrop] = []
     cursor = 0
     model.eval()
     with torch.no_grad():
-        for images, kind_y, mat_y in loader:
-            kind_logits, mat_logits = model(images.to(device))
+        for images, kind_y, mat_y, floor_y in loader:
+            kind_logits, mat_logits, floor_logits = model(images.to(device))
             kind_pred = kind_logits.argmax(dim=1).cpu()
             mat_pred = mat_logits.argmax(dim=1).cpu()
+            floor_pred = floor_logits.argmax(dim=1).cpu()
             kt_list = kind_y.tolist()
             kp_list = kind_pred.tolist()
             mt_list = mat_y.tolist()
             mp_list = mat_pred.tolist()
+            ft_list = floor_y.tolist()
+            fp_list = floor_pred.tolist()
             for i, (t, p) in enumerate(zip(kt_list, kp_list)):
                 kind_conf[t, p] += 1
                 src_i = eval_idx[cursor + i]
+                if floor_trained:
+                    floor_true = int(ft_list[i])
+                    floor_pred_i = int(fp_list[i])
+                else:
+                    floor_true = FLOOR_IGNORE_INDEX
+                    floor_pred_i = FLOOR_IGNORE_INDEX
                 scored.append(
                     ScoredCrop(
                         Path(samples[src_i][0]),
@@ -385,12 +415,19 @@ def main() -> None:
                         int(p),
                         int(mt_list[i]),
                         int(mp_list[i]),
+                        floor_true,
+                        floor_pred_i,
                     )
                 )
             for t, p in zip(mt_list, mp_list):
                 if int(t) == MATERIAL_IGNORE_INDEX:
                     continue
                 mat_conf[t, p] += 1
+            if floor_trained:
+                for t, p in zip(ft_list, fp_list):
+                    if int(t) == FLOOR_IGNORE_INDEX:
+                        continue
+                    floor_conf[int(t), int(p)] += 1
             cursor += len(kt_list)
 
     kind_total = int(kind_conf.sum().item())
@@ -415,6 +452,20 @@ def main() -> None:
     for i, name in enumerate(MATERIALS):
         row = " ".join(f"{int(v):4d}" for v in mat_conf[i].tolist())
         print(f"  {name:16s} {row}")
+
+    floor_total = int(floor_conf.sum().item())
+    floor_correct = int(floor_conf.diag().sum().item())
+    if floor_trained:
+        print(
+            f"floor n={floor_total}  counts={shape_counts}  "
+            f"floor_acc={floor_correct / max(floor_total, 1):.3f}"
+        )
+        print("floor rows=true cols=pred  " + "  ".join(FLOOR_SHAPES))
+        for i, name in enumerate(FLOOR_SHAPES):
+            row = " ".join(f"{int(v):4d}" for v in floor_conf[i].tolist())
+            print(f"  {name:16s} {row}")
+    else:
+        print("floor head not in checkpoint")
 
     if args.errors_to is not None:
         copy_misclassified_images(scored, Path(args.errors_to))

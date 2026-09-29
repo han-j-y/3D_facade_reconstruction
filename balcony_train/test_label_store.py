@@ -14,7 +14,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from balcony_train.label_store import (  # noqa: E402
+    load_labels,
     merge_label_sources,
+    normalize_floor_shape,
     normalize_kind,
     normalize_material,
     queue_stems,
@@ -32,6 +34,11 @@ class LabelStoreTests(unittest.TestCase):
         self.assertEqual(normalize_kind("baluster"), "open_work")
         self.assertEqual(normalize_material("masonry", kind="open_work"), "masonry")
         self.assertIsNone(normalize_material("masonry", kind="solid"))
+        self.assertEqual(normalize_floor_shape("Hexagon"), "hexagon")
+        self.assertEqual(normalize_floor_shape("trapezoid"), "trapezoid")
+        self.assertIsNone(normalize_floor_shape(None))
+        with self.assertRaises(ValueError):
+            normalize_floor_shape("pentagon")
 
     def test_save_open_work_requires_material(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -85,6 +92,48 @@ class LabelStoreTests(unittest.TestCase):
             merged = merge_label_sources(crops, jsonl)
             q2 = queue_stems(crops, merged, unlabeled_only=True, need_material=True)
             self.assertIn("c", q2)
+
+    def test_floor_shape_roundtrip_and_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            crops = root / "crops"
+            jsonl = root / "labels.jsonl"
+            src = crops / "unlabeled" / "hex.png"
+            _touch_png(src)
+            labels = save_annotation(
+                crops_dir=crops,
+                jsonl_path=jsonl,
+                image_path=src,
+                kind="solid",
+                material=None,
+                floor_shape="hexagon",
+            )
+            self.assertEqual(labels["hex"]["floor_shape"], "hexagon")
+            loaded = load_labels(jsonl)
+            self.assertEqual(loaded["hex"]["floor_shape"], "hexagon")
+            q = queue_stems(crops, labels, unlabeled_only=True, need_floor_shape=True)
+            self.assertEqual(q, [])
+
+            trap = crops / "solid" / "trap.png"
+            _touch_png(trap)
+            labels = save_annotation(
+                crops_dir=crops,
+                jsonl_path=jsonl,
+                image_path=trap,
+                kind="solid",
+                material=None,
+                floor_shape="trapezoid",
+                labels=labels,
+            )
+            plain = crops / "solid" / "plain.png"
+            _touch_png(plain)
+            merged = merge_label_sources(crops, jsonl)
+            self.assertEqual(merged["trap"]["floor_shape"], "trapezoid")
+            self.assertIsNone(merged["plain"]["floor_shape"])
+            pending = queue_stems(
+                crops, merged, unlabeled_only=True, need_floor_shape=True
+            )
+            self.assertEqual(pending, ["plain"])
 
 
 if __name__ == "__main__":

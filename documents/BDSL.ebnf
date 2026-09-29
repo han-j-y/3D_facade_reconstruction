@@ -37,7 +37,7 @@ document        = { comment | nl }, balcony_line, { nl },
 
 balcony_line    = "balcony", ws, floor_call ;
 floor_call      = floor_shape, [ "(", [ arg_list ], ")" ] ;
-floor_shape     = "rectangle" | "circle" | "triangle" ;
+floor_shape     = "rectangle" | "circle" | "triangle" | "trapezoid" | "hexagon" ;
 arg_list        = arg, { ",", arg } ;
 arg             = [ ident, "=" ], value ;
 value           = scalar | ident | string ;
@@ -50,6 +50,8 @@ string          = '"', { ? any char except '"' ? }, '"'
      rectangle(width, depth, height=2.5)  height = inset void (floor to ceiling)
      circle(diameter, depth)              (1.0, 1.5)   plan ≈ semicircle; depth = projection
      triangle(width, depth)               (1.0, 1.5)
+     trapezoid(width, depth)              (1.0, 1.5)   sides meet the wall at 75°
+     hexagon(width, depth)                (1.0, 1.5)   front corners cut 1 m at 30°
 
    Extra plan flags may go in floor_block (e.g. triangle kind).
    Photo recovery / façade compile force slab depth = 1.5 m for all balconies.
@@ -159,7 +161,7 @@ output_block    = "output:", nl, { ws, ident, ws, scalar, nl } ;
     "debug": bool,
     "structure": "projecting"|"inset"|"composite"|"free_standing",
     "enclosure": "open"|"enclosed",
-    "floor": { "shape": "rectangle"|"circle"|"triangle",
+    "floor": { "shape": "rectangle"|"circle"|"triangle"|"trapezoid"|"hexagon",
                "params": { "width": <scalar>, "depth": <scalar>, "height"? } },
     "railing": { "kind": "open_work"|"surface_panel"|"solid", "height": <scalar>,
                  "material"? },

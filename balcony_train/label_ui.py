@@ -1,11 +1,13 @@
-"""Tkinter Label UI for railing kind (+ material when open_work).
+"""Tkinter Label UI for railing kind, material, and floor shape.
 
 Usage::
 
     python balcony_train/label_ui.py
     python balcony_train/label_ui.py --crops-dir runs/balcony_clf/crops
 
-Keys: 1/2/3 kind, M/N material (open_work), Enter save, S skip, U undo, Q quit.
+Keys: 1/2/3 kind, M/N material (open_work),
+R/T/C/H/Z floor shape, Enter save, S skip, U undo, Q quit.
+hexagon and trapezoid are stored on the label only; BDSL does not compile them yet.
 """
 
 from __future__ import annotations
@@ -30,11 +32,23 @@ from balcony_train.label_store import (  # noqa: E402
     save_annotation,
     write_labels_jsonl,
 )
-from balcony_train.labels import CLASSES, MATERIALS, ensure_crop_dirs  # noqa: E402
+from balcony_train.labels import (  # noqa: E402
+    CLASSES,
+    FLOOR_SHAPES,
+    MATERIALS,
+    ensure_crop_dirs,
+)
 from balcony_train.paths import DEFAULT_CROPS_DIR, DEFAULT_LABELS_JSONL  # noqa: E402
 
 KIND_KEYS = {"1": "open_work", "2": "surface_panel", "3": "solid"}
 MATERIAL_KEYS = {"m": "metal", "n": "masonry"}
+FLOOR_KEYS = {
+    "r": "rectangle",
+    "t": "triangle",
+    "c": "circle",
+    "h": "hexagon",
+    "z": "trapezoid",
+}
 # Fallback when the image pane has not been laid out yet.
 PREVIEW_FALLBACK = (900, 700)
 
@@ -73,11 +87,13 @@ class LabelApp:
             self.labels,
             unlabeled_only=not review_all,
             need_material=True,
+            need_floor_shape=True,
         )
         self.index = 0
         self.undo_stack: list[dict] = []
         self.kind_var = tk.StringVar(value="")
         self.material_var = tk.StringVar(value="")
+        self.floor_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="")
         self.path_var = tk.StringVar(value="")
         self._photo: ImageTk.PhotoImage | None = None
@@ -135,6 +151,20 @@ class LabelApp:
                 variable=self.material_var,
             ).pack(side=tk.LEFT, padx=8)
 
+        floor_fr = ttk.LabelFrame(
+            self.root,
+            text="Floor shape — R rectangle / T triangle / C circle / H hexagon / Z trapezoid",
+            padding=8,
+        )
+        floor_fr.pack(fill=tk.X, padx=8, pady=4)
+        for name, key in zip(FLOOR_SHAPES, ("R", "T", "C", "H", "Z")):
+            ttk.Radiobutton(
+                floor_fr,
+                text=f"{key}: {name}",
+                value=name,
+                variable=self.floor_var,
+            ).pack(side=tk.LEFT, padx=8)
+
         btns = ttk.Frame(self.root, padding=8)
         btns.pack(fill=tk.X)
         ttk.Button(btns, text="Save (Enter)", command=self.save).pack(
@@ -147,7 +177,7 @@ class LabelApp:
         )
 
         help_txt = (
-            "Material is required only for open_work. "
+            "Material is required only for open_work. Floor shape is required. "
             "Labels → labels.jsonl; images move into crops/{kind}/."
         )
         ttk.Label(self.root, text=help_txt, padding=8).pack(anchor=tk.W)
@@ -187,6 +217,9 @@ class LabelApp:
         if ch in MATERIAL_KEYS and self.kind_var.get() == "open_work":
             self.material_var.set(MATERIAL_KEYS[ch])
             return
+        if ch in FLOOR_KEYS:
+            self.floor_var.set(FLOOR_KEYS[ch])
+            return
         if keysym in ("Return", "KP_Enter"):
             self.save()
             return
@@ -220,6 +253,7 @@ class LabelApp:
     def _counts(self) -> str:
         n_kind = {k: 0 for k in CLASSES}
         n_mat = {m: 0 for m in MATERIALS}
+        n_floor = {name: 0 for name in FLOOR_SHAPES}
         n_open_no_mat = 0
         for rec in self.labels.values():
             kind = rec.get("kind")
@@ -231,11 +265,15 @@ class LabelApp:
                     n_mat[mat] += 1
                 else:
                     n_open_no_mat += 1
+            floor = rec.get("floor_shape")
+            if floor in n_floor:
+                n_floor[floor] += 1
         parts = [f"{k}={n_kind[k]}" for k in CLASSES]
         parts.append(
             f"open_work materials metal={n_mat['metal']} masonry={n_mat['masonry']}"
             + (f" missing={n_open_no_mat}" if n_open_no_mat else "")
         )
+        parts.append("floor " + " ".join(f"{name}={n_floor[name]}" for name in FLOOR_SHAPES))
         return "  ".join(parts)
 
     def _show_current(self) -> None:
@@ -248,6 +286,7 @@ class LabelApp:
             self._current_path = None
             self.kind_var.set("")
             self.material_var.set("")
+            self.floor_var.set("")
             self._set_material_enabled(False)
             return
 
@@ -262,10 +301,12 @@ class LabelApp:
         rec = self.labels.get(stem) or {}
         kind = rec.get("kind") or ""
         material = rec.get("material") or ""
+        floor = rec.get("floor_shape") or ""
         self.kind_var.set(kind if kind in CLASSES else "")
         self._on_kind_change()
         if kind == "open_work" and material in MATERIALS:
             self.material_var.set(material)
+        self.floor_var.set(floor if floor in FLOOR_SHAPES else "")
 
         try:
             im = Image.open(path).convert("RGB")
@@ -300,6 +341,14 @@ class LabelApp:
                 "open_work needs material: metal (M) or masonry (N).",
             )
             return
+        floor = self.floor_var.get()
+        if floor not in FLOOR_SHAPES:
+            messagebox.showwarning(
+                "Floor shape required",
+                "Select floor shape: rectangle (R), triangle (T), circle (C), "
+                "hexagon (H), or trapezoid (Z).",
+            )
+            return
 
         prev = dict(self.labels.get(stem) or {})
         prev_path = str(path)
@@ -310,6 +359,7 @@ class LabelApp:
                 image_path=path,
                 kind=kind,
                 material=material,
+                floor_shape=floor,
                 labels=self.labels,
             )
         except Exception as exc:
@@ -356,6 +406,7 @@ class LabelApp:
                 "path": prev.get("path") or f"{stem}.png",
                 "kind": prev.get("kind"),
                 "material": prev.get("material"),
+                "floor_shape": prev.get("floor_shape"),
             }
         else:
             self.labels.pop(stem, None)

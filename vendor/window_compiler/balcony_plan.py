@@ -3,6 +3,8 @@
 Coordinates match BDSL: +X along the façade, +Y outward from the wall, +Z up.
 A triangle is isosceles: wall-edge base, apex at the front center.
 A circle is a semi-ellipse: wall diameter, outward depth (true semicircle when depth = diameter/2).
+A trapezoid keeps the wall edge and cuts both ends so each side meets the wall at 75°.
+A hexagon is that rectangle with both front corners cut: 1 m along the front at 30°.
 """
 
 from __future__ import annotations
@@ -29,6 +31,15 @@ MASONRY_TOP_RAIL_HEIGHT_M = 0.15
 MASONRY_RAIL_INSET_M = 0.15
 
 CIRCLE_ARC_STEPS = 24
+# Interior angle where each trapezoid side meets the wall edge.
+TRAPEZOID_WALL_ANGLE_DEG = 75.0
+# Minimum front-edge length after the end cuts.
+TRAPEZOID_MIN_FRONT_M = 0.2
+# Front-corner notch: 1 m along the front, 30° up from that edge.
+HEXAGON_CUT_RUN_M = 1.0
+HEXAGON_CUT_ANGLE_DEG = 30.0
+HEXAGON_MIN_FRONT_M = 0.2
+HEXAGON_MIN_SIDE_M = 0.05
 
 Point = tuple[float, float]
 
@@ -80,6 +91,40 @@ def masonry_inset_rail_frame(
     return corners, edges
 
 
+def trapezoid_end_inset(
+    depth: float,
+    span: float,
+    *,
+    angle_deg: float = TRAPEZOID_WALL_ANGLE_DEG,
+) -> float:
+    """How far each end moves in at the front so the side meets the wall at ``angle_deg``.
+
+    The wall edge stays the full span. A narrow span clamps the cut so the front
+    edge stays at least ``TRAPEZOID_MIN_FRONT_M``.
+    """
+    depth = max(0.0, float(depth))
+    span = max(0.0, float(span))
+    lean = math.radians(90.0 - float(angle_deg))
+    inset = depth * math.tan(lean)
+    max_inset = max(0.0, (span - TRAPEZOID_MIN_FRONT_M) / 2.0)
+    return min(inset, max_inset)
+
+
+def hexagon_front_cut(depth: float, span: float) -> tuple[float, float]:
+    """Horizontal run and depth of each front-corner notch.
+
+    The cut meets the front edge at ``HEXAGON_CUT_ANGLE_DEG``. A narrow or
+    shallow slab shrinks the run so a front edge and a side stub remain.
+    """
+    depth = max(0.0, float(depth))
+    span = max(0.0, float(span))
+    rise_per_run = math.tan(math.radians(HEXAGON_CUT_ANGLE_DEG))
+    max_run_span = max(0.0, (span - HEXAGON_MIN_FRONT_M) / 2.0)
+    max_run_depth = max(0.0, (depth - HEXAGON_MIN_SIDE_M) / rise_per_run)
+    run = min(HEXAGON_CUT_RUN_M, max_run_span, max_run_depth)
+    return run, run * rise_per_run
+
+
 def slab_outline(
     shape: str,
     *,
@@ -107,6 +152,26 @@ def slab_outline(
             t = math.pi * (1.0 - i / CIRCLE_ARC_STEPS)
             pts.append((cx + rx * math.cos(t), y_wall + dy * math.sin(t)))
         return pts
+    if name == "trapezoid":
+        inset = trapezoid_end_inset(abs(y_out - y_wall), x1 - x0)
+        return [
+            (x0, y_wall),
+            (x0 + inset, y_out),
+            (x1 - inset, y_out),
+            (x1, y_wall),
+        ]
+    if name == "hexagon":
+        run, rise = hexagon_front_cut(abs(y_out - y_wall), x1 - x0)
+        outward = 1.0 if y_out >= y_wall else -1.0
+        y_notch = y_out - outward * rise
+        return [
+            (x0, y_wall),
+            (x0, y_notch),
+            (x0 + run, y_out),
+            (x1 - run, y_out),
+            (x1, y_notch),
+            (x1, y_wall),
+        ]
     return [(x0, y_wall), (x0, y_out), (x1, y_out), (x1, y_wall)]
 
 

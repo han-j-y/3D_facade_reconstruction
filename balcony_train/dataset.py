@@ -17,6 +17,7 @@ from balcony_train.labels import (
     iter_labeled_samples,
     iter_multitask_samples,
     material_counts,
+    sample_targets,
 )
 from balcony_train.model import make_transform
 
@@ -52,9 +53,9 @@ class RailingCropDataset(Dataset):
 
 
 class MultitaskCropDataset(Dataset):
-    """Returns (image, kind_idx, material_idx). material may be IGNORE."""
+    """Returns (image, kind_idx, material_idx, floor_idx). Heads may be IGNORE."""
 
-    def __init__(self, samples: list[MultitaskSample], *, transform=None) -> None:
+    def __init__(self, samples: list[MultitaskSample] | list[tuple], *, transform=None) -> None:
         self.samples = list(samples)
         self.transform = transform or make_transform()
 
@@ -62,6 +63,7 @@ class MultitaskCropDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx: int) -> tuple:
-        path, kind_idx, mat_idx = self.samples[idx]
-        img = Image.open(path).convert("RGB")
-        return self.transform(img), int(kind_idx), int(mat_idx)
+        row = self.samples[idx]
+        _path, kind_idx, mat_idx, floor_idx = (row[0], *sample_targets(row))
+        img = Image.open(row[0]).convert("RGB")
+        return self.transform(img), kind_idx, mat_idx, floor_idx

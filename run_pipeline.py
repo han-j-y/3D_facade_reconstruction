@@ -255,7 +255,18 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--no-railing-vote",
         action="store_true",
-        help="balcony track: per-unit heuristic railing IR (skip type majority vote)",
+        help=(
+            "balcony track: each unit keeps its own railing and floor shape "
+            "(skip type majority vote)"
+        ),
+    )
+    ap.add_argument(
+        "--no-floor-shape-vote",
+        action="store_true",
+        help=(
+            "balcony track: do not majority-vote floor shape; each balcony keeps "
+            "its predicted plan. Implied by --no-railing-vote"
+        ),
     )
     ap.add_argument(
         "--railing-ckpt",
@@ -1215,6 +1226,7 @@ def run_one(
                 force=True,
                 recovery_profile=args.balcony_recovery_profile,
                 no_railing_vote=args.no_railing_vote,
+                no_floor_shape_vote=args.no_floor_shape_vote,
                 railing_ckpt=args.railing_ckpt,
                 no_railing_ckpt=args.no_railing_ckpt,
                 balcony_center=args.balcony_center,

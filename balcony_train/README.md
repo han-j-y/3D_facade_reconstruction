@@ -27,6 +27,22 @@ python balcony_train/generate_flux2.py -n 50 --quantized --device cuda --prompt-
 python balcony_train/generate_flux2.py -n 40 --quantized --device cuda --prompt-set solid
 ```
 
+Rare floor plans (triangle, trapezoid, hexagon). On the remote GPU, `-n 4` writes one metal, one masonry, one solid, and one surface image. Leave these at full size; the 120×44 resize below skips `flux2_triangle_`, `flux2_trapezoid_`, and `flux2_hexagon_`.
+
+```text
+python balcony_train/generate_flux2.py -n 4 --quantized --device cuda --prompt-set triangle
+python balcony_train/generate_flux2.py -n 4 --quantized --device cuda --prompt-set trapezoid
+python balcony_train/generate_flux2.py -n 4 --quantized --device cuda --prompt-set hexagon
+python balcony_train/label_from_prefix.py
+```
+
+Half-enclosed and enclosed, two images each. These stay in ``unlabeled`` for review and are skipped by the 120×44 resize.
+
+```text
+python balcony_train/generate_flux2.py -n 2 --quantized --device cuda --prompt-set half_enclosed
+python balcony_train/generate_flux2.py -n 2 --quantized --device cuda --prompt-set enclosed
+```
+
 Prefixes: `flux2_masonry_`, `flux2_metal_`, `flux2_surface_`, `flux2_solid_`. Label in UI as
 `open_work`+`masonry`, `open_work`+`metal`, `surface_panel`, or `solid` respectively.
 

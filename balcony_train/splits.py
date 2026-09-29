@@ -9,12 +9,16 @@ from typing import Any, Literal
 
 from balcony_train.labels import (
     CLASSES,
+    FLOOR_IGNORE_INDEX,
+    FLOOR_SHAPES,
     MATERIAL_IGNORE_INDEX,
     MATERIALS,
     MultitaskSample,
     class_counts,
+    floor_counts,
     iter_multitask_samples,
     material_counts,
+    sample_targets,
     strat_key,
 )
 from balcony_train.paths import DEFAULT_LABELS_JSONL
@@ -61,7 +65,8 @@ def stratified_split_indices(
     by_key: dict[str, list[int]] = {}
     for idx, row in enumerate(samples):
         if len(row) >= 3:
-            key = strat_key(int(row[1]), int(row[2]))
+            kind_idx, mat_idx, _floor_idx = sample_targets(row)
+            key = strat_key(kind_idx, mat_idx)
         else:
             key = CLASSES[int(row[1])]
         by_key.setdefault(key, []).append(idx)
@@ -101,16 +106,24 @@ def _resolve_path(rel: str, base: Path) -> Path:
     return p if p.is_file() else base / rel
 
 
-def _row_payload(path: Path, kind_idx: int, mat_idx: int, base: Path) -> dict[str, Any]:
+def _row_payload(
+    path: Path,
+    kind_idx: int,
+    mat_idx: int,
+    floor_idx: int,
+    base: Path,
+) -> dict[str, Any]:
     kind = CLASSES[int(kind_idx)]
     material = None
     if kind == "open_work" and int(mat_idx) >= 0:
         material = MATERIALS[int(mat_idx)]
+    floor = FLOOR_SHAPES[int(floor_idx)] if int(floor_idx) >= 0 else None
     return {
         "path": _rel_path(path, base),
         "label": kind,
         "kind": kind,
         "material": material,
+        "floor_shape": floor,
     }
 
 
@@ -128,17 +141,15 @@ def build_split_record(
     base = Path(data_dir).resolve()
     normed: list[MultitaskSample] = []
     for row in samples:
-        if len(row) >= 3:
-            normed.append((Path(row[0]), int(row[1]), int(row[2])))
-        else:
-            normed.append((Path(row[0]), int(row[1]), MATERIAL_IGNORE_INDEX))
+        kind_idx, mat_idx, floor_idx = sample_targets(row)
+        normed.append((Path(row[0]), kind_idx, mat_idx, floor_idx))
 
     splits: dict[str, list[dict[str, Any]]] = {}
     for name in ("train", "val", "test"):
         rows: list[dict[str, Any]] = []
         for idx in indices[name]:
-            path, kind_idx, mat_idx = normed[idx]
-            rows.append(_row_payload(path, kind_idx, mat_idx, base))
+            path, kind_idx, mat_idx, floor_idx = normed[idx]
+            rows.append(_row_payload(path, kind_idx, mat_idx, floor_idx, base))
         splits[name] = rows
     return {
         "version": 2,
@@ -149,6 +160,7 @@ def build_split_record(
         "data_dir": str(base),
         "counts": class_counts(normed),
         "material_counts": material_counts(normed),
+        "floor_counts": floor_counts(normed),
         "split_counts": {
             name: class_counts([normed[i] for i in indices[name]])
             for name in ("train", "val", "test")
@@ -192,7 +204,12 @@ def samples_from_split_record(
             mat_idx = MATERIALS.index(str(mat_raw))
         else:
             mat_idx = MATERIAL_IGNORE_INDEX
-        out.append((path, kind_idx, mat_idx))
+        floor_raw = row.get("floor_shape")
+        if floor_raw in FLOOR_SHAPES:
+            floor_idx = FLOOR_SHAPES.index(str(floor_raw))
+        else:
+            floor_idx = FLOOR_IGNORE_INDEX
+        out.append((path, kind_idx, mat_idx, floor_idx))
     return out
 
 

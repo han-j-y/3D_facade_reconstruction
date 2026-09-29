@@ -15,7 +15,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from balcony_train.labels import (  # noqa: E402
+    FLOOR_IGNORE_INDEX,
     MATERIAL_IGNORE_INDEX,
+    floor_counts,
     iter_multitask_samples,
     material_counts,
     strat_key,
@@ -44,13 +46,35 @@ class MultitaskLabelsTests(unittest.TestCase):
             )
             _png(crops / "open_work" / "c.png")
             rows = iter_multitask_samples(crops, jsonl)
-            by_stem = {p.stem: (k, m) for p, k, m in rows}
+            by_stem = {p.stem: (k, m, f) for p, k, m, f in rows}
             self.assertEqual(by_stem["a"][0], 0)
             self.assertEqual(by_stem["a"][1], 0)  # default metal
+            self.assertEqual(by_stem["a"][2], FLOOR_IGNORE_INDEX)
             self.assertEqual(by_stem["b"][1], MATERIAL_IGNORE_INDEX)
             self.assertEqual(by_stem["c"][1], 1)  # masonry
             self.assertEqual(material_counts(rows)["masonry"], 1)
             self.assertEqual(strat_key(0, 1), "open_work|masonry")
+
+            _png(crops / "solid" / "hex.png")
+            jsonl.write_text(
+                jsonl.read_text(encoding="utf-8")
+                + json.dumps(
+                    {
+                        "path": "hex.png",
+                        "kind": "solid",
+                        "material": None,
+                        "floor_shape": "hexagon",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            rows = iter_multitask_samples(crops, jsonl)
+            by_stem = {p.stem: (k, m, f) for p, k, m, f in rows}
+            self.assertEqual(by_stem["hex"][2], 3)
+            self.assertEqual(by_stem["b"][2], FLOOR_IGNORE_INDEX)
+            self.assertEqual(floor_counts(rows)["hexagon"], 1)
+            self.assertEqual(sum(floor_counts(rows).values()), 1)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,9 @@ from heuristic_ir import (  # noqa: E402
     _infer_rail_kind,
     _railing_has_solid_patch,
     _railing_max_opaque_run,
+    balcony_type_token,
     balcony_view,
+    floor_shape_from_ir,
     infer_balcony_ir,
     ir_to_tokens,
 )
@@ -43,6 +45,18 @@ class RailingOnlyProfileTests(unittest.TestCase):
         self.assertEqual(
             view, {"railing_kind": "open_work", "railing_material": "metal"}
         )
+
+    def test_type_token_can_include_floor_shape(self) -> None:
+        ir = {
+            "railing": {"kind": "open_work", "material": "metal"},
+            "floor": {"shape": "hexagon"},
+        }
+        self.assertEqual(balcony_type_token(ir), "open_work_metal")
+        self.assertEqual(
+            balcony_type_token(ir, include_floor=True),
+            "open_work_metal_hexagon",
+        )
+        self.assertEqual(floor_shape_from_ir({"floor": {"shape": "nope"}}), "rectangle")
 
     def test_infer_fixed_axes(self) -> None:
         crop = Image.new("RGB", (64, 48), (200, 200, 200))

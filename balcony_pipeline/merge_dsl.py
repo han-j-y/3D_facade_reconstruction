@@ -77,6 +77,7 @@ def merge_balcony_into_windows_dsl(
     units: list[dict[str, Any]],
     image_size: tuple[int, int] | list[int] | None = None,
     per_unit_railing: bool = False,
+    per_unit_floor: bool = False,
     center_mode: str = "window",
 ) -> dict[str, Any]:
     dsl = copy.deepcopy(windows_dsl)
@@ -98,9 +99,9 @@ def merge_balcony_into_windows_dsl(
     balc_place = []
     seen: set[tuple] = set()
     for u in units:
-        if per_unit_railing:
+        if per_unit_railing or per_unit_floor:
             ir = u.get("structure_ir") or {}
-            name = f"balc_{balcony_type_token(ir)}"
+            name = f"balc_{balcony_type_token(ir, include_floor=per_unit_floor)}"
         else:
             name = f"balc_type_{int(u['type_id']):02d}"
         box = u.get("box_xyxy") or [0, 0, 1, 1]
@@ -167,7 +168,14 @@ def merge_balcony_into_windows_dsl(
     meta["n_balcony_types"] = len(balcony_types)
     meta["balcony_center_mode"] = mode
     notes = str(meta.get("notes") or "")
-    mode_label = "per-unit railing IR" if per_unit_railing else "heuristic IR vote"
+    if per_unit_railing and per_unit_floor:
+        mode_label = "per-unit railing and floor IR"
+    elif per_unit_floor:
+        mode_label = "voted railing, per-unit floor IR"
+    elif per_unit_railing:
+        mode_label = "per-unit railing IR"
+    else:
+        mode_label = "heuristic IR vote"
     if mode == "photo":
         placement_note = "slab width/center from photo boxes (width_norm/cx_norm)."
     elif mode == "bay":

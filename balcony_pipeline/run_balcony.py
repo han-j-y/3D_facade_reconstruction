@@ -11,6 +11,7 @@ Requires an existing window facade_dsl.json (floor×bay from the window track).
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import shutil
 import sys
@@ -41,6 +42,7 @@ from draw import (  # noqa: E402
 from filter import filter_balcony_boxes  # noqa: E402
 from heuristic_ir import (  # noqa: E402
     balcony_type_token,
+    floor_shape_from_ir,
     infer_balcony_ir,
     ir_to_tokens,
     railing_kind_from_ir,
@@ -108,7 +110,19 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--no-railing-vote",
         action="store_true",
-        help="skip type-level majority vote; each unit keeps its own heuristic railing IR",
+        help=(
+            "skip type-level majority vote; each unit keeps its own railing IR "
+            "and its own floor shape"
+        ),
+    )
+    ap.add_argument(
+        "--no-floor-shape-vote",
+        action="store_true",
+        help=(
+            "do not majority-vote floor shape; each balcony keeps its predicted "
+            "plan (rectangle, triangle, circle, hexagon, trapezoid). "
+            "Implied by --no-railing-vote"
+        ),
     )
     ap.add_argument(
         "--railing-ckpt",
@@ -196,11 +210,13 @@ def infer_unit_ir(
 ) -> dict:
     kind_override = None
     material_override = None
+    floor_override = None
     if predictor is not None:
         if hasattr(predictor, "predict_full"):
             pred = predictor.predict_full(crop)
             kind_override = pred.get("kind")
             material_override = pred.get("material")
+            floor_override = pred.get("floor_shape")
         else:
             kind_override = predictor.predict(crop)
     return infer_balcony_ir(
@@ -210,7 +226,61 @@ def infer_unit_ir(
         profile_name=profile_name,
         rail_kind_override=kind_override,
         rail_material_override=material_override,
+        floor_shape_override=floor_override,
     )
+
+
+def _with_unit_floor(voted_ir: dict | None, member_ir: dict) -> dict:
+    """Voted railing IR with this unit's own floor plan."""
+    if not isinstance(voted_ir, dict):
+        return member_ir
+    out = copy.deepcopy(voted_ir)
+    floor = dict(member_ir.get("floor") or {})
+    floor["shape"] = floor_shape_from_ir(member_ir)
+    out["floor"] = floor
+    return out
+
+
+def _types_grouped_by_token(
+    units: list[dict],
+    crops_dir: Path,
+    out_dir: Path,
+    *,
+    include_floor: bool,
+) -> list[dict]:
+    """One Blender type per railing (+ floor shape when requested)."""
+    by_token: dict[str, list[dict]] = defaultdict(list)
+    for u in units:
+        ir = u.get("structure_ir") or {}
+        token = balcony_type_token(ir, include_floor=include_floor)
+        by_token[token].append(u)
+    types_out: list[dict] = []
+    for tid, token in enumerate(sorted(by_token)):
+        members = by_token[token]
+        rep = members[0]
+        canon = crops_dir / f"balc_{token}_exemplar.png"
+        shutil.copy(out_dir / rep["asset"], canon)
+        ir = rep["structure_ir"]
+        types_out.append(
+            {
+                "type_id": tid,
+                "name": f"balc_{token}",
+                "n_instances": len(members),
+                "exemplar_unit": int(rep["unit_id"]),
+                "exemplar_asset": str(canon.relative_to(out_dir)),
+                "structure_ir": ir,
+                "structure_tokens": rep.get("structure_tokens"),
+                "structure_vote": {
+                    "mode": "per_unit",
+                    "railing_kind": railing_kind_from_ir(ir),
+                    "railing_material": railing_material_from_ir(ir),
+                    "floor_shape": floor_shape_from_ir(ir) if include_floor else None,
+                    "n_members": len(members),
+                    "unit_ids": [int(u["unit_id"]) for u in members],
+                },
+            }
+        )
+    return types_out
 
 
 def cluster_boxes(
@@ -397,6 +467,8 @@ def run(args: argparse.Namespace) -> Path | None:
     profile_name = getattr(args, "recovery_profile", None) or DEFAULT_PROFILE
     axes_on = [k for k, v in resolve_profile(profile_name).items() if v]
     per_unit_railing = bool(getattr(args, "no_railing_vote", False))
+    # --no-railing-vote already keeps each crop's IR, including its floor plan.
+    per_unit_floor = bool(getattr(args, "no_floor_shape_vote", False)) or per_unit_railing
     predictor = resolve_railing_predictor(args, device)
     rail_src = "classifier" if predictor is not None else "heuristic"
     ir_label = "Classifier IR" if predictor is not None else "Heuristic IR"
@@ -405,7 +477,6 @@ def run(args: argparse.Namespace) -> Path | None:
         print(
             f"=== 4 {ir_label} per unit (no vote; profile={profile_name} infer={axes_on}) ==="
         )
-        by_kind: dict[str, list[dict]] = defaultdict(list)
         for u in units:
             crop = Image.open(out_dir / u["asset"]).convert("RGB")
             ir = infer_unit_ir(
@@ -416,42 +487,23 @@ def run(args: argparse.Namespace) -> Path | None:
                 predictor=predictor,
             )
             tokens = ir_to_tokens(ir, profile_name=profile_name)
-            token = balcony_type_token(ir)
             kind = railing_kind_from_ir(ir)
             material = railing_material_from_ir(ir)
             u["structure_ir_member"] = ir
             u["structure_ir"] = ir
             u["structure_tokens"] = tokens
-            by_kind[token].append(u)
             mat_s = f" material={material}" if material else ""
-            print(f"  unit_{int(u['unit_id']):03d}: railing={kind}{mat_s}")
-
-        for tid, token in enumerate(sorted(by_kind)):
-            members = by_kind[token]
-            rep = members[0]
-            canon = crops_dir / f"balc_{token}_exemplar.png"
-            shutil.copy(out_dir / rep["asset"], canon)
-            types_out.append(
-                {
-                    "type_id": tid,
-                    "name": f"balc_{token}",
-                    "n_instances": len(members),
-                    "exemplar_unit": int(rep["unit_id"]),
-                    "exemplar_asset": str(canon.relative_to(out_dir)),
-                    "structure_ir": rep["structure_ir"],
-                    "structure_tokens": rep["structure_tokens"],
-                    "structure_vote": {
-                        "mode": "per_unit",
-                        "railing_kind": railing_kind_from_ir(rep["structure_ir"]),
-                        "railing_material": railing_material_from_ir(
-                            rep["structure_ir"]
-                        ),
-                        "n_members": len(members),
-                        "unit_ids": [int(u["unit_id"]) for u in members],
-                    },
-                }
+            print(
+                f"  unit_{int(u['unit_id']):03d}: railing={kind}{mat_s} "
+                f"floor={floor_shape_from_ir(ir)}"
             )
-        vote_note = f"profile={profile_name} per-unit infer={axes_on} rail={rail_src}"
+        types_out = _types_grouped_by_token(
+            units, crops_dir, out_dir, include_floor=per_unit_floor
+        )
+        vote_note = (
+            f"profile={profile_name} per-unit infer={axes_on} "
+            f"rail={rail_src} floor=per-unit"
+        )
     else:
         print(f"=== 4 {ir_label} + majority vote (profile={profile_name} vote={axes_on}) ===")
         for tid, med_i in sorted(medoids.items()):
@@ -476,26 +528,42 @@ def run(args: argparse.Namespace) -> Path | None:
                 member_preds, prefer_unit_id=med_i, profile_name=profile_name
             )
             for u in member_units:
-                u["structure_ir"] = voted["structure_ir"]
+                if per_unit_floor:
+                    u["structure_ir"] = _with_unit_floor(
+                        voted["structure_ir"], u["structure_ir_member"]
+                    )
+                else:
+                    u["structure_ir"] = voted["structure_ir"]
             vote = voted["vote"]
             print(
                 f"  type_{tid:02d}: vote "
                 f"{vote.get('winner_count', 0)}/{vote.get('n_valid', 0)} "
                 f"unique={vote.get('n_unique', 0)}"
             )
-            types_out.append(
-                {
-                    "type_id": tid,
-                    "name": f"balc_type_{tid:02d}",
-                    "n_instances": len(member_units),
-                    "exemplar_unit": med_i,
-                    "exemplar_asset": str(canon.relative_to(out_dir)),
-                    "structure_ir": voted["structure_ir"],
-                    "structure_tokens": voted["structure_tokens"],
-                    "structure_vote": voted["vote"],
-                }
+            if not per_unit_floor:
+                types_out.append(
+                    {
+                        "type_id": tid,
+                        "name": f"balc_type_{tid:02d}",
+                        "n_instances": len(member_units),
+                        "exemplar_unit": med_i,
+                        "exemplar_asset": str(canon.relative_to(out_dir)),
+                        "structure_ir": voted["structure_ir"],
+                        "structure_tokens": voted["structure_tokens"],
+                        "structure_vote": voted["vote"],
+                    }
+                )
+        if per_unit_floor:
+            types_out = _types_grouped_by_token(
+                units, crops_dir, out_dir, include_floor=True
             )
-        vote_note = f"profile={profile_name} vote={axes_on} rail={rail_src}"
+            for u in units:
+                print(
+                    f"  unit_{int(u['unit_id']):03d}: "
+                    f"floor={floor_shape_from_ir(u.get('structure_ir') or {})}"
+                )
+        floor_note = " floor=per-unit" if per_unit_floor else ""
+        vote_note = f"profile={profile_name} vote={axes_on} rail={rail_src}{floor_note}"
 
     save(
         draw_vote(types_out, out_dir, vote_note),
@@ -509,6 +577,7 @@ def run(args: argparse.Namespace) -> Path | None:
         units=units,
         image_size=facade.size,
         per_unit_railing=per_unit_railing,
+        per_unit_floor=per_unit_floor,
         center_mode=str(getattr(args, "balcony_center", "window")),
     )
     merged["meta"]["balcony_image"] = str(image_path)
@@ -516,6 +585,7 @@ def run(args: argparse.Namespace) -> Path | None:
     merged["meta"]["balcony_recovery_profile"] = profile_name
     merged["meta"]["balcony_vote_axes"] = axes_on
     merged["meta"]["balcony_per_unit_railing"] = per_unit_railing
+    merged["meta"]["balcony_per_unit_floor"] = per_unit_floor
     merged["meta"]["balcony_railing_source"] = rail_src
     if predictor is not None:
         merged["meta"]["balcony_railing_ckpt"] = str(predictor.ckpt_path)

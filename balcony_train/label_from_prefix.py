@@ -6,6 +6,8 @@ Maps::
     flux2_metal_*    -> open_work + metal
     flux2_surface_*  -> surface_panel
     flux2_solid_*    -> solid
+    flux2_{triangle,trapezoid,hexagon}_{metal,masonry,solid,surface}_*
+        -> that kind, and floor_shape set to the plan
 
 Moves files into ``crops/{kind}/`` and appends ``labels.jsonl`` via
 ``save_annotation`` (same as Label UI).
@@ -33,20 +35,33 @@ from balcony_train.labels import LABELED_IMAGE_SUFFIXES  # noqa: E402
 from balcony_train.paths import DEFAULT_CROPS_DIR, DEFAULT_LABELS_JSONL  # noqa: E402
 
 # Longest-prefix-first matching (order matters if names ever overlap).
-PREFIX_LABELS: tuple[tuple[str, str, str | None], ...] = (
-    ("flux2_masonry_", "open_work", "masonry"),
-    ("flux2_metal_", "open_work", "metal"),
-    ("flux2_surface_", "surface_panel", None),
-    ("flux2_solid_", "solid", None),
+# Each row is (prefix, kind, material, floor_shape).
+PREFIX_LABELS: tuple[tuple[str, str, str | None, str | None], ...] = (
+    ("flux2_triangle_metal_", "open_work", "metal", "triangle"),
+    ("flux2_triangle_masonry_", "open_work", "masonry", "triangle"),
+    ("flux2_triangle_solid_", "solid", None, "triangle"),
+    ("flux2_triangle_surface_", "surface_panel", None, "triangle"),
+    ("flux2_trapezoid_metal_", "open_work", "metal", "trapezoid"),
+    ("flux2_trapezoid_masonry_", "open_work", "masonry", "trapezoid"),
+    ("flux2_trapezoid_solid_", "solid", None, "trapezoid"),
+    ("flux2_trapezoid_surface_", "surface_panel", None, "trapezoid"),
+    ("flux2_hexagon_metal_", "open_work", "metal", "hexagon"),
+    ("flux2_hexagon_masonry_", "open_work", "masonry", "hexagon"),
+    ("flux2_hexagon_solid_", "solid", None, "hexagon"),
+    ("flux2_hexagon_surface_", "surface_panel", None, "hexagon"),
+    ("flux2_masonry_", "open_work", "masonry", None),
+    ("flux2_metal_", "open_work", "metal", None),
+    ("flux2_surface_", "surface_panel", None, None),
+    ("flux2_solid_", "solid", None, None),
 )
 
 
-def match_prefix(name: str) -> tuple[str, str, str | None] | None:
-    """Return (prefix, kind, material) if ``name`` starts with a known prefix."""
+def match_prefix(name: str) -> tuple[str, str, str | None, str | None] | None:
+    """Return (prefix, kind, material, floor_shape) for a known filename."""
     lower = name.lower()
-    for prefix, kind, material in PREFIX_LABELS:
+    for prefix, kind, material, floor_shape in PREFIX_LABELS:
         if lower.startswith(prefix):
-            return prefix, kind, material
+            return prefix, kind, material, floor_shape
     return None
 
 
@@ -73,7 +88,7 @@ def label_from_prefixes(
     unlabeled_dir = Path(unlabeled_dir)
     jsonl_path = Path(jsonl_path)
 
-    counts = {prefix: 0 for prefix, _, _ in PREFIX_LABELS}
+    counts = {prefix: 0 for prefix, _, _, _ in PREFIX_LABELS}
     counts["skipped_no_prefix"] = 0
     counts["labeled"] = 0
 
@@ -90,9 +105,14 @@ def label_from_prefixes(
             counts["skipped_no_prefix"] += 1
             print(f"skip (unknown prefix): {path.name}")
             continue
-        prefix, kind, material = matched
+        prefix, kind, material, floor_shape = matched
+        detail = kind
+        if material:
+            detail += f" + {material}"
+        if floor_shape:
+            detail += f" + {floor_shape}"
         if dry_run:
-            print(f"DRY {path.name} -> {kind}" + (f" + {material}" if material else ""))
+            print(f"DRY {path.name} -> {detail}")
         else:
             assert labels is not None
             labels = save_annotation(
@@ -101,9 +121,10 @@ def label_from_prefixes(
                 image_path=path,
                 kind=kind,
                 material=material,
+                floor_shape=floor_shape,
                 labels=labels,
             )
-            print(f"{path.name} -> {kind}" + (f" + {material}" if material else ""))
+            print(f"{path.name} -> {detail}")
         counts[prefix] += 1
         counts["labeled"] += 1
 
@@ -153,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=bool(args.dry_run),
     )
     print("---")
-    for prefix, _, _ in PREFIX_LABELS:
+    for prefix, _, _, _ in PREFIX_LABELS:
         print(f"{prefix}*: {stats[prefix]}")
     print(f"skipped_no_prefix: {stats['skipped_no_prefix']}")
     print(f"labeled: {stats['labeled']}")

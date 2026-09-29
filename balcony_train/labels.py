@@ -8,14 +8,24 @@ from typing import Any
 CLASSES: tuple[str, ...] = ("open_work", "surface_panel", "solid")
 # Material only applies when kind == open_work (mesh proportions).
 MATERIALS: tuple[str, ...] = ("metal", "masonry")
+# Plan shape stored on labels and trained when set.
+FLOOR_SHAPES: tuple[str, ...] = (
+    "rectangle",
+    "triangle",
+    "circle",
+    "hexagon",
+    "trapezoid",
+)
 # Dataset / loss mask: material head ignored when not open_work.
 MATERIAL_IGNORE_INDEX = -100
+# Floor head ignored when the crop has no floor_shape label.
+FLOOR_IGNORE_INDEX = -100
 
 # Labeled crop image extensions (case-insensitive on Windows).
 LABELED_IMAGE_SUFFIXES: tuple[str, ...] = (".png", ".jpg", ".jpeg", ".webp")
 
-# (path, kind_idx, material_idx) — material_idx is MATERIAL_IGNORE_INDEX when N/A.
-MultitaskSample = tuple[Path, int, int]
+# (path, kind_idx, material_idx, floor_idx). Ignore indexes skip that head.
+MultitaskSample = tuple[Path, int, int, int]
 
 
 def class_index(name: str) -> int:
@@ -30,6 +40,21 @@ def material_index(name: str) -> int:
     if m not in MATERIALS:
         raise ValueError(f"unknown railing material {name!r}; expected {MATERIALS}")
     return MATERIALS.index(m)
+
+
+def floor_index(name: str) -> int:
+    f = str(name).strip().lower()
+    if f not in FLOOR_SHAPES:
+        raise ValueError(f"unknown floor shape {name!r}; expected {FLOOR_SHAPES}")
+    return FLOOR_SHAPES.index(f)
+
+
+def sample_targets(row: tuple) -> tuple[int, int, int]:
+    """Kind, material, floor indexes. Missing fields are ignore indexes."""
+    kind_idx = int(row[1])
+    mat_idx = int(row[2]) if len(row) >= 3 else MATERIAL_IGNORE_INDEX
+    floor_idx = int(row[3]) if len(row) >= 4 else FLOOR_IGNORE_INDEX
+    return kind_idx, mat_idx, floor_idx
 
 
 def iter_labeled_samples(crops_dir: Path) -> list[tuple[Path, int]]:
@@ -54,10 +79,10 @@ def iter_multitask_samples(
     crops_dir: Path,
     labels_jsonl: Path | None = None,
 ) -> list[MultitaskSample]:
-    """Kind from folders; material from labels.jsonl (open_work only).
+    """Kind from folders; material and floor shape from labels.jsonl.
 
-    open_work without material defaults to ``metal`` so training can run before
-    every crop is material-labeled.
+    open_work without material defaults to ``metal``. A missing floor_shape
+    stays unlabeled (``FLOOR_IGNORE_INDEX``) and still trains kind.
     """
     from balcony_train.label_store import find_image, merge_label_sources
     from balcony_train.paths import DEFAULT_LABELS_JSONL
@@ -81,7 +106,12 @@ def iter_multitask_samples(
             mat_idx = material_index(mat)
         else:
             mat_idx = MATERIAL_IGNORE_INDEX
-        rows.append((path, kind_idx, mat_idx))
+        floor = rec.get("floor_shape")
+        if floor in FLOOR_SHAPES:
+            floor_idx = floor_index(str(floor))
+        else:
+            floor_idx = FLOOR_IGNORE_INDEX
+        rows.append((path, kind_idx, mat_idx, floor_idx))
     return rows
 
 
@@ -93,14 +123,25 @@ def class_counts(samples: list[tuple[Any, int]] | list[MultitaskSample]) -> dict
     return counts
 
 
-def material_counts(samples: list[MultitaskSample]) -> dict[str, int]:
+def material_counts(samples: list[MultitaskSample] | list[tuple]) -> dict[str, int]:
     counts = {name: 0 for name in MATERIALS}
-    for _, kind_idx, mat_idx in samples:
-        if CLASSES[int(kind_idx)] != "open_work":
+    for row in samples:
+        kind_idx, mat_idx, _floor_idx = sample_targets(row)
+        if CLASSES[kind_idx] != "open_work":
             continue
-        if int(mat_idx) < 0:
+        if mat_idx < 0:
             continue
-        counts[MATERIALS[int(mat_idx)]] += 1
+        counts[MATERIALS[mat_idx]] += 1
+    return counts
+
+
+def floor_counts(samples: list[MultitaskSample] | list[tuple]) -> dict[str, int]:
+    counts = {name: 0 for name in FLOOR_SHAPES}
+    for row in samples:
+        _kind_idx, _mat_idx, floor_idx = sample_targets(row)
+        if floor_idx < 0:
+            continue
+        counts[FLOOR_SHAPES[floor_idx]] += 1
     return counts
 
 

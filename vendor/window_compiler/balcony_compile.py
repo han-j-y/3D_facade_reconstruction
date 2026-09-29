@@ -49,6 +49,9 @@ from geometry import assign_mat
 from materials import MATS
 from parse_bdsl import RAIL_ALIASES, RAIL_KINDS
 
+# Plans whose slab and railing follow slab_outline (not an axis-aligned box).
+_OUTLINE_SHAPES = frozenset({"triangle", "circle", "trapezoid", "hexagon"})
+
 
 def _span_xz(
     spec: dict[str, Any],
@@ -571,9 +574,18 @@ def _add_masonry_openwork_guard(
     z_rail1 = z_rail0 + top_h
     half_rail = top_w / 2.0
 
-    corners, edges = masonry_inset_rail_frame(
-        outline, y_wall, rail_inset, front_only=front_only
-    )
+    slanted = _outline_has_slant(outline, y_wall) and not front_only
+    if slanted:
+        mid = centroid(outline)
+        corners = [inset_point(p, mid, rail_inset) for p in outline]
+        edges = [
+            inset_edge(p0, p1, mid, rail_inset)
+            for p0, p1 in outer_edges(outline, y_wall)
+        ]
+    else:
+        corners, edges = masonry_inset_rail_frame(
+            outline, y_wall, rail_inset, front_only=front_only
+        )
     if not edges:
         return
 
@@ -596,7 +608,9 @@ def _add_masonry_openwork_guard(
         if length < post + 0.05:
             continue
         front = front_only or is_front_edge(p0, p1, y_wall)
-        if front:
+        if slanted:
+            rail_seg = (p0, p1)
+        elif front:
             # Span inset post centers, then continue to the slab left/right edges.
             rail_seg = extend_segment_ends(
                 p0, p1, ext0=rail_inset, ext1=rail_inset
@@ -636,6 +650,17 @@ def _add_masonry_openwork_guard(
                 vertices=16,
             )
             bal_i += 1
+
+
+def _outline_has_slant(
+    outline: list[tuple[float, float]],
+    y_wall: float,
+) -> bool:
+    """True when an outer edge is neither parallel nor perpendicular to the wall."""
+    for p0, p1 in outer_edges(outline, y_wall):
+        if abs(p0[0] - p1[0]) > 1e-4 and abs(p0[1] - p1[1]) > 1e-4:
+            return True
+    return False
 
 
 def _add_open_work_guard(
@@ -1012,7 +1037,7 @@ def add_balcony_meshes(
         slab_y = front_y + depth / 2.0
         y_wall = front_y
 
-        if shape in {"triangle", "circle"} or (
+        if shape in _OUTLINE_SHAPES or (
             enclosure == "enclosed" and shape == "rectangle"
         ):
             tw = float(params.get("width") or params.get("diameter") or 0.0)
@@ -1022,7 +1047,7 @@ def add_balcony_meshes(
                 bx1 = cx + tw / 2.0
 
         outline = slab_outline(
-            shape if shape in {"triangle", "circle"} else "rectangle",
+            shape if shape in _OUTLINE_SHAPES else "rectangle",
             x0=bx0,
             x1=bx1,
             y_wall=y_wall,
@@ -1030,7 +1055,7 @@ def add_balcony_meshes(
             structure=structure,
         )
 
-        if shape in {"triangle", "circle"}:
+        if shape in _OUTLINE_SHAPES:
             _prism_xy(
                 name=f"{prefix}_slab",
                 verts_xy=outline,
@@ -1079,7 +1104,7 @@ def add_balcony_meshes(
                 material=rail_material,
                 mat_key=rail_mat,
             )
-        elif kind == "surface_panel" and shape not in {"triangle", "circle"}:
+        elif kind == "surface_panel" and shape not in _OUTLINE_SHAPES:
             sx_slab = span_w * 0.98
             _add_surface_panel_guard(
                 prefix=prefix,
@@ -1094,7 +1119,7 @@ def add_balcony_meshes(
                 mat_key=rail_mat,
                 panel_t=rail_t,
             )
-        elif shape in {"triangle", "circle"}:
+        elif shape in _OUTLINE_SHAPES:
             mid = centroid(outline)
             for e, (p0, p1) in enumerate(outer_edges(outline, y_wall)):
                 a, b = inset_edge(p0, p1, mid, rail_t / 2.0)

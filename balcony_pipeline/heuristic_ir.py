@@ -37,12 +37,31 @@ def railing_material_from_ir(ir: dict[str, Any]) -> str | None:
     return _rail_material((ir.get("railing") or {}).get("material"))
 
 
-def balcony_type_token(ir: dict[str, Any]) -> str:
-    """Type name stem: open_work_metal / open_work_masonry / surface_panel / solid."""
+_FLOOR_SHAPES = ("rectangle", "triangle", "circle", "hexagon", "trapezoid")
+
+
+def floor_shape_from_ir(ir: dict[str, Any]) -> str:
+    """Plan shape on a BDSL IR. Unknown values become rectangle."""
+    shape = str((ir.get("floor") or {}).get("shape") or "rectangle").strip().lower()
+    if shape not in _FLOOR_SHAPES:
+        return "rectangle"
+    return shape
+
+
+def balcony_type_token(ir: dict[str, Any], *, include_floor: bool = False) -> str:
+    """Type name stem: open_work_metal / open_work_masonry / surface_panel / solid.
+
+    ``include_floor`` appends the plan (``open_work_metal_circle``, ``solid_trapezoid``)
+    so Blender does not share one slab outline across different floor shapes.
+    """
     kind = railing_kind_from_ir(ir)
     if kind == "open_work":
-        return f"open_work_{railing_material_from_ir(ir) or 'metal'}"
-    return kind
+        token = f"open_work_{railing_material_from_ir(ir) or 'metal'}"
+    else:
+        token = kind
+    if include_floor:
+        token = f"{token}_{floor_shape_from_ir(ir)}"
+    return token
 
 
 def _rail_kind(raw: Any) -> str:
@@ -284,12 +303,14 @@ def infer_balcony_ir(
     profile_name: str | None = None,
     rail_kind_override: str | None = None,
     rail_material_override: str | None = None,
+    floor_shape_override: str | None = None,
 ) -> dict[str, Any]:
     """Appearance cues → BDSL IR. Disabled axes use FIXED_DEFAULTS.
 
     ``rail_kind_override`` / ``rail_material_override`` skip the opaque-run
     heuristic (classifier or tests). Material applies only when kind is
-    ``open_work`` (default ``metal``).
+    ``open_work`` (default ``metal``). ``floor_shape_override`` replaces the
+    aspect heuristic when the classifier labeled a plan.
     """
     p = resolve_profile(profile_name)
     arr = _to_np(crop)
@@ -324,7 +345,11 @@ def infer_balcony_ir(
     else:
         structure = str(FIXED_DEFAULTS["structure"])
 
-    if p.get("floor_shape"):
+    if floor_shape_override:
+        floor_shape = str(floor_shape_override).strip().lower()
+        if floor_shape not in {"rectangle", "triangle", "circle", "hexagon", "trapezoid"}:
+            floor_shape = str(FIXED_DEFAULTS["floor_shape"])
+    elif p.get("floor_shape"):
         if aspect < 0.75:
             floor_shape = "triangle"
         elif 0.85 <= aspect <= 1.15 and inner_std < 35:
