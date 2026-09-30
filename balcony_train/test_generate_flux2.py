@@ -259,13 +259,10 @@ class GenerateFlux2HelperTests(unittest.TestCase):
                 self.assertIn("only the", joined)
             for prompt in prompts:
                 lower = prompt.lower()
-                self.assertTrue(lower.startswith("never on a building corner"), msg=prompt)
-                self.assertIn("not a corner balcony", lower, msg=prompt)
-                self.assertTrue("street" in lower or "sidewalk" in lower, msg=prompt)
-                self.assertTrue(
-                    "three-quarter" in lower or "oblique" in lower or "angled" in lower,
-                    msg=prompt,
-                )
+                self.assertTrue(lower.startswith("a long flat facade"), msg=prompt)
+                self.assertNotIn("corner", lower, msg=prompt)
+                self.assertIn("street", lower, msg=prompt)
+                self.assertIn("top of the floor is visible", lower, msg=prompt)
             with tempfile.TemporaryDirectory() as tmp:
                 planned = iter_prompt_outputs(
                     Path(tmp), len(prefixes), prompts, f"flux2_{shape}_", prefixes
@@ -290,8 +287,8 @@ class GenerateFlux2HelperTests(unittest.TestCase):
         self.assertIn("not open to the outside air", closed)
         for prompt in (*HALF_ENCLOSED_PROMPTS, *ENCLOSED_PROMPTS):
             lower = prompt.lower()
-            self.assertTrue(lower.startswith("never on a building corner"), msg=prompt)
-            self.assertIn("not a corner balcony", lower)
+            self.assertTrue(lower.startswith("a long flat facade"), msg=prompt)
+            self.assertNotIn("corner", lower)
             self.assertIn("beyond the exterior wall line", lower)
             self.assertIn("not recessed", lower)
         self.assertNotIn("loggia", half)
