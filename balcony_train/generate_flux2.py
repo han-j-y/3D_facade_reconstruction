@@ -8,23 +8,12 @@ Prompt sets (``--prompt-set``):
   - ``metal`` — open_work + metal (bars / wrought iron / open patterns)
   - ``surface_panel`` — modern frame + glass/metal/privacy panels
   - ``solid`` — opaque wall / parapet mass
-  - ``triangle`` / ``trapezoid`` — the floor slab only. Three images
-    (metal, masonry, solid). ``hexagon`` adds a surface image (four).
+  - ``triangle`` / ``trapezoid`` / ``hexagon`` / ``half_enclosed`` /
+    ``enclosed`` — 50 prompts each. These always write ``crops/unlabeled/``.
     Keep the full frame; do not resize these to 120×44.
 
-Remote GPU test::
-
-    python balcony_train/generate_flux2.py -n 3 --quantized --device cuda --prompt-set triangle
-    python balcony_train/generate_flux2.py -n 3 --quantized --device cuda --prompt-set trapezoid
-    python balcony_train/generate_flux2.py -n 4 --quantized --device cuda --prompt-set hexagon
-
-These sets always write ``crops/unlabeled/`` and stay there.
-
-Half-enclosed (columns, still open to the air) and enclosed (windows or walls),
-two images each::
-
-    python balcony_train/generate_flux2.py -n 2 --quantized --device cuda --prompt-set half_enclosed
-    python balcony_train/generate_flux2.py -n 2 --quantized --device cuda --prompt-set enclosed
+Unattended 50-each run on the remote GPU (one model load, survives SSH
+disconnect when started under nohup). See ``run_flux2_rare50.py``.
 
 Setup (once)::
 
@@ -282,15 +271,50 @@ def generate_balcony_crops(
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     planned = iter_prompt_outputs(dest_dir, count, prompts, prefix, prefixes)
-
     pipe, torch = _load_pipeline(model_id, device, cpu_offload=cpu_offload)
-    # Generators for offloaded pipes are safer on CPU.
-    gen_device = "cpu" if cpu_offload or not device.startswith("cuda") else "cuda"
+    saved = _write_images(
+        pipe,
+        torch,
+        planned,
+        seed=seed,
+        width=width,
+        height=height,
+        steps=steps,
+        guidance_scale=guidance_scale,
+        device=device,
+        cpu_offload=cpu_offload,
+        prompt_count=len(prompts),
+    )
+    return {
+        "saved": saved,
+        "dest": str(dest_dir),
+        "start_index": _next_index(dest_dir, prefix) - saved if prefixes is None else 0,
+    }
 
+
+def _write_images(
+    pipe,
+    torch,
+    planned: list[tuple[Path, str]],
+    *,
+    seed: int,
+    width: int,
+    height: int,
+    steps: int,
+    guidance_scale: float,
+    device: str,
+    cpu_offload: bool,
+    prompt_count: int,
+    label: str = "",
+) -> int:
+    """Save ``planned`` images with an already loaded pipeline."""
+    gen_device = "cpu" if cpu_offload or not device.startswith("cuda") else "cuda"
     saved = 0
+    total = len(planned)
+    tag = f"{label} " if label else ""
     for i, (out, prompt) in enumerate(planned):
         generator = torch.Generator(device=gen_device).manual_seed(seed + i)
-        print(f"prompt[{i % len(prompts)}]: {prompt}", flush=True)
+        print(f"{tag}prompt[{i % prompt_count}]: {prompt}", flush=True)
         image = pipe(
             prompt=prompt,
             width=int(width),
@@ -301,13 +325,65 @@ def generate_balcony_crops(
         ).images[0]
         image.save(out)
         saved += 1
-        print(f"[{saved}/{count}] {out.name}")
+        print(f"{tag}[{saved}/{total}] {out.name}", flush=True)
+    return saved
 
-    return {
-        "saved": saved,
-        "dest": str(dest_dir),
-        "start_index": _next_index(dest_dir, prefix) - saved if prefixes is None else 0,
-    }
+
+def generate_prompt_sets(
+    crops_dir: Path,
+    set_names: list[str],
+    *,
+    count: int,
+    seed: int,
+    model_id: str,
+    width: int,
+    height: int,
+    steps: int,
+    guidance_scale: float,
+    device: str,
+    cpu_offload: bool,
+    out_subdir: str = "unlabeled",
+) -> list[dict[str, int | str]]:
+    """Load FLUX once, then write each prompt set into unlabeled (or its folder)."""
+    pipe, torch = _load_pipeline(model_id, device, cpu_offload=cpu_offload)
+    results: list[dict[str, int | str]] = []
+    for index, name in enumerate(set_names):
+        spec = PROMPT_SETS[name]
+        prompts = list(spec["prompts"])  # type: ignore[arg-type]
+        prefix = str(spec["prefix"])
+        raw_prefixes = spec.get("prefixes")
+        prefixes = list(raw_prefixes) if raw_prefixes is not None else None  # type: ignore[arg-type]
+        if spec.get("stay_unlabeled"):
+            dest_dir = Path(crops_dir) / "unlabeled"
+        else:
+            dest_dir = Path(crops_dir) / out_subdir
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        planned = iter_prompt_outputs(dest_dir, count, prompts, prefix, prefixes)
+        # Offset the seed per set so the five banks do not share noise.
+        set_seed = int(seed) + index * 1000
+        saved = _write_images(
+            pipe,
+            torch,
+            planned,
+            seed=set_seed,
+            width=width,
+            height=height,
+            steps=steps,
+            guidance_scale=guidance_scale,
+            device=device,
+            cpu_offload=cpu_offload,
+            prompt_count=len(prompts),
+            label=name,
+        )
+        stats: dict[str, int | str] = {
+            "saved": saved,
+            "dest": str(dest_dir),
+            "prompt_set": name,
+        }
+        results.append(stats)
+        print(f"prompt_set={name} saved={saved} -> {dest_dir}", flush=True)
+        print(str(spec["label_hint"]), flush=True)
+    return results
 
 
 # Back-compat alias.
@@ -329,6 +405,14 @@ def parse_args() -> argparse.Namespace:
         choices=sorted(PROMPT_SETS.keys()),
         default="masonry",
         help="which prompt bank + default filename prefix to use",
+    )
+    ap.add_argument(
+        "--prompt-sets",
+        default=None,
+        help=(
+            "comma-separated prompt sets, model loaded once "
+            "(example: triangle,trapezoid,hexagon,half_enclosed,enclosed)"
+        ),
     )
     ap.add_argument(
         "--crops-dir",
@@ -391,16 +475,6 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    spec = PROMPT_SETS[str(args.prompt_set)]
-    prompts = list(spec["prompts"])  # type: ignore[arg-type]
-    prefix = str(args.prefix) if args.prefix else str(spec["prefix"])
-    # An explicit --prefix collapses the run onto one stem. Floor-plan sets
-    # otherwise rotate metal/masonry/solid/surface prefixes with the prompts.
-    prefixes = None if args.prefix else spec.get("prefixes")
-    if prefixes is not None:
-        prefixes = list(prefixes)  # type: ignore[arg-type]
-    label_hint = str(spec["label_hint"])
-
     if args.model:
         model_id = str(args.model)
     elif args.quantized:
@@ -414,6 +488,37 @@ def main() -> None:
         cpu_offload = False
 
     ensure_crop_dirs(args.crops_dir)
+    if args.prompt_sets:
+        names = [part.strip() for part in str(args.prompt_sets).split(",") if part.strip()]
+        unknown = [name for name in names if name not in PROMPT_SETS]
+        if unknown:
+            raise SystemExit(f"unknown prompt set: {', '.join(unknown)}")
+        generate_prompt_sets(
+            args.crops_dir,
+            names,
+            count=max(1, int(args.count)),
+            seed=int(args.seed),
+            model_id=model_id,
+            width=int(args.width),
+            height=int(args.height),
+            steps=int(args.steps),
+            guidance_scale=float(args.guidance_scale),
+            device=str(args.device),
+            cpu_offload=cpu_offload,
+            out_subdir=str(args.out_subdir),
+        )
+        return
+
+    spec = PROMPT_SETS[str(args.prompt_set)]
+    prompts = list(spec["prompts"])  # type: ignore[arg-type]
+    prefix = str(args.prefix) if args.prefix else str(spec["prefix"])
+    # An explicit --prefix collapses the run onto one stem. Floor-plan sets
+    # otherwise rotate metal/masonry/solid/surface prefixes with the prompts.
+    prefixes = None if args.prefix else spec.get("prefixes")
+    if prefixes is not None:
+        prefixes = list(prefixes)  # type: ignore[arg-type]
+    label_hint = str(spec["label_hint"])
+
     # Floor-plan and enclosure crops stay in unlabeled so a later prefix
     # label pass cannot move them into a kind folder.
     if spec.get("stay_unlabeled"):

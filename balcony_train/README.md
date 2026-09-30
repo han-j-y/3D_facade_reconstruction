@@ -27,22 +27,18 @@ python balcony_train/generate_flux2.py -n 50 --quantized --device cuda --prompt-
 python balcony_train/generate_flux2.py -n 40 --quantized --device cuda --prompt-set solid
 ```
 
-Rare floor plans. Triangle and trapezoid are the floor slab only, three images each (metal, masonry, solid). Hexagon is four images (those three plus surface). Leave these at full size; the 120×44 resize below skips `flux2_triangle_`, `flux2_trapezoid_`, and `flux2_hexagon_`.
+Rare floor plans and enclosure, 50 prompts each (triangle, trapezoid, hexagon, half-enclosed, enclosed). On GruVi, one process loads the model once and keeps running after the laptop shuts down:
 
 ```text
-python balcony_train/generate_flux2.py -n 3 --quantized --device cuda --prompt-set triangle
-python balcony_train/generate_flux2.py -n 3 --quantized --device cuda --prompt-set trapezoid
-python balcony_train/generate_flux2.py -n 4 --quantized --device cuda --prompt-set hexagon
+module load LANG/PYTHON/3.11.0
+source ~/venvs/flux2/bin/activate
+cd ~/3D_facade_reconstruction
+mkdir -p runs/balcony_clf
+nohup python -u balcony_train/run_flux2_rare50.py > runs/balcony_clf/flux2_rare50.log 2>&1 &
+echo $! | tee runs/balcony_clf/flux2_rare50.pid
 ```
 
-These five sets always write into ``crops/unlabeled`` and are left there. ``label_from_prefix.py`` does not move them.
-
-Half-enclosed and enclosed, two images each. These stay in ``unlabeled`` for review and are skipped by the 120×44 resize.
-
-```text
-python balcony_train/generate_flux2.py -n 2 --quantized --device cuda --prompt-set half_enclosed
-python balcony_train/generate_flux2.py -n 2 --quantized --device cuda --prompt-set enclosed
-```
+That run clears previous files of those five prefixes in ``crops/unlabeled``, then writes 50 new images of each. Leave them at full size; the 120×44 resize below skips `flux2_triangle_`, `flux2_trapezoid_`, `flux2_hexagon_`, `flux2_half_enclosed_`, and `flux2_enclosed_`. ``label_from_prefix.py`` does not move them.
 
 Prefixes: `flux2_masonry_`, `flux2_metal_`, `flux2_surface_`, `flux2_solid_`. Label in UI as
 `open_work`+`masonry`, `open_work`+`metal`, `surface_panel`, or `solid` respectively.

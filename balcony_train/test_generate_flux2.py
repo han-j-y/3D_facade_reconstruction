@@ -240,17 +240,16 @@ class GenerateFlux2HelperTests(unittest.TestCase):
             joined = " ".join(prompts).lower()
             for cue in cues[shape]:
                 self.assertIn(cue, joined, msg=shape)
+            self.assertEqual(len(prompts), 50)
             if shape in ("triangle", "trapezoid"):
-                self.assertEqual(
-                    prefixes,
-                    [
-                        f"flux2_{shape}_metal_",
-                        f"flux2_{shape}_masonry_",
-                        f"flux2_{shape}_solid_",
-                    ],
-                )
+                self.assertEqual(prefixes[0], f"flux2_{shape}_metal_")
+                self.assertEqual(prefixes[1], f"flux2_{shape}_masonry_")
+                self.assertEqual(prefixes[2], f"flux2_{shape}_solid_")
+                self.assertFalse(any("surface" in name for name in prefixes))
                 self.assertIn("floor", joined)
                 self.assertNotIn("privacy panel", joined)
+            if shape == "hexagon":
+                self.assertEqual(prefixes[3], "flux2_hexagon_surface_")
             if shape == "triangle":
                 self.assertIn("the floor shape is a triangle", joined)
             if shape == "trapezoid":
@@ -268,16 +267,21 @@ class GenerateFlux2HelperTests(unittest.TestCase):
                     Path(tmp), len(prefixes), prompts, f"flux2_{shape}_", prefixes
                 )
             names = [path.name for path, _prompt in planned]
-            self.assertEqual(
-                names,
-                [f"{prefix}000.png" for prefix in prefixes],
-            )
+            counters: dict[str, int] = {}
+            expected: list[str] = []
+            for prefix in prefixes:
+                index = counters.get(prefix, 0)
+                expected.append(f"{prefix}{index:03d}.png")
+                counters[prefix] = index + 1
+            self.assertEqual(names, expected)
 
     def test_enclosure_prompt_sets_have_two_each(self) -> None:
         self.assertEqual(PROMPT_SETS["half_enclosed"]["prompts"], HALF_ENCLOSED_PROMPTS)
         self.assertEqual(PROMPT_SETS["enclosed"]["prompts"], ENCLOSED_PROMPTS)
-        self.assertEqual(len(HALF_ENCLOSED_PROMPTS), 2)
-        self.assertEqual(len(ENCLOSED_PROMPTS), 2)
+        self.assertEqual(len(HALF_ENCLOSED_PROMPTS), 50)
+        self.assertEqual(len(ENCLOSED_PROMPTS), 50)
+        self.assertEqual(len(set(HALF_ENCLOSED_PROMPTS)), 50)
+        self.assertEqual(len(set(ENCLOSED_PROMPTS)), 50)
         half = " ".join(HALF_ENCLOSED_PROMPTS).lower()
         closed = " ".join(ENCLOSED_PROMPTS).lower()
         self.assertIn("column", half)

@@ -7,12 +7,12 @@ Half-enclosed: columns or similar elements cover the balcony, and the gaps
 stay open to the outside air.
 Enclosed: walls or windows close the balcony, so it is not open to the air.
 
-Two prompts each. ``-n 2`` writes one image per prompt.
+50 prompts each. ``-n 50`` writes one image per prompt.
 """
 
 from __future__ import annotations
 
-from balcony_train.prompts_floor_shape import ONE_FACADE
+from balcony_train.prompts_floor_shape import ONE_FACADE, _slots
 
 ENCLOSURE_PREFIXES: tuple[str, ...] = (
     "flux2_half_enclosed_",
@@ -26,35 +26,47 @@ _PROJECTING = (
     "the room wall is behind the balcony"
 )
 
-HALF_ENCLOSED_PROMPTS: list[str] = [
-    (
-        f"{ONE_FACADE}, 3rd floor, pale yellow historic facade, {_PROJECTING}, "
-        "half-enclosed balcony standing on that projecting slab, classical "
-        "columns and a stone balustrade in front of the wall, open air visible "
-        "between the columns, no glass walls, still open to the outside air, "
-        "overcast daylight"
-    ),
-    (
-        f"{ONE_FACADE}, 4th floor, cream stone facade, {_PROJECTING}, "
-        "half-enclosed balcony carried out past the wall on corbels, columns "
-        "with arched openings on the projecting slab, open to the outside air "
-        "through the arches, masonry balustrade, no glass walls, no windows "
-        "closing the balcony, clear afternoon light"
-    ),
-]
+_HALF_STYLES: tuple[str, ...] = (
+    "classical round columns and a stone balustrade",
+    "square stone columns and a masonry balustrade",
+    "slim columns with arched openings and a stone rail",
+    "paired columns and an open balustrade",
+    "tall columns under a flat lintel and a low stone rail",
+)
+_ENCLOSED_STYLES: tuple[str, ...] = (
+    "tall windows with white frames",
+    "a grid of narrow windows",
+    "continuous windows with dark frames",
+    "floor-to-ceiling windows",
+    "wood-framed windows",
+)
 
-ENCLOSED_PROMPTS: list[str] = [
-    (
-        f"{ONE_FACADE}, 5th floor, white ornate facade, {_PROJECTING}, tall "
-        "windows with white frames stand on the projecting slab in front of "
-        "the wall, glass walls so the balcony is not open to the outside air, "
-        "no open railing gaps, the enclosure sticks out from the facade on "
-        "brackets, soft daylight"
-    ),
-    (
-        f"{ONE_FACADE}, 2nd floor, pale yellow facade, {_PROJECTING}, continuous "
-        "windows close the projecting balcony, walls and glazing enclose it, "
-        "not open to the outside air, no open balustrade, the glazed box is "
-        "outside the wall line, diffuse cloudy light"
-    ),
-]
+
+def _half_enclosed_prompts() -> list[str]:
+    prompts: list[str] = []
+    for i, slot in enumerate(_slots()):
+        style = _HALF_STYLES[i % len(_HALF_STYLES)]
+        prompts.append(
+            f"{ONE_FACADE}, {slot['floor']} floor, {slot['facade']} facade, "
+            f"{_PROJECTING}, half-enclosed balcony standing on that projecting "
+            f"slab, {style}, open air visible between the columns, no glass walls, "
+            f"still open to the outside air, {slot['extra']}, {slot['light']}"
+        )
+    return prompts
+
+
+def _enclosed_prompts() -> list[str]:
+    prompts: list[str] = []
+    for i, slot in enumerate(_slots()):
+        style = _ENCLOSED_STYLES[i % len(_ENCLOSED_STYLES)]
+        prompts.append(
+            f"{ONE_FACADE}, {slot['floor']} floor, {slot['facade']} facade, "
+            f"{_PROJECTING}, enclosed balcony on that projecting slab, {style}, "
+            "glass walls so the balcony is not open to the outside air, no open "
+            f"railing gaps, {slot['extra']}, {slot['light']}"
+        )
+    return prompts
+
+
+HALF_ENCLOSED_PROMPTS: list[str] = _half_enclosed_prompts()
+ENCLOSED_PROMPTS: list[str] = _enclosed_prompts()
