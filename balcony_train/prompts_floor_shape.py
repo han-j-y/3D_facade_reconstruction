@@ -12,8 +12,9 @@ Plans match ``balcony_plan.slab_outline``:
 - triangle: isosceles, wall edge is the base, apex at the front center
 - trapezoid: long edge on the wall, shorter front parallel to the wall,
   each side meets the wall at about 75 degrees
-- hexagon: rectangle with both front corners chamfered; sides stay
-  perpendicular to the wall, then meet the short front at about 30 degrees
+- hexagon: a rectangle whose left and right edges leave the wall at a
+  right angle, then a short diagonal chamfer, then a wide front parallel
+  to the wall. Six edges. The outline bends twice on each side.
 """
 
 from __future__ import annotations
@@ -115,14 +116,21 @@ _TRAPEZOID_KIND: dict[str, str] = {
     ),
 }
 _HEXAGON_KIND: dict[str, str] = {
-    "metal": "dark metal vertical bars follow that hexagonal floor, the window is an ordinary rectangle",
-    "masonry": "ordinary vertical masonry balusters follow that hexagon floor outline",
+    "metal": (
+        "dark metal vertical bars follow that six-sided floor and bend twice on "
+        "each side, the window is an ordinary rectangle"
+    ),
+    "masonry": (
+        "ordinary vertical masonry balusters follow that six-sided floor and "
+        "bend twice on each side"
+    ),
     "solid": (
-        "a plain solid parapet follows the chamfered floor, the parapet face itself is not a hexagon"
+        "a plain solid parapet follows that six-sided floor and bends twice on "
+        "each side, the parapet face itself is not a hexagon"
     ),
     "surface": (
-        "frosted glass panels follow the hexagonal floor and change direction at "
-        "both chamfered front ends, side panels square to the wall"
+        "frosted glass panels follow that six-sided floor, one panel on each "
+        "straight side and one panel on each diagonal chamfer, plus a wide front panel"
     ),
 }
 
@@ -178,10 +186,12 @@ def _hexagon_prompts() -> list[str]:
     prompts: list[str] = []
     for slot, kind in zip(_slots(), _kinds("hexagon", PROMPT_COUNT)):
         prompts.append(
-            f"{ONE_FACADE}, the floor shape is a hexagon, both front ends of the "
-            "floor are cut off, side edges of the floor stay perpendicular to the "
-            "wall, a diagonal chamfer on each front end meets the short front edge "
-            f"at about 30 degrees, six-sided floor plan, {slot['floor']} floor, "
+            f"{ONE_FACADE}, the floor shape is a hexagon, the balcony floor starts "
+            "as a rectangle, the left and right edges leave the wall at a right "
+            "angle and run straight out, then each side turns onto a short diagonal "
+            "chamfer, then a wide front edge runs parallel to the wall, the chamfer "
+            "meets that front edge at about 30 degrees, six edges, the outline "
+            f"bends twice on the left and twice on the right, {slot['floor']} floor, "
             f"{slot['facade']} facade, {_HEXAGON_KIND[kind]}, {slot['extra']}, "
             f"{slot['light']}"
         )

@@ -229,7 +229,7 @@ class GenerateFlux2HelperTests(unittest.TestCase):
         cues = {
             "triangle": ("triangular", "apex", "point"),
             "trapezoid": ("trapezoid", "75"),
-            "hexagon": ("hexagon", "chamfer", "30"),
+            "hexagon": ("hexagon", "chamfer", "30", "right angle", "six edges"),
         }
         for shape, prompts in banks.items():
             prefixes = prefixes_for(shape)
