@@ -1,0 +1,18 @@
+# Quarter-arch (quadrant) with hub arc + radial fan from the square corner.
+# corner=bl → origin at bottom-left; arcs sweep 0°→90°.
+
+window quadrant(size=1.0, corner=bl)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  arc glass hub origin 0 0 radius 0.32*min_side from 0 to 90
+  fan glass 3 from hub origin 0 0 arc 15 75
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01

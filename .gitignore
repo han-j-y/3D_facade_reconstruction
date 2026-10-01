@@ -1,7 +1,13 @@
 runs/
+runs_*/
 __pycache__/
 *.pyc
 .DS_Store
 !checkpoints/.gitkeep
 *.egg-info/
 .venv/
+
+# local render outputs / reports
+/*.png
+documents/clustering_summary.html
+documents/report_assets/

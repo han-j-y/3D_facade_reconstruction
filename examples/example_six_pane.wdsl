@@ -1,0 +1,30 @@
+# Six-pane window: 2 equal columns, 3 rows (short / tall / short)
+# Matches a typical transom + picture + sill layout.
+
+window rectangle(1.0, 1.6)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  # center vertical
+  root split(v=0.5) L R
+  # bottom band ~17%, then split middle (~66%) from top (~17%)
+  L split(h=0.17) L_bot L_rest
+  L_rest split(h=0.80) L_mid L_top
+  R split(h=0.17) R_bot R_rest
+  R_rest split(h=0.80) R_mid R_top
+  L_bot eps
+  L_mid eps
+  L_top eps
+  R_bot eps
+  R_mid eps
+  R_top eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01

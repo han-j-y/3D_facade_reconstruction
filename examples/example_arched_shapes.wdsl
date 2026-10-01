@@ -1,0 +1,21 @@
+# Arched shapes: body grid + lunette head, with transom at head/body junction
+
+window head_body(width=1.0, body=1.6, head=semicircle, head_height=0.5)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+  body = body(glass)
+  head = head(glass)
+
+program:
+  seam body
+  grid body 1x3
+  arc head hub origin 0.5 0 radius 0.24*min_side semicircle
+  fan head from hub
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01

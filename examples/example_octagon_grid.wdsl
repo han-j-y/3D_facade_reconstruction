@@ -1,0 +1,17 @@
+# Octagonal window with 3×3 muntin grid
+# Corner panes clip to triangles; center stays square (octagon does the rest).
+
+window polygon(sides=8, size=1.0, orient=pointy)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  grid glass 2x2
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01

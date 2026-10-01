@@ -9,13 +9,20 @@ import bpy
 from balcony_compile import add_balcony_meshes
 from blender_scene import build_blender_scene
 from compiler import compile_spec
-from door_scene import build_default_door, door_opening_bounds
+from door_scene import (
+    build_default_door,
+    door_opening_bounds,
+    door_outline_world,
+    effective_arch_rise,
+    make_prism,
+)
 from facade_spec import (
     EMPTY_TOKENS,
+    align_type_bottoms,
     build_instance_map,
-    cell_cx_ratio_world,
     fit_window_ir_to_bounds,
     fit_window_ir_to_cell,
+    cell_cx_ratio_world,
     get_cell,
     get_cell_span,
     is_door_type_token,
@@ -24,10 +31,12 @@ from facade_spec import (
     normalize_facade_spec,
     placement_fit_for_instance,
     total_grid_size,
+    unify_type_sizes,
     unwrap_window_ir,
     world_placement_in_cell,
 )
 from geometry import assign_mat
+from shapes import contour_for_region
 from materials import MATS
 
 __all__ = [
@@ -82,24 +91,66 @@ def _cut_opening(
     cx = 0.5 * (x0 + x1)
     cz = 0.5 * (z0 + z1)
     cy = front_y - depth / 2.0
+    # slightly thicker than the wall so the boolean cleanly pierces both faces
     bpy.ops.mesh.primitive_cube_add(location=(cx, cy, cz))
     cutter = bpy.context.active_object
     cutter.name = "OpeningCutter"
     cutter.scale = (
-        max(0.02, (x1 - x0) / 2.0 + pad),
-        depth / 2.0 + 0.02,
-        max(0.02, (z1 - z0) / 2.0 + pad),
+        max(0.05, (x1 - x0) / 2.0 + pad),
+        depth / 2.0 + 0.08,
+        max(0.05, (z1 - z0) / 2.0 + pad),
     )
     bpy.ops.object.transform_apply(scale=True)
+    _apply_cutter(wall_obj, cutter)
 
-    mod = wall_obj.modifiers.new(name="CutOpening", type="BOOLEAN")
+
+def _cut_opening_poly(
+    wall_obj: bpy.types.Object,
+    poly_xz: list[tuple[float, float]],
+    *,
+    front_y: float,
+    depth: float,
+) -> None:
+    """Boolean-cut an opening with an arbitrary convex XZ outline (arched doors)."""
+    cutter = make_prism(
+        "OpeningCutter",
+        poly_xz,
+        front_y - depth - 0.08,
+        front_y + 0.08,
+        wall_obj.users_collection[0],
+    )
+    _apply_cutter(wall_obj, cutter)
+
+
+def _padded_outline(
+    pts: list[tuple[float, float]], pad: float = 0.005
+) -> list[tuple[float, float]]:
+    """Grow an XZ outline by ~``pad`` about its bbox center so the cut clears the frame."""
+    dedup: list[tuple[float, float]] = []
+    for q in pts:
+        if not dedup or abs(q[0] - dedup[-1][0]) + abs(q[1] - dedup[-1][1]) > 1e-6:
+            dedup.append(q)
+    if len(dedup) > 1 and abs(dedup[0][0] - dedup[-1][0]) + abs(dedup[0][1] - dedup[-1][1]) <= 1e-6:
+        dedup.pop()
+    pts = dedup
+    xs, zs = [x for x, _ in pts], [z for _, z in pts]
+    cx, cz = 0.5 * (min(xs) + max(xs)), 0.5 * (min(zs) + max(zs))
+    sx = 1.0 + 2.0 * pad / max(max(xs) - min(xs), 1e-6)
+    sz = 1.0 + 2.0 * pad / max(max(zs) - min(zs), 1e-6)
+    return [(cx + (x - cx) * sx, cz + (z - cz) * sz) for x, z in pts]
+
+
+def _apply_cutter(wall_obj: bpy.types.Object, cutter: bpy.types.Object) -> None:
+    mod = wall_obj.modifiers.new(name="WinOpen", type="BOOLEAN")
     mod.operation = "DIFFERENCE"
+    mod.solver = "EXACT"
     try:
-        mod.solver = "EXACT"
+        mod.operand_type = "OBJECT"
     except (AttributeError, TypeError):
         pass
     mod.object = cutter
 
+    # Apply on the wall (must be active / object mode)
     bpy.ops.object.select_all(action="DESELECT")
     wall_obj.select_set(True)
     bpy.context.view_layer.objects.active = wall_obj
@@ -126,6 +177,9 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
     placement_fit = spec.get("placement_fit") or []
     default_wr = float(pp.get("width_ratio", 0.55))
     default_hr = float(pp.get("height_ratio", 0.60))
+    bottom_m = float(pp.get("bottom_margin_ratio", 0.14))
+    # Recess into the opening (toward -Y). Must stay within a cut hole —
+    # without openings, any recess buries windows inside the solid wall.
     recess = float(pp.get("recess", 0.01))
     wall_depth = float((spec.get("wall") or {}).get("depth", 0.42))
     front_y = float((spec.get("wall") or {}).get("base_front_y", 0.0))
@@ -145,7 +199,9 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
     n_rows = len(grid["rows"])
     n_cols = len(grid["cols"])
 
+    # First pass: gather placements + cut openings (before window meshes).
     planned: list[dict[str, Any]] = []
+    # Photo-left ↔ image-left: compiler +Y camera mirrors world X (see get_cell).
     mirror_x = bool((spec.get("placement_params") or {}).get("mirror_x", True))
     floor_ids = spec.get("floor_ids") or []
     inst_map = build_instance_map(spec)
@@ -185,7 +241,11 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
             inst = inst_map.get((floor_id, c))
 
             if is_door:
-                door_def = doors[tok]
+                door_def = dict(doors[tok])
+                # door types can mix rectangular and arched members
+                if inst is not None and inst.get("kind") == "door" and inst.get("shape"):
+                    door_def["shape"] = inst["shape"]
+                    door_def["arch_rise_ratio"] = float(inst.get("arch_rise_ratio") or 0.0)
                 seg_fit = (
                     placement_fit_for_instance(spec, inst, r, c)
                     if inst is not None
@@ -248,36 +308,76 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
                     "cy_ratio": float(fit.get("cy_ratio", 0.5)),
                 }
             ox, oz, ww, hh = world_placement_in_cell(cell, seg_fit)
-            ir = fit_window_ir_to_bounds(
-                windows[tok], ww, hh, preserve_aspect=False
-            )
-            ctx = compile_spec(ir)
-            hh = float(ctx.region("root").height)
-            ww = float(ctx.region("root").width)
-            open_x0, open_x1 = ox, ox + ww
-            open_z0, open_z1 = oz, oz + hh
-            oy = front_y - max(0.0, recess)
             planned.append(
                 {
                     "r": r,
                     "c": c,
                     "tok": tok,
                     "kind": "window",
-                    "ctx": ctx,
+                    "span": span,
+                    "cell": cell,
                     "ox": ox,
-                    "oy": oy,
+                    "oy": front_y - max(0.0, recess),
                     "oz": oz,
                     "ww": ww,
                     "hh": hh,
-                    "open_x0": open_x0,
-                    "open_x1": open_x1,
-                    "open_z0": open_z0,
-                    "open_z1": open_z1,
+                    "seg_fit": seg_fit,
                 }
             )
             c += span
 
+    planned_wins = [p for p in planned if p["kind"] == "window"]
+    if bool(pp.get("unify_type_size", True)):
+        unify_type_sizes(planned_wins)
+    if bool(pp.get("align_type_bottom", True)):
+        align_type_bottoms(planned_wins)
+
     for p in planned:
+        if p["kind"] != "window":
+            continue
+        ir = fit_window_ir_to_bounds(
+            windows[p["tok"]], p["ww"], p["hh"], preserve_aspect=False
+        )
+        ctx = compile_spec(ir)
+        p["ctx"] = ctx
+        p["ww"] = float(ctx.region("root").width)
+        p["hh"] = float(ctx.region("root").height)
+        p["open_x0"], p["open_x1"] = p["ox"], p["ox"] + p["ww"]
+        p["open_z0"], p["open_z1"] = p["oz"], p["oz"] + p["hh"]
+        root = ctx.region("root")
+        if root.shape != "rectangle":
+            p["outline"] = _padded_outline(
+                [(p["ox"] + q.x, p["oz"] + q.y) for q in contour_for_region(root)]
+            )
+
+    for p in planned:
+        if p.get("kind") == "door":
+            dd = p.get("door_def") or {}
+            top_z = p["oz"] + max(0.35, p["hh"])
+            rise = effective_arch_rise(
+                max(0.25, p["ww"]),
+                top_z - p["open_z0"],
+                str(dd.get("shape") or "rectangle"),
+                float(dd.get("arch_rise_ratio") or 0.0),
+            )
+            if rise > 0.0:
+                _cut_opening_poly(
+                    wall_obj,
+                    door_outline_world(
+                        ox=p["ox"],
+                        z_base=p["open_z0"],
+                        width=max(0.25, p["ww"]),
+                        top_z=top_z,
+                        rise=rise,
+                        pad=0.005,
+                    ),
+                    front_y=front_y,
+                    depth=wall_depth,
+                )
+                continue
+        if p.get("outline"):
+            _cut_opening_poly(wall_obj, p["outline"], front_y=front_y, depth=wall_depth)
+            continue
         _cut_opening(
             wall_obj,
             x0=p["open_x0"],
@@ -322,7 +422,7 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
     print(
         f"compiled façade: {n_placed} windows, {n_doors} doors, {n_balc} balconies, "
         f"{n_segments} muntin segments, "
-        f"size={total_w:.2f}x{total_h:.2f}m"
+        f"size={total_w:.2f}×{total_h:.2f}m"
     )
     return {
         "n_windows": n_placed,

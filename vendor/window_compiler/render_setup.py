@@ -66,6 +66,27 @@ def configure_render() -> None:
             pass
 
 
+def write_camera_json(path: str | Path) -> Path:
+    """Persist the ortho camera actually used so 2D overlays can project exactly."""
+    import json
+
+    scene = bpy.context.scene
+    cam = scene.camera
+    pct = scene.render.resolution_percentage / 100.0
+    data = {
+        "type": cam.data.type,
+        "location": [float(v) for v in cam.location],
+        "ortho_scale": float(cam.data.ortho_scale),
+        "shift_x": float(getattr(cam.data, "shift_x", 0.0) or 0.0),
+        "shift_y": float(getattr(cam.data, "shift_y", 0.0) or 0.0),
+        "res_x": int(round(scene.render.resolution_x * pct)),
+        "res_y": int(round(scene.render.resolution_y * pct)),
+    }
+    p = Path(path)
+    p.write_text(json.dumps(data, indent=2) + "\n")
+    return p
+
+
 def render_still_image(output_path: str | Path) -> Path:
     p = Path(os.path.expanduser(str(output_path))).resolve()
     if not p.suffix:

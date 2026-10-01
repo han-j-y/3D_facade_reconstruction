@@ -44,6 +44,7 @@ from render_setup import (
     setup_camera_for_facade,
     setup_orbit_animation_for_facade,
     setup_camera_for_window,
+    write_camera_json,
 )
 
 
@@ -132,7 +133,9 @@ def main() -> None:
         )
 
     if render_out:
-        render_still_image(render_out)
+        written = render_still_image(render_out)
+        if facade_bounds is not None:
+            write_camera_json(written.with_suffix(".camera.json"))
 
     blend_out = os.environ.get("FACADE_SAVE_BLEND", "").strip()
     if blend_out:

@@ -60,12 +60,16 @@ from facade_spec import (  # noqa: E402
     EMPTY_TOKENS,
     build_instance_map,
     cell_cx_ratio_world,
+    fit_window_ir_to_bounds,
+    fit_window_ir_to_cell,
     get_cell,
     get_cell_span,
     is_door_type_token,
     normalize_facade_spec,
     placement_fit_for_instance,
     total_grid_size,
+    align_type_bottoms,
+    unify_type_sizes,
     world_placement_in_cell,
 )
 
@@ -81,6 +85,14 @@ TYPE_PALETTE = [
     (120, 120, 230),
     (200, 80, 140),
     (100, 180, 80),
+]
+
+# Kept disjoint from TYPE_PALETTE so doors never share a window-type color.
+DOOR_PALETTE = [
+    (140, 85, 40),
+    (70, 70, 70),
+    (255, 105, 180),
+    (20, 20, 20),
 ]
 
 
@@ -109,7 +121,7 @@ def parse_args() -> argparse.Namespace:
         "--ortho-zoom",
         type=float,
         default=0.95,
-        help="ortho zoom factor (<1 zooms out, >1 zooms in). Sets FACADE_RENDER_ORTHO_ZOOM",
+        help="ortho zoom factor (<1 zooms out, >1 zooms in). Sets FACADE_DSL_ORTHO_ZOOM",
     )
     ap.add_argument("--storey-height", type=float, default=3.0)
     ap.add_argument("--facade-width", type=float, default=None)
@@ -129,8 +141,9 @@ def resolve_recovery(path: Path) -> Path:
     return path
 
 
-def type_color(type_id: int) -> tuple[int, int, int]:
-    return TYPE_PALETTE[int(type_id) % len(TYPE_PALETTE)]
+def type_color(type_id: int, kind: str = "window") -> tuple[int, int, int]:
+    pal = DOOR_PALETTE if kind == "door" else TYPE_PALETTE
+    return pal[int(type_id) % len(pal)]
 
 
 def type_id_from_name(name: str) -> int:
@@ -164,8 +177,10 @@ def planned_windows(facade: dict) -> list[dict]:
     mirror_x = bool(pp.get("mirror_x", True))
     n_rows = len(facade["grid"]["rows"])
     n_cols = len(facade["grid"]["cols"])
+    total_w, total_h = total_grid_size(facade["grid"])
     floor_ids = facade.get("floor_ids") or []
     inst_map = build_instance_map(facade)
+    ground_floor_id = max(floor_ids) if floor_ids else None
     out: list[dict] = []
     for r in range(n_rows):
         row = placement[r] if r < len(placement) else []
@@ -192,6 +207,7 @@ def planned_windows(facade: dict) -> list[dict]:
                 cell = get_cell(facade, r, c, mirror_x=mirror_x)
             fit = fit_row[c] if c < len(fit_row) and fit_row[c] else {}
             ratios = type_ratios.get(tok) or {}
+            hr = float(fit.get("height_ratio", ratios.get("height_ratio", default_hr)))
             inst = inst_map.get((floor_id, c))
             if is_door:
                 seg_fit = (
@@ -219,9 +235,9 @@ def planned_windows(facade: dict) -> list[dict]:
                         "kind": "door",
                         "type_id": type_id_from_name(tok),
                         "x0": ox,
-                        "z0": oz,
+                        "z0": max(0.0, oz) if floor_id != ground_floor_id else 0.0,
                         "x1": ox + ww,
-                        "z1": oz + hh,
+                        "z1": oz + max(0.35, hh),
                     }
                 )
                 c += span
@@ -250,13 +266,25 @@ def planned_windows(facade: dict) -> list[dict]:
                     "name": tok,
                     "kind": "window",
                     "type_id": type_id_from_name(tok),
-                    "x0": ox,
-                    "z0": oz,
-                    "x1": ox + ww,
-                    "z1": oz + hh,
+                    "tok": tok,
+                    "span": span,
+                    "ox": ox,
+                    "oz": oz,
+                    "ww": ww,
+                    "hh": hh,
                 }
             )
             c += span
+    wins = [w for w in out if w.get("kind") != "door"]
+    if bool(pp.get("unify_type_size", True)):
+        unify_type_sizes(wins)
+    if bool(pp.get("align_type_bottom", True)):
+        align_type_bottoms(wins, row_key="row")
+    for w in wins:
+        ox, oz, ww, hh = (w.pop(k) for k in ("ox", "oz", "ww", "hh"))
+        w.pop("tok")
+        w.pop("span")
+        w.update({"x0": ox, "z0": oz, "x1": ox + ww, "z1": oz + hh})
     return out
 
 
@@ -295,12 +323,54 @@ def world_xz_to_pixel(
     return u, v
 
 
+def camera_xz_to_pixel(
+    x: float, z: float, *, cam: dict, res_x: int, res_y: int
+) -> tuple[float, float]:
+    """Project world (X,Z) with the camera Blender saved beside the render."""
+    s = float(cam["ortho_scale"])
+    aspect = res_x / max(res_y, 1)
+    view_w, view_h = (s, s / aspect) if aspect >= 1.0 else (s * aspect, s)
+    cx, _, cz = cam["location"]
+    right = (cx - x) - float(cam.get("shift_x", 0.0)) * s
+    up = (z - cz) - float(cam.get("shift_y", 0.0)) * s
+    return right / view_w * res_x + res_x * 0.5, res_y * 0.5 - up / view_h * res_y
+
+
+def render_pixel_mapper(
+    render_path: Path,
+    facade: dict,
+    *,
+    res_x: int,
+    res_y: int,
+    ortho_zoom: float,
+):
+    """World (X,Z) → render pixel; exact when ``<render>.camera.json`` exists."""
+    cam_path = Path(render_path).with_suffix(".camera.json")
+    if cam_path.is_file():
+        cam = json.loads(cam_path.read_text())
+        return lambda x, z: camera_xz_to_pixel(x, z, cam=cam, res_x=res_x, res_y=res_y)
+    total_w, total_h = total_grid_size(facade["grid"])
+    bounds = (-total_w / 2.0, total_w / 2.0, 0.0, total_h)
+    return lambda x, z: world_xz_to_pixel(
+        x, z, bounds=bounds, res_x=res_x, res_y=res_y, ortho_zoom=ortho_zoom
+    )
+
+
+def draw_tag_above(draw, x0: float, y0: float, label: str, color, font, h: int = 16) -> None:
+    """Type tag sitting on top of a box (inside only when clipped at the image top)."""
+    tw = int(draw.textlength(label, font=font)) + 6
+    top = y0 - h - 1 if y0 - h - 1 >= 0 else y0
+    draw.rectangle([x0, top, x0 + tw, top + h], fill=(*color, 220))
+    draw.text((x0 + 3, top + 1), label, fill=(255, 255, 255, 255), font=font)
+
+
 def overlay_clusters_on_render(
     *,
     facade: dict,
     render_path: Path,
     out_path: Path,
     ortho_zoom: float,
+    box_margin: float = 4.0,
 ) -> Path | None:
     if not render_path.is_file():
         return None
@@ -316,28 +386,25 @@ def overlay_clusters_on_render(
         font = ImageFont.load_default()
         font_sm = font
 
-    total_w, total_h = total_grid_size(facade["grid"])
-    bounds = (-total_w / 2.0, total_w / 2.0, 0.0, total_h)
+    to_px = render_pixel_mapper(
+        render_path, facade, res_x=im.width, res_y=im.height, ortho_zoom=ortho_zoom
+    )
     wins = planned_windows(facade)
     for w in wins:
-        color = type_color(w["type_id"])
-        u0, v1 = world_xz_to_pixel(
-            w["x0"], w["z0"], bounds=bounds, res_x=im.width, res_y=im.height, ortho_zoom=ortho_zoom
-        )
-        u1, v0 = world_xz_to_pixel(
-            w["x1"], w["z1"], bounds=bounds, res_x=im.width, res_y=im.height, ortho_zoom=ortho_zoom
-        )
+        color = type_color(w["type_id"], w.get("kind", "window"))
+        u0, v1 = to_px(w["x0"], w["z0"])
+        u1, v0 = to_px(w["x1"], w["z1"])
         x0, x1 = sorted((u0, u1))
         y0, y1 = sorted((v0, v1))
+        x0, y0, x1, y1 = x0 - box_margin, y0 - box_margin, x1 + box_margin, y1 + box_margin
         draw.rectangle([x0, y0, x1, y1], fill=(*color, 55), outline=(*color, 230), width=3)
-        draw.rectangle([x0, y0, x0 + 28, y0 + 16], fill=(*color, 220))
         label = "D" + f"{w['type_id']:02d}" if w.get("kind") == "door" else f"T{w['type_id']}"
-        draw.text((x0 + 3, y0 + 1), label, fill=(255, 255, 255, 255), font=font_sm)
+        draw_tag_above(draw, x0, y0, label, color, font_sm)
 
     types = sorted({(w.get("kind", "window"), w["type_id"]) for w in wins})
     lx, ly = 12, 12
     for kind, tid in types:
-        color = type_color(tid)
+        color = type_color(tid, kind)
         draw.rectangle([lx, ly, lx + 18, ly + 18], fill=(*color, 230), outline=(255, 255, 255, 200))
         tag = f"d{tid:02d}" if kind == "door" else f"type {tid}"
         draw.text((lx + 24, ly), tag, fill=(255, 255, 255, 255), font=font)
@@ -365,12 +432,11 @@ def overlay_clusters_on_photo(*, recovery: dict, out_path: Path) -> Path | None:
 
     for inst in recovery.get("instances") or []:
         tid = int(inst["type_id"])
-        color = type_color(tid)
+        color = type_color(tid, inst.get("kind", "window"))
         x0, y0, x1, y1 = [float(v) for v in inst["box_xyxy"]]
         label = instance_label(inst)
         draw.rectangle([x0, y0, x1, y1], outline=(*color, 230), width=3)
-        draw.rectangle([x0, y0, x0 + 28, y0 + 16], fill=(*color, 220))
-        draw.text((x0 + 3, y0 + 1), label, fill=(255, 255, 255, 255), font=font_sm)
+        draw_tag_above(draw, x0, y0, instance_label(inst), color, font_sm)
 
     out = Image.alpha_composite(im, overlay).convert("RGB")
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -548,7 +614,7 @@ def render_facade(
     env["FACADE_RENDER_RES"] = res
     env["FACADE_RENDER_SAMPLES"] = str(samples)
     if ortho_zoom is not None:
-        env["FACADE_RENDER_ORTHO_ZOOM"] = str(ortho_zoom)
+        env["FACADE_DSL_ORTHO_ZOOM"] = str(ortho_zoom)
     cmd = [
         blender,
         "-b",

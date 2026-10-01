@@ -186,6 +186,10 @@ def cluster_features(x: np.ndarray, method: str, k: int, seed: int) -> np.ndarra
         return GaussianMixture(
             n_components=k, covariance_type="diag", random_state=seed, n_init=3
         ).fit(x).predict(x)
+    if method == "gmm_full":
+        return GaussianMixture(
+            n_components=k, covariance_type="full", random_state=seed, n_init=3
+        ).fit(x).predict(x)
     raise ValueError(method)
 
 

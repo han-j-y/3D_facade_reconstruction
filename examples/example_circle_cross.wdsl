@@ -1,0 +1,17 @@
+# Round window with cross muntins (four quadrant panes)
+
+window circle(size=1.0)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  split_v glass 0.5
+  split_h glass 0.5
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01

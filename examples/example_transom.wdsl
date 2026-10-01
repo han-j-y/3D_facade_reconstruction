@@ -1,0 +1,16 @@
+# Tall window: large upper pane + short sill/transom band
+
+window rectangle(1.0, 1.6)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  split_h glass 0.17
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01

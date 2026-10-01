@@ -1,0 +1,21 @@
+# Sideways T (⊢): full vertical stile + horizontal rail in the right pane only
+
+window rectangle(1.2, 1.2)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+panes glass:
+  @root root
+  root split(v=0.5) L R
+  L eps
+  R split(h=0.5) R_bot R_top
+  R_bot eps
+  R_top eps
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01

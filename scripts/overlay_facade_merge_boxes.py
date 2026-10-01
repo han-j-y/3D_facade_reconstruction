@@ -189,16 +189,14 @@ def merge_adjacent_boxes(
     tight_gap: float | None = None,
     cross_bay_gap: float | None = None,
     structural_col: np.ndarray | None = None,
+    adjacent: bool | None = None,
 ) -> tuple[list[list[int]], list[list[int]], np.ndarray, np.ndarray]:
     """Merge pane faces of one opening; keep separate columns apart.
 
-    - Nested/IoU always (Pass 1), same floor only.
-    - Same bay + same floor: generous gap (projecting bay faces) — window mode.
-    - Different bay: only if a box is narrow (flat multi-pane) and gap is small.
-    - Optional: force whole vertical bay.
-    - If ``structural_col`` is set, only merge within the same structural column
-      (plus containment/IoU). Uses ``adj_gap`` with similar pane widths.
-    - ``mode="balcony"``: Pass-1 only (gap merges off) so adjacent balconies stay separate.
+    Phase 1 — nested / high-IoU. Window mode allows a pane nested across a
+    floor band; balcony mode stays on one floor.
+    Phase 2 — close-by panes on the same floor when ``adjacent`` is set.
+    ``mode="balcony"`` leaves adjacent balconies separate.
     """
     if mode not in MERGE_PROFILES:
         raise ValueError(f"unknown merge mode {mode!r}; expected one of {sorted(MERGE_PROFILES)}")
@@ -222,6 +220,8 @@ def merge_adjacent_boxes(
     narrow_frac = float(profile["narrow_frac"])
     tight_gap = float(profile["tight_gap"])
     cross_bay_gap = float(profile["cross_bay_gap"])
+    if adjacent is None:
+        adjacent = mode != "balcony" and max(extruded_gap, tight_gap, cross_bay_gap) > 0
 
     n = len(boxes)
     floor = lay.assign_bays(cy, row_tol)
@@ -235,17 +235,18 @@ def merge_adjacent_boxes(
             return False
         return min(wi, wj) / max(wi, wj) >= min_ratio
 
+    # Phase 1: nested / IoU. Balcony stays on one floor; windows may nest across a band.
     for i in range(n):
         for j in range(i + 1, n):
             if containment_or_iou(
                 boxes[i], boxes[j], contain_thr=contain_thr, iou_thr=iou_thr
             ):
-                if int(floor[i]) != int(floor[j]):
+                if mode == "balcony" and int(floor[i]) != int(floor[j]):
                     continue
                 uf.union(i, j)
 
-    # Pass 2: gap-based horizontal merges (window multi-pane). Skip for balcony.
-    if mode != "balcony" and max(extruded_gap, tight_gap, cross_bay_gap) > 0:
+    # Phase 2: close-by panes, same floor band only.
+    if adjacent:
         for i in range(n):
             for j in range(i + 1, n):
                 if int(floor[i]) != int(floor[j]):
@@ -265,7 +266,7 @@ def merge_adjacent_boxes(
                         uf.union(i, j)
                     elif same_col and similar_w and gap <= adj_gap * med_w:
                         uf.union(i, j)
-                elif same_bay and gap <= extruded_gap * med_w:
+                elif same_col and gap <= extruded_gap * med_w:
                     uf.union(i, j)
                 elif (not same_bay) and narrow and gap <= cross_bay_gap * med_w:
                     uf.union(i, j)

@@ -1,0 +1,17 @@
+# Lunette window: hub arc muntin + fan radials starting at the hub (5 panes)
+
+window semicircle(size=1.0, flat=bottom)
+
+frame thickness 0.06*min_side depth 0.08 material painted_wood
+
+regions:
+  glass = inset(root, 0.06*min_side)
+
+program:
+  arc glass hub origin 0.5 0 radius 0.26*min_side semicircle
+  fan glass from hub
+
+output:
+  muntin_width 0.022*min_side
+  muntin_depth 0.035
+  glass_thickness 0.01
