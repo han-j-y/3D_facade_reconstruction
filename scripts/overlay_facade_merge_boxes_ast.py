@@ -10,7 +10,7 @@ Asset crops often split a multi-pane unit into several boxes. This script:
 Also optionally merges a whole vertical bay into one tall box (``--merge-bays``).
 
 Example:
-  python scripts/overlay_facade_merge_boxes.py \\
+  python scripts/overlay_facade_merge_boxes_ast.py \\
     --facade-ids 221,252,108,121,17,15,400,270,112,263,22 \\
     --device cuda
 """
@@ -91,6 +91,18 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="also union all boxes in the same bay into one tall box",
     )
+    ap.add_argument(
+        "--merge-vertical",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="also union nearly-touching same-story vertical splits",
+    )
+    ap.add_argument(
+        "--vert-gap",
+        type=float,
+        default=0.55,
+        help="max vertical gap as fraction of median box height",
+    )
     ap.add_argument("--k-max", type=int, default=8)
     return ap.parse_args()
 
@@ -147,6 +159,107 @@ def x_gap(a: list[int], b: list[int]) -> float:
     return 0.0
 
 
+def x_overlap_frac(a: list[int], b: list[int]) -> float:
+    x0, x1 = max(a[0], b[0]), min(a[2], b[2])
+    ow = x1 - x0
+    if ow <= 0:
+        return 0.0
+    return float(ow) / max(1.0, min(a[2] - a[0], b[2] - b[0]))
+
+
+def y_gap(a: list[int], b: list[int]) -> float:
+    if a[3] <= b[1]:
+        return float(b[1] - a[3])
+    if b[3] <= a[1]:
+        return float(a[1] - b[3])
+    return 0.0
+
+
+def merge_vertical_same_cluster(
+    boxes: list[list[int]],
+    labels: np.ndarray | list[int],
+    members: list[list[int]],
+    *,
+    col_tol: float = 0.045,
+    row_tol: float = 0.055,
+    vert_gap: float = 0.55,
+    min_x_overlap: float = 0.55,
+    same_floor_only: bool = True,
+    image_size: tuple[int, int] | None = None,
+) -> tuple[list[list[int]], list[list[int]], np.ndarray]:
+    """Union nearly-touching vertically stacked panes (same-story splits).
+
+    Only merges when:
+      - same cluster label
+      - sufficient x-overlap, little y-overlap
+      - vertical gap ≤ ``vert_gap`` × median height
+      - **same floor band** (when ``same_floor_only``; default on)
+
+    Floor bands come from greedy clustering of normalized ``cy`` with
+    ``row_tol``. Same-story sash/transom panes share a band; cross-floor
+    neighbors (even with a small gap) do not, so they stay separate.
+    """
+    del col_tol
+    n = len(boxes)
+    if n == 0:
+        return [], [], np.zeros(0, dtype=np.int32)
+    labels_a = np.asarray(labels, dtype=np.int32)
+    med_h = float(np.median([max(1.0, float(b[3] - b[1])) for b in boxes]))
+    max_yg = vert_gap * med_h
+
+    if same_floor_only:
+        if image_size is not None:
+            ih = max(1.0, float(image_size[1]))
+        else:
+            ih = max(1.0, float(max(b[3] for b in boxes)))
+        cy = np.array(
+            [0.5 * (float(b[1]) + float(b[3])) / ih for b in boxes],
+            dtype=np.float64,
+        )
+        floor = lay.assign_bays(cy, row_tol)
+    else:
+        floor = np.zeros(n, dtype=np.int32)
+
+    uf = lay.UnionFind(n)
+    for i in range(n):
+        for j in range(i + 1, n):
+            if int(labels_a[i]) != int(labels_a[j]):
+                continue
+            if same_floor_only and int(floor[i]) != int(floor[j]):
+                continue
+            if y_overlap_frac(boxes[i], boxes[j]) > 0.15:
+                continue
+            if x_overlap_frac(boxes[i], boxes[j]) < min_x_overlap:
+                continue
+            if y_gap(boxes[i], boxes[j]) <= max_yg:
+                uf.union(i, j)
+
+    labs = uf.labels()
+    groups: dict[int, list[int]] = {}
+    for i, lab in enumerate(labs.tolist()):
+        groups.setdefault(int(lab), []).append(i)
+
+    out_boxes: list[list[int]] = []
+    out_members: list[list[int]] = []
+    out_labels: list[int] = []
+    ordered = sorted(
+        groups.items(),
+        key=lambda kv: (
+            min(boxes[i][1] for i in kv[1]),
+            min(boxes[i][0] for i in kv[1]),
+        ),
+    )
+    for _g, idxs in ordered:
+        out_boxes.append(union_box([boxes[i] for i in idxs]))
+        mem: list[int] = []
+        for i in sorted(idxs):
+            mem.extend(members[i])
+        out_members.append(sorted(mem))
+        votes = [int(labels_a[i]) for i in idxs]
+        out_labels.append(max(set(votes), key=votes.count))
+    return out_boxes, out_members, np.asarray(out_labels, dtype=np.int32)
+
+
 def merge_adjacent_boxes(
     boxes: list[list[int]],
     cx: np.ndarray,
@@ -163,35 +276,31 @@ def merge_adjacent_boxes(
     narrow_frac: float = 0.9,
     tight_gap: float = 0.55,
     cross_bay_gap: float = 1.0,
-    structural_col: np.ndarray | None = None,
     adjacent: bool = False,
+    merge_vertical: bool = False,
+    vert_gap: float = 2.2,
+    min_x_overlap: float = 0.55,
 ) -> tuple[list[list[int]], list[list[int]], np.ndarray, np.ndarray]:
-    """Merge pane faces of one opening; keep separate columns apart.
+    """Merge boxes in two phases.
 
-    Phase 1 — nested / high-IoU (no floor gate): full opening + inner pane.
-    Phase 2 — close-by on the same floor only (if ``adjacent=True``):
-      - Same bay: generous gap (projecting bay faces).
-      - Different bay: only if a box is narrow (flat multi-pane) and gap is small.
-      - Optional: force whole vertical bay.
-    Default ``adjacent=False``: containment/IoU only (no nearby-gap merges).
-    If ``structural_col`` is set, only merge within the same structural column
-    (plus containment/IoU). Uses ``adj_gap`` with similar pane widths — not the
-    large ``extruded_gap`` used for projecting bays, because structural columns
-    can span multiple side-by-side windows on one floor.
+    1. **Containment / high-IoU** — always, including across floor bands.
+       Nested SAM hits (full opening + inner pane) share one envelope even when
+       centroids fall in different greedy floor bands.
+    2. **Close-by / adjacent** (if ``adjacent=True``) — same floor only:
+       same-bay gap, narrow cross-bay, tight gap; optional vertical / merge_bays.
+
+    If ``adjacent=False`` (lazy / overlap-only): skip neighbor-gap merges.
     """
     n = len(boxes)
     floor = lay.assign_bays(cy, row_tol)
     bay = lay.assign_bays(cx, col_tol)
-    col = structural_col if structural_col is not None else bay
-    med_w = float(np.median([hints.box_width(b) for b in boxes]))
+    med_w = float(np.median([hints.box_width(b) for b in boxes])) if boxes else 1.0
+    med_h = (
+        float(np.median([max(1.0, float(b[3] - b[1])) for b in boxes])) if boxes else 1.0
+    )
     uf = lay.UnionFind(n)
 
-    def _similar_width(wi: float, wj: float, *, min_ratio: float = 0.45) -> bool:
-        if wi <= 0 or wj <= 0:
-            return False
-        return min(wi, wj) / max(wi, wj) >= min_ratio
-
-    # Phase 1: nested / IoU (allow cross-floor — nest before banding).
+    # Phase 1: nested / IoU duplicates (no floor gate — nest before banding).
     for i in range(n):
         for j in range(i + 1, n):
             if containment_or_iou(
@@ -199,7 +308,7 @@ def merge_adjacent_boxes(
             ):
                 uf.union(i, j)
 
-    # Phase 2: close-by panes, same floor band only (opt-in).
+    # Phase 2: horizontally close panes on the same floor band.
     if adjacent:
         for i in range(n):
             for j in range(i + 1, n):
@@ -212,26 +321,39 @@ def merge_adjacent_boxes(
                 wj = hints.box_width(boxes[j])
                 narrow = min(wi, wj) <= narrow_frac * med_w
                 same_bay = int(bay[i]) == int(bay[j])
-                same_col = int(col[i]) == int(col[j])
-                similar_w = _similar_width(wi, wj)
 
-                if structural_col is not None:
-                    if same_col and same_bay and gap <= extruded_gap * med_w:
-                        uf.union(i, j)
-                    elif same_col and similar_w and gap <= adj_gap * med_w:
-                        uf.union(i, j)
-                elif same_col and gap <= extruded_gap * med_w:
+                if same_bay and gap <= extruded_gap * med_w:
+                    # projecting / multi-face unit inside one vertical bay
                     uf.union(i, j)
                 elif (not same_bay) and narrow and gap <= cross_bay_gap * med_w:
+                    # flat coplanar panes that fell into adjacent bay ids
                     uf.union(i, j)
                 elif gap <= tight_gap * med_w:
                     uf.union(i, j)
 
-    if merge_bays:
-        for b in sorted(set(int(v) for v in bay.tolist())):
-            idxs = [i for i in range(n) if int(bay[i]) == b]
-            for i in idxs[1:]:
-                uf.union(idxs[0], i)
+        if merge_vertical:
+            # Stacked panes in one column: different floors, aligned in x,
+            # small vertical gap (not whole-bay — that is merge_bays).
+            max_yg = vert_gap * med_h
+            for i in range(n):
+                for j in range(i + 1, n):
+                    if int(floor[i]) == int(floor[j]):
+                        continue
+                    same_bay = int(bay[i]) == int(bay[j])
+                    xo = x_overlap_frac(boxes[i], boxes[j])
+                    if not same_bay and xo < min_x_overlap:
+                        continue
+                    if same_bay and xo < 0.25:
+                        continue
+                    yg = y_gap(boxes[i], boxes[j])
+                    if yg <= max_yg:
+                        uf.union(i, j)
+
+        if merge_bays:
+            for b in sorted(set(int(v) for v in bay.tolist())):
+                idxs = [i for i in range(n) if int(bay[i]) == b]
+                for i in idxs[1:]:
+                    uf.union(idxs[0], i)
 
     labels = uf.labels()
     groups: dict[int, list[int]] = {}
@@ -340,6 +462,8 @@ def main() -> None:
             adj_gap=args.adj_gap,
             merge_bays=args.merge_bays,
             col_tol=args.col_tol,
+            merge_vertical=args.merge_vertical,
+            vert_gap=args.vert_gap,
         )
         # layout on merged
         mcx = np.array(

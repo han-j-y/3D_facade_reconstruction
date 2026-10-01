@@ -469,8 +469,15 @@ def build_shape_region(spec: dict[str, Any]) -> Region:
         contour = _trapezoid_contour(w, h, top_w)
     elif shape in {"arch_head", "rect_eyebrow", "springline_arch"}:
         w = float(params.get("width", params.get("size", 1.0)))
-        body_h = float(params.get("body_height", params.get("body", 1.0)))
         rise = float(params.get("rise", params.get("arch_height", w * 0.18)))
+        # ``height`` is the *total* boundary height (springline body + arch rise),
+        # matching the convention in contour_for_region.
+        if "body_height" in params or "body" in params:
+            body_h = float(params.get("body_height", params.get("body")))
+        elif "height" in params:
+            body_h = max(float(params["height"]) - rise, 1e-3)
+        else:
+            body_h = 1.0
         params["width"] = w
         params["body_height"] = body_h
         params["rise"] = rise

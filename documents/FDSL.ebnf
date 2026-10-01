@@ -1,130 +1,352 @@
 (*
-  FDSL — façade DSL concrete syntax  (facade_dsl8)
+  FDSL — façade DSL  (facade_e2e, window_compiler vendor copy)
 
-  Authoring language for a wall grid of named window / door types.
-  Parser: parse_fdsl.py
-  Compiles to schema facade_dsl8_facade_v1 JSON consumed by facade_compile.py.
+  A façade = a wall slab, a floor × bay grid, named window types (each a WDSL
+  window, see WDSL.ebnf), door types, a placement matrix and fit parameters.
+  Four spellings, all compiling to the same scene:
 
-  A façade document *embeds* WDSL (see WDSL.ebnf) for each window type.
-  Doors are primitives (not WDSL).
+    A. Compiled façade JSON   schema window_compiler_facade_v1. What Blender
+                              runs (facade_compile.compile_facade_scene).
+    B. Recovery DSL JSON      schema facade_recovery_dsl_v1. Written by the photo
+                              pipeline (facade_dsl.json / facade_dsl_repaired.json)
+                              and by facade_template.py. This is the file edited
+                              by hand. Mapped onto A by facade_spec.normalize_facade_spec.
+    C. Façade template JSON   schema facade_template_v1 + a floor/bay pattern
+                              language (§5). Instantiates B at any size.
+    D. FDSL text syntax       authoring sugar for A (§6).
 
-  Coordinates after compile (Blender):
-    X across the façade (centered at 0), Z vertical (0 at ground),
-    Y depth. First `rows` entry is the TOP band (z sums downward).
-    Camera sits on +Y looking −Y; placement_params.mirror_x (default true)
-    flips X so photo-left columns stay image-left.
-
-  Lexer: same as WDSL — '#' comments, UTF-8, significant indent.
+  World coordinates (Blender): X across the façade, centred at 0; Z up, 0 at
+  ground; Y depth, wall front face at wall.base_front_y. Grid rows are listed
+  TOP → BOTTOM. The camera sits on +Y looking −Y, so with mirror_x=true photo-left
+  columns stay image-left (world X is negated).
+  Image coordinates (B): pixels, x right, y down.
 *)
 
-document         = { comment | nl },
-                   [ "facade", nl ],
-                   [ wall_stmt ],
-                   grid_block,
-                   windows_block,
-                   [ doors_block ],
-                   placement_block,
-                   [ params_block ],
-                   [ "debug", nl ] ;
 
-(* reuse WDSL ident / number / scalar / nl / comment *)
+(* ================================================================
+   §1  Shared JSON items
+   JSON objects are written  { "key": value, ... }  ; [ ] marks optional keys.
+   ================================================================ *)
 
-(* ——— wall slab ——— *)
+json_number   = ? JSON number ? ;
+json_int      = ? JSON integer ? ;
+json_bool     = "true" | "false" ;
+json_string   = ? JSON string ? ;
+type_name     = json_string ;             (* window type, e.g. "win_type_00" *)
+door_name     = json_string ;             (* door type, "d" + 2 digits, e.g. "d00" *)
+cell_token    = type_name | door_name | empty_token ;
+empty_token   = "null" | '""' | '"empty"' | '"spacer"' | '"s"' | '"null"' ;
+door_shape    = '"rectangle"' | '"arched"' ;
+                (* only "arched" produces an arch; any other value → rectangle *)
+window_ir     = ? WDSL.ebnf §2 window_ir ? ;
 
-wall_stmt        = "wall", { ws, wall_kv }, nl
-                 | "wall:", nl, { ws, wall_kv, nl } ;
-wall_kv          = "depth", ws, number
-                 | "base_front_y", ws, number
-                 | "material", ws, ident ;
-(* defaults: depth=0.42, base_front_y=0, material=wall *)
 
-(* ——— floor × bay grid ——— *)
+(* ================================================================
+   §2  Compiled façade JSON  (A, normative scene input)
+   ================================================================ *)
 
-grid_block       = "grid:", nl,
-                   ws, "rows", ws, size_list, nl,
-                   ws, "cols", ws, size_list, nl ;
-size_list        = size_item, { ws, size_item } ;
-size_item        = ident, "=", number        (* named: F2=3.0 *)
-                 | number ;                  (* auto-named F0.. / B0.. in listed order *)
-(* first row = TOP storey. sizes are metres. *)
+facade_ir     = "{", '"type": "facade"',
+                     [ ',"schema": "window_compiler_facade_v1"' ],
+                     [ ',"wall": ', wall ],
+                     ',"grid": ', grid,
+                     ',"placement": ', matrix_tok,
+                     [ ',"placement_spans": ', matrix_int ],
+                     [ ',"placement_fit": ', matrix_fit ],
+                     ',"windows": {', [ type_name, ": ", window_ir, { ",", type_name, ": ", window_ir } ], "}",
+                     [ ',"doors": {', [ door_name, ": ", door_def, { ",", door_name, ": ", door_def } ], "}" ],
+                     [ ',"instances": [', [ instance, { ",", instance } ], "]" ],
+                     [ ',"floor_ids": [', json_int, { ",", json_int }, "]" ],
+                     [ ',"image_extent": ', image_extent ],
+                     [ ',"placement_params": ', placement_params ],
+                     [ ',"meta": ', facade_meta ],
+                "}" ;
 
-(* ——— window types (each body is a WDSL document) ——— *)
+wall          = "{", [ '"depth": ', json_number ],            (* default 0.42 m *)
+                     [ ',"base_front_y": ', json_number ],    (* default 0 *)
+                     [ ',"material": ', json_string ],        (* default "wall" *)
+                "}" ;
 
-windows_block    = "windows:", nl, { window_def } ;
-window_def       = ws, ident, ws, "=", ws, path, nl
-                 | ws, ident, ":", nl, wdsl_body ;
-path             = { ? non-space char ? } ;   (* .wdsl or .json, relative to this file *)
-wdsl_body        = { line indented strictly deeper than the `name:` line } ;
-(* wdsl_body is dedented and parsed by parse_wdsl. *)
+grid          = "{", '"rows": [', row, { ",", row }, "]",     (* top → bottom *)
+                     ',"cols": [', col, { ",", col }, "]",    (* left → right *)
+                "}" ;
+row           = "{", '"name": ', json_string, ',"h": ', json_number, "}" ;   (* metres *)
+col           = "{", '"name": ', json_string, ',"w": ', json_number, "}" ;   (* metres *)
 
-(* ——— door types (panel primitives) ——— *)
+matrix_tok    = "[", tok_row, { ",", tok_row }, "]" ;       (* n_rows × n_cols *)
+tok_row       = "[", cell_token, { ",", cell_token }, "]" ;
+matrix_int    = "[", "[", json_int, { ",", json_int }, "]", { ",", "[", json_int, { ",", json_int }, "]" }, "]" ;
+                (* span k ≥ 1 at the first cell of a window covering k bays; the k−1
+                   covered cells hold token null and span 0. Missing → 1 (0 if empty). *)
+matrix_fit    = "[", fit_row, { ",", fit_row }, "]" ;
+fit_row       = "[", ( cell_fit | "null" ), { ",", ( cell_fit | "null" ) }, "]" ;
+cell_fit      = "{", '"width_ratio": ', json_number,        (* box width  / cell width  *)
+                     ',"height_ratio": ', json_number,      (* box height / cell height *)
+                     ',"cx_ratio": ', json_number,          (* box centre x in cell, 0 = left *)
+                     ',"cy_ratio": ', json_number,          (* box centre y in cell, 0 = top  *)
+                     [ ',"box_aspect": ', json_number ], "}" ;
+                (* cell = the grid cell, or the merged cells for a span. Ratios are
+                   clamped to [0.05, 0.98] (size) and [0.02, 0.98] (centre). *)
 
-doors_block      = "doors:", nl, { door_def } ;
-door_def         = ws, ident, ws, door_shape, { ws, door_kv }, nl
-                 | ws, ident, ":", nl, { ws, door_field, nl } ;
-door_shape       = "rectangle" | "rect" | "flat" | "panel"
-                 | "arched" | "arch" | "panel_arch" ;
-door_kv          = "rise", "=", number
-                 | "arch_rise_ratio", "=", number
-                 | "material", "=", ident ;
-door_field       = "primitive", ws, door_shape
-                 | "shape", ws, door_shape
-                 | "arch_rise_ratio", ws, number
-                 | "rise", ws, number
-                 | "material", ws, ident ;
-(* arched | arch | panel_arch → primitive "arched".  rect|flat|panel → "rectangle". *)
+door_def      = "{", [ '"type_id": ', json_int ], [ ',"kind": "door"' ],
+                     ',"shape": ', door_shape,
+                     [ ',"primitive": ', door_shape ],
+                     [ ',"arch_rise_ratio": ', json_number ],  (* rise ÷ width on the photo crop *)
+                     [ ',"material": ', json_string ],         (* informational *)
+                     [ ',"placeholder": ', json_bool ], "}" ;
 
-(* ——— placement matrix ——— *)
+placement_params = "{", [ '"width_ratio": ', json_number ],     (* default 0.55  fallback fit *)
+                        [ ',"height_ratio": ', json_number ],   (* default 0.60  fallback fit *)
+                        [ ',"recess": ', json_number ],         (* default 0.01 m, windows/doors set back *)
+                        [ ',"mirror_x": ', json_bool ],         (* default true *)
+                        [ ',"unify_type_size": ', json_bool ],  (* default true, see §7 *)
+                        [ ',"align_type_bottom": ', json_bool ],(* default true, see §7 *)
+                        [ ',"bottom_margin_ratio": ', json_number ], (* accepted, currently unused *)
+                   "}" ;
 
-placement_block  = "placement:", nl, { placement_row } ;
-placement_row    = ws, [ ident, ":" , ws ], token, { ws, token }, nl ;
-token            = ident | empty_tok ;
-empty_tok        = "." | "-" | "_" | "empty" | "spacer" | "s" | "null" ;
-(* If a row starts with a name matching grid.rows[].name, that band is filled.
-   Otherwise rows are taken in listed order (first = top).
-   Each row length must equal the column count.
-   Tokens must name a windows{} or doors{} key, or be empty. *)
+image_extent  = "{", '"x0": ', json_number, ',"x1": ', json_number,
+                     ',"y0": ', json_number, ',"y1": ', json_number, "}" ;   (* pixels *)
+facade_meta   = "{", [ '"type_ratios": {', type_name, ': {"width_ratio": ', json_number,
+                       ', "height_ratio": ', json_number, "}", { "," , "..." }, "}" ],
+                     [ ',"facade_id": ', json_string ], [ ',"image_size": [w, h]' ],
+                     [ ',"columns_xy": ...' ], [ ',"floors_y": ...' ], "..." , "}" ;
+(* instances / floor_ids are carried over from B (§3). floor_ids[r] is the floor
+   id of grid row r; the ground floor is max(floor_ids). *)
 
-(* ——— placement / fit parameters ——— *)
 
-params_block     = ( "params:" | "placement_params:" ), nl, { ws, param_kv, nl } ;
-param_kv         = "width_ratio", ws, number
-                 | "height_ratio", ws, number
-                 | "bottom_margin_ratio", ws, number
-                 | "door_bottom_margin_ratio", ws, number
-                 | "recess", ws, number
-                 | "mirror_x", ws, bool ;
-bool             = "true" | "false" | "1" | "0" | "yes" | "no" ;
-(* defaults: width_ratio=0.55, height_ratio=0.60, bottom_margin_ratio=0.14,
-   door_bottom_margin_ratio=0.02, recess=0.01, mirror_x=true *)
+(* ================================================================
+   §3  Recovery DSL JSON  (B, pipeline output and hand-edited file)
+   ================================================================ *)
 
-(* ——— compiled JSON IR  schema = facade_dsl8_facade_v1 ———
+recovery_dsl  = "{", '"schema": "facade_recovery_dsl_v1"',
+                     ',"meta": ', recovery_meta,
+                     ',"layout": ', layout,
+                     ',"window_types": [', [ window_type, { ",", window_type } ], "]",
+                     [ ',"door_types": [', [ door_type, { ",", door_type } ], "]" ],
+                     ',"instances": [', [ instance, { ",", instance } ], "]",
+                "}" ;
 
-  {
-    "type": "facade",
-    "schema": "facade_dsl8_facade_v1",
-    "wall": { "depth", "base_front_y"?, "material"? },
-    "grid": {
-      "rows": [ { "name": string, "h": number }, ... ],   // top → bottom
-      "cols": [ { "name": string, "w": number }, ... ]
-    },
-    "placement": [ [ string | null, ... ], ... ],         // same order as rows/cols
-    "windows": { <name>: <window JSON IR>, ... },
-    "doors": {
-      <name>: { "type": "door", "primitive": "rectangle"|"arched",
-                "shape": ..., "arch_rise_ratio"?, "material"? }
-    },
-    "placement_params": { width_ratio, height_ratio, bottom_margin_ratio,
-                          door_bottom_margin_ratio, recess, mirror_x },
-    "meta"?: { type_ratios?: { <name>: { width_ratio, height_ratio } } }
-  }
+recovery_meta = "{", [ '"facade_id": ', json_string ],
+                     [ ',"image": ', json_string ],          (* photo path; absent → no photo panels *)
+                     ',"image_size": [', json_int, ",", json_int, "]",   (* [w, h] px *)
+                     [ ',"columns_xy": [', px_band, { ",", px_band }, "]" ],   (* one [x0,x1] per bay *)
+                     [ ',"floors_y": [', px_band, { ",", px_band }, "]" ],     (* one [y0,y1] per floor, top first *)
+                     [ ',"inter_bay_gaps_px"' | ',"inter_bay_gap_norm"'
+                       | ',"inter_floor_gaps_px"' | ',"inter_floor_gap_norm"', ": [...]" ],
+                     [ ',"synthetic": true' ],               (* template-instantiated *)
+                     [ ',"n_units" | "n_types" | "n_doors" | "n_door_types" | "notes" | ...' ],
+                "}" ;
+px_band       = "[", json_number, ",", json_number, "]" ;
 
-  Recovery DSL (facade_recovery_dsl_v1) is a *different* concrete JSON used
-  by the photo pipeline. facade_spec.normalize_facade_spec maps:
+layout        = "{", '"floors": [', floor, { ",", floor }, "]",     (* top → bottom *)
+                     ',"bays": [', bay, { ",", bay }, "]",          (* left → right *)
+                     ',"placement": ', matrix_tok,                  (* n_floors × n_bays *)
+                     [ ',"placement_spans": ', matrix_int ],
+                "}" ;
+floor         = "{", '"name": ', json_string, ',"id": ', json_int,
+                     ',"h_norm": ', json_number,                    (* relative height *)
+                     [ ',"h_m": ', json_number ],                   (* metres, see §7 *)
+                     [ ',"archetype": ', json_string ], "}" ;       (* template provenance *)
+bay           = "{", '"name": ', json_string, ',"id": ', json_int,
+                     ',"w_norm": ', json_number,
+                     [ ',"w_m": ', json_number ],
+                     [ ',"symbol": ', json_string ], "}" ;
 
-      layout.floors[].h_norm × layout.bays[].w_norm × layout.placement
-      window_types[].structure_ir → windows{}
-      door_types[]                → doors{}
+window_type   = "{", '"type_id": ', json_int,
+                     [ ',"name": ', type_name ],                    (* default "win_type_%02d" *)
+                     ',"structure_ir": ', ( window_ir | '{"ir": ', window_ir, "}" ),
+                     [ ',"structure_tokens": [', json_string, { ",", json_string }, "]" ],  (* WDSL §4 *)
+                     [ ',"n_instances" | "exemplar_unit" | "exemplar_asset"
+                        | "structure_vote" | "structure_members": ...' ],   (* informational *)
+                "}" ;
+(* Only structure_ir is compiled. A type without a valid structure_ir keeps its
+   placement cells but is skipped by Blender. *)
 
-  onto facade_dsl8_facade_v1. FDSL authors the compiled form directly.
+door_type     = "{", '"type_id": ', json_int, [ ',"name": ', door_name ],
+                     [ ',"kind": "door"' ], [ ',"shape": ', door_shape ],
+                     [ ',"primitive": ', door_shape ], [ ',"arch_rise_ratio": ', json_number ],
+                     [ ',"material": ', json_string ],
+                     [ ',"n_instances" | "exemplar_asset": ...' ], "}" ;
+
+instance      = "{", '"box_xyxy": [x0, y0, x1, y1]',                (* pixels *)
+                     ',"floor": ', json_int,                        (* layout.floors[].id *)
+                     ',"bay": ', json_int,                          (* first bay index *)
+                     [ ',"colspan": ', json_int ],                  (* default 1 *)
+                     ',"type_id": ', json_int,
+                     [ ',"kind": ', ( '"window"' | '"door"' ) ],    (* default window *)
+                     [ ',"name": ', door_name ],
+                     [ ',"shape": ', door_shape, ',"arch_rise_ratio": ', json_number ],
+                                                                    (* door: overrides its type *)
+                     [ ',"unit_id" | "asset" | "is_exemplar" | "score" | "member_raw_idxs"
+                        | "structure_tokens" | "structure_ir" | "structure_ir_member"
+                        | "structure_tokens_voted" | "shape_metrics": ...' ],  (* informational *)
+                "}" ;
+
+(* Placement tokens name a window type (name, "win_type_%02d" or type id) or a
+   door type ("d%02d"); unknown names are dropped with a warning. *)
+
+
+(* ================================================================
+   §4  Recovery DSL → compiled façade  (normalize_facade_spec)
+   ================================================================ *)
+(*
+  Grid size
+    If every floor has h_m and every bay has w_m:
+        rows[r].h = h_m,  cols[c].w = w_m                  (metric DSL)
+    else
+        total_h = storey_height (3.0 m) × n_floors,  rows ∝ h_norm
+        aspect  = (columns_xy span) / (floors_y span), else image w/h
+        total_w = total_h × aspect  (or --facade-width),   cols ∝ w_norm
+  Windows / doors
+    window_types[].structure_ir → windows{name};  door_types → doors{name}
+  Placement
+    layout.placement / placement_spans copied (tokens resolved to names).
+  Fits
+    For each instance: cell = columns_xy[bay .. bay+colspan−1] × floors_y[row]
+    → placement_fit[row][bay] (cell_fit, §2). type_ratios = mean fit per type.
+  Carried over: instances, floor_ids (= layout.floors[].id), image_extent
+    (columns_xy / floors_y outer bounds), meta.columns_xy / floors_y / image_size.
+  Defaults: wall {depth 0.42, base_front_y 0, material "wall"},
+    placement_params {width_ratio 0.55, height_ratio 0.60, recess 0.01,
+    mirror_x true}.
+*)
+
+
+(* ================================================================
+   §5  Façade template  (C, facade_template.py)
+   ================================================================ *)
+
+template      = "{", '"schema": "facade_template_v1"',
+                     ',"source": {"dsl", "facade_id", "image", "floors", "bays": ...}',
+                     ',"bay_pattern": ', json_string,        (* pattern, e.g. "E B B D B B E" *)
+                     ',"floor_pattern": ', json_string,      (* pattern, e.g. "top typical ground" *)
+                     ',"repeat_floor": ', json_string,       (* archetype used by --add-floors *)
+                     ',"repeat_bay": ', json_string,         (* bay unit used by --add-bays, e.g. "F G" *)
+                     ',"bays": {', symbol, ': {"w_m": ', json_number, "}", { ",", "..." }, "}",
+                     ',"floors": {', archetype, ": ", archetype_def, { ",", "..." }, "}",
+                     ',"window_types": [ ... ]',             (* copied from B *)
+                     ',"door_types": [ ... ]',
+                "}" ;
+symbol        = json_string ;                        (* bay symbol; E = edge, D = door column *)
+archetype     = json_string ;                        (* "top" | "typical" | "midN" | "ground" | ... *)
+archetype_def = "{", '"h_m": ', json_number,
+                     ',"cells": {', symbol, ": ", template_cell, { ",", "..." }, "}",
+                     ',"fits": {', symbol, ": ", template_fit, { ",", "..." }, "}", "}" ;
+template_cell = type_name | door_name | "null"                     (* empty *)
+              | '{"type": ', type_name, ', "span": ', json_int, "}"  (* covers k bays from here *)
+              | '"^"' ;                                            (* covered by a span to the left *)
+template_fit  = cell_fit                                           (* median over source instances *)
+              | "{", cell_fit_fields, ',"shape": ', door_shape, ',"arch_rise_ratio": ', json_number, "}" ;
+cell_fit_fields = ? the four ratio fields of cell_fit ? ;
+
+(* ---- pattern language (--floors / --bays / bay_pattern / floor_pattern) ---- *)
+pattern       = item, { ws, item } ;                 (* commas are treated as spaces *)
+item          = name, [ "*", int ]                   (* NAME*k repeats k times *)
+              | "(", name, { ws, name }, ")", [ "*", int ] ;   (* (A B)*k repeats a group *)
+name          = ( letter | "_" ), { letter | digit | "_" | "-" } ;
+ws            = { " " | "\t" } ;
+int           = ? decimal digits ? ;
+letter        = ? "A".."Z" | "a".."z" ? ;
+digit         = ? "0".."9" ? ;
+(* --add-floors N inserts N × repeat_floor after its last occurrence.
+   --add-bays N inserts N × repeat_bay units: split evenly around the centre when
+   the bay pattern is a palindrome, otherwise as one block before the copy nearest
+   the centre (spans are never split).
+   Instantiation writes B with h_m / w_m, a synthetic 100 px/m grid, one instance
+   per placed cell (box from the template fit), and no meta.image. *)
+
+
+(* ================================================================
+   §6  FDSL text syntax  (D, authoring sugar for A)
+   Lexer: UTF-8, '#' comments, significant indentation (as in WDSL).
+   ================================================================ *)
+
+document      = { comment | nl },
+                [ "facade", nl ],
+                [ wall_stmt ],
+                grid_block,
+                windows_block,
+                [ doors_block ],
+                placement_block,
+                [ fits_block ],
+                [ params_block ],
+                [ "debug", nl ] ;
+
+nl            = ? newline ? ;
+comment       = "#", { ? any char except newline ? } ;
+ident         = ? WDSL ident ? ;
+number        = ? WDSL number ? ;
+bool          = "true" | "false" | "1" | "0" | "yes" | "no" ;
+
+wall_stmt     = "wall", { ws, wall_kv }, nl
+              | "wall:", nl, { ws, wall_kv, nl } ;
+wall_kv       = ( "depth" | "base_front_y" ), ws, number | "material", ws, ident ;
+
+grid_block    = "grid:", nl,
+                ws, "rows", ws, size_list, nl,       (* first = TOP storey, metres *)
+                ws, "cols", ws, size_list, nl ;      (* left → right, metres *)
+size_list     = size_item, { ws, size_item } ;
+size_item     = ident, "=", number                   (* named: F2=3.0 *)
+              | number ;                             (* auto-named F0.. / B0.. *)
+
+windows_block = "windows:", nl, { window_def } ;
+window_def    = ws, ident, ws, "=", ws, path, nl     (* .wdsl or .json, relative *)
+              | ws, ident, ":", nl, wdsl_body ;      (* indented WDSL document *)
+path          = { ? non-space char ? } ;
+wdsl_body     = { ? line indented deeper than the name line ? } ;
+
+doors_block   = "doors:", nl, { door_line } ;
+door_line     = ws, ident, ws, door_kw, [ ws, "arch_rise_ratio", "=", number ], nl
+              | ws, ident, ":", nl, { ws, ( "shape", ws, door_kw
+                                          | "arch_rise_ratio", ws, number ), nl } ;
+door_kw       = "rectangle" | "rect" | "flat" | "panel"          (* → "rectangle" *)
+              | "arched" | "arch" | "panel_arch" ;               (* → "arched" *)
+
+placement_block = "placement:", nl, { placement_row } ;
+placement_row = ws, [ ident, ":", ws ], cell, { ws, cell }, nl ;
+cell          = ident, [ "*", int ]                  (* window/door, spanning k bays *)
+              | empty_tok ;
+empty_tok     = "." | "-" | "_" | "empty" | "spacer" | "s" | "null" ;
+(* A row starting with a grid.rows name fills that storey; otherwise rows are
+   taken in order (first = top). The spans in a row must add up to the column
+   count. `name*k` emits token name with span k followed by k−1 covered cells. *)
+
+fits_block    = "fits:", nl, { ws, ident, ws, ident, { ws, fit_kv }, nl } ;
+                (* <row name> <col name> w= h= cx= cy= → placement_fit *)
+fit_kv        = ( "w" | "h" | "cx" | "cy" ), "=", number ;
+
+params_block  = ( "params:" | "placement_params:" ), nl, { ws, param_kv, nl } ;
+param_kv      = ( "width_ratio" | "height_ratio" | "recess" | "bottom_margin_ratio" ), ws, number
+              | ( "mirror_x" | "unify_type_size" | "align_type_bottom" ), ws, bool ;
+
+
+(* ================================================================
+   §7  Placement semantics  (facade_compile.compile_facade_scene)
+   ================================================================ *)
+(*
+  Cells
+    Column c spans X from −total_w/2 + Σw[<c] (negated when mirror_x); row r
+    spans Z from total_h − Σh[≤r] to total_h − Σh[<r]. A span merges columns.
+  Window box (per placed cell)
+    fit = instance fit (placement_fit or instance box in its cell)
+          else placement_fit cell, else {type_ratios or width/height_ratio, centred}.
+    ww = cell.w·width_ratio,  hh = cell.h·height_ratio   (min 0.15 m)
+    x  = cell.x0 + cx_ratio·cell.w (flipped within the cell when mirror_x)
+    z  = cell.z1 − cy_ratio·cell.h                     (box centre)
+  Type regularisation (windows only)
+    unify_type_size   : every window of a (type, span) group gets the group's
+                        median width and height, keeping its centre.
+    align_type_bottom : every window of a (row, type) group gets the group's
+                        median bottom Z.
+  Window build
+    The WDSL IR is refitted to (ww, hh) (WDSL §5) and built at (x0, front−recess, z0).
+    Opening = boundary contour (box for rectangles), grown ~5 mm.
+  Doors
+    width = max(0.25, ww);  top = z0 + max(0.35, hh)
+    bottom = 0 on the ground floor (max floor id), else max(0, z0)
+    arched iff shape == "arched" and arch_rise_ratio > 0.02:
+      r = min(0.5, 2·arch_rise_ratio), snapped to 0.5 when ≥ 0.42
+      rise = min(r·width, 0.6·height)
+    An instance's shape / arch_rise_ratio overrides its door type.
+    Built as frame ring + single wood panel + threshold; opening follows the
+    door outline (arched prism or box).
 *)

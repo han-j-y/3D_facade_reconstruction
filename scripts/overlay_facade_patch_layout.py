@@ -210,6 +210,42 @@ def roi_pool_patches(
     return np.stack(vecs, 0).astype(np.float32)
 
 
+@torch.no_grad()
+def roi_cls_crops(
+    model,
+    facade: Image.Image,
+    boxes: list[list[int]],
+    *,
+    device: torch.device,
+    crop_size: int = 224,
+    batch_size: int = 64,
+) -> np.ndarray:
+    """Per-box crop → DINO CLS token, L2-normalized (same as crop_cls baseline)."""
+    tf = T.Compose(
+        [
+            T.Resize((crop_size, crop_size)),
+            T.ToTensor(),
+            T.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+        ]
+    )
+    w, h = facade.size
+    crops: list[Image.Image] = []
+    for box in boxes:
+        x0, y0, x1, y1 = [int(round(v)) for v in box]
+        x0, y0 = max(0, x0), max(0, y0)
+        x1, y1 = min(w, max(x0 + 1, x1)), min(h, max(y0 + 1, y1))
+        crops.append(facade.crop((x0, y0, x1, y1)))
+
+    feats: list[np.ndarray] = []
+    for start in range(0, len(crops), batch_size):
+        batch = crops[start : start + batch_size]
+        imgs = [tf(base.light_normalize(c, size=crop_size)) for c in batch]
+        x = torch.stack(imgs, 0).to(device)
+        h_out = F.normalize(model(x).float(), dim=-1)
+        feats.append(h_out.cpu().numpy())
+    return np.concatenate(feats, 0).astype(np.float32)
+
+
 def layout_features(boxes: list[list[int]], iw: int, ih: int) -> np.ndarray:
     """Normalized (cx, cy, log-area, aspect) per window."""
     rows = []

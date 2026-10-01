@@ -115,8 +115,28 @@ def parse_args() -> argparse.Namespace:
         "--merge-mode",
         choices=("structural", "ast"),
         default="structural",
-        help="unitize merge: e2e structural columns, or window_ast_predictor "
-        "(centroid bays + vertical same-stack merge)",
+        help="unitize merge: e2e structural columns, or ast "
+        "(scripts/overlay_facade_merge_boxes_ast.py: centroid bays + vertical same-stack merge)",
+    )
+    ap.add_argument(
+        "--merge-adjacent",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="also merge horizontally nearby same-floor panes (default: off; "
+        "containment/IoU only)",
+    )
+    ap.add_argument(
+        "--symmetry",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Zhang-style L–R symmetry repair on type labels after clustering "
+        "(default on; --no-symmetry to skip)",
+    )
+    ap.add_argument(
+        "--twin-mirror-min",
+        type=float,
+        default=0.35,
+        help="min cluster mirror score to attempt twin MERGE in symmetry repair",
     )
     ap.add_argument(
         "--vert-gap",
@@ -125,6 +145,19 @@ def parse_args() -> argparse.Namespace:
         help="vertical merge gap (× median height) when --merge-mode ast",
     )
     ap.add_argument("--prompt", type=str, default="window")
+    ap.add_argument(
+        "--exclude-prompts",
+        type=str,
+        default="car",
+        help="comma SAM3 prompts for non-façade objects; windows/doors on them are dropped ('' = off)",
+    )
+    ap.add_argument("--exclude-threshold", type=float, default=0.5)
+    ap.add_argument(
+        "--exclude-min-cover",
+        type=float,
+        default=0.5,
+        help="drop a window/door box when this fraction of it lies on an excluded-object mask",
+    )
     ap.add_argument("--threshold", type=float, default=0.45)
     ap.add_argument("--min-side", type=int, default=24)
     ap.add_argument("--max-side-frac", type=float, default=0.55)
@@ -278,22 +311,34 @@ def detect_windows(
 
     records = []
     n_mask_box = 0
+    n_clamped = 0
     for i, (box, sc) in enumerate(zip(boxes, scores)):
         det = [float(v) for v in box]
         x0, y0, x1, y1 = det
         used_mask = False
         fill = None
+        mask_xyxy = None
         if masks is not None and i < len(masks):
             m = masks[i]
             if m.ndim == 3:
                 m = m[0]
             ys, xs = np.where(m > 0.5)
             if xs.size >= 16:
-                x0, x1 = float(xs.min()), float(xs.max() + 1)
-                y0, y1 = float(ys.min()), float(ys.max() + 1)
-                fill = float(xs.size) / max(1.0, (x1 - x0) * (y1 - y0))
-                used_mask = True
-                n_mask_box += 1
+                mx0, mx1 = float(xs.min()), float(xs.max() + 1)
+                my0, my1 = float(ys.min()), float(ys.max() + 1)
+                fill = float(xs.size) / max(1.0, (mx1 - mx0) * (my1 - my0))
+                mask_xyxy = [mx0, my0, mx1, my1]
+                # Clamp mask AABB to the detector box so mask bleed cannot inflate it.
+                cx0, cy0 = max(det[0], mx0), max(det[1], my0)
+                cx1, cy1 = min(det[2], mx1), min(det[3], my1)
+                if cx1 - cx0 >= 8 and cy1 - cy0 >= 8:
+                    if (cx0, cy0, cx1, cy1) != (mx0, my0, mx1, my1):
+                        n_clamped += 1
+                    x0, y0, x1, y1 = cx0, cy0, cx1, cy1
+                    used_mask = True
+                    n_mask_box += 1
+                else:
+                    x0, y0, x1, y1 = det
         bw, bh = x1 - x0, y1 - y0
         if bw < min_side or bh < min_side:
             continue
@@ -306,23 +351,134 @@ def detect_windows(
             "box_det_xyxy": [int(det[0]), int(det[1]), int(det[2]), int(det[3])],
             "from_mask": used_mask,
         }
+        if mask_xyxy is not None:
+            rec["box_mask_xyxy"] = [int(v) for v in mask_xyxy]
         if fill is not None:
             rec["mask_fill"] = round(fill, 4)
         records.append(rec)
-    print(f"after size filter: {len(records)}  tight-from-mask={n_mask_box}")
+    print(
+        f"after size filter: {len(records)}  "
+        f"mask∩det={n_mask_box}  clamped_bleed={n_clamped}"
+    )
     return records
+
+
+@torch.no_grad()
+def detect_object_mask(
+    image: Image.Image,
+    *,
+    prompts: list[str],
+    threshold: float,
+    device: torch.device,
+) -> np.ndarray | None:
+    """Union of SAM3 instance masks for non-façade objects (e.g. ``car``)."""
+    if not prompts:
+        return None
+    from transformers import Sam3Model, Sam3Processor
+
+    iw, ih = image.size
+    processor = Sam3Processor.from_pretrained("facebook/sam3")
+    sam = Sam3Model.from_pretrained("facebook/sam3").to(device)
+    sam.eval()
+    union = np.zeros((ih, iw), dtype=bool)
+    for prompt in prompts:
+        inputs = processor(images=image, text=prompt, return_tensors="pt")
+        inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
+        outputs = sam(**inputs)
+        results = processor.post_process_instance_segmentation(
+            outputs,
+            threshold=threshold,
+            mask_threshold=0.5,
+            target_sizes=inputs["original_sizes"].tolist(),
+        )[0]
+        masks = results.get("masks")
+        n = 0
+        if masks is not None:
+            if hasattr(masks, "detach"):
+                masks = masks.detach().float().cpu().numpy()
+            for m in np.asarray(masks):
+                if m.ndim == 3:
+                    m = m[0]
+                union |= m > 0.5
+                n += 1
+        print(f"SAM3 exclude '{prompt}': {n} instances")
+    del sam
+    torch.cuda.empty_cache()
+    return union
+
+
+def drop_boxes_on_mask(
+    records: list[dict[str, Any]],
+    mask: np.ndarray | None,
+    *,
+    min_cover: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split records into (kept, dropped) by the fraction of each box on ``mask``."""
+    if mask is None or not mask.any():
+        return list(records), []
+    kept, dropped = [], []
+    for r in records:
+        x0, y0, x1, y1 = [int(v) for v in r["box_xyxy"]]
+        patch = mask[max(0, y0) : max(0, y1), max(0, x0) : max(0, x1)]
+        cover = float(patch.mean()) if patch.size else 0.0
+        if cover >= min_cover:
+            dropped.append({**r, "exclude_cover": round(cover, 3)})
+        else:
+            kept.append(r)
+    for i, r in enumerate(kept):
+        r["idx"] = i
+    return kept, dropped
+
+
+def draw_excluded(
+    image: Image.Image,
+    mask: np.ndarray,
+    dropped: list[dict[str, Any]],
+    kept: list[dict[str, Any]],
+) -> Image.Image:
+    """Tint excluded-object mask red; dropped boxes red, kept boxes green."""
+    rgb = np.asarray(image.convert("RGB")).astype(np.float32)
+    rgb[mask] = 0.5 * rgb[mask] + 0.5 * np.array([220.0, 40.0, 40.0])
+    out = Image.fromarray(rgb.clip(0, 255).astype(np.uint8))
+    d = ImageDraw.Draw(out)
+    for r in kept:
+        d.rectangle(r["box_xyxy"], outline=(40, 220, 90), width=2)
+    for r in dropped:
+        d.rectangle(r["box_xyxy"], outline=(255, 30, 30), width=4)
+    return out
 
 
 def load_from_index(index_path: Path) -> tuple[Image.Image, list[dict[str, Any]], dict]:
     index = json.loads(index_path.read_text())
     facade = Image.open(index["facade_path"]).convert("RGB")
     windows = []
-    for w in index["windows"]:
+    for i, w in enumerate(index["windows"]):
+        box = [int(v) for v in w["box_xyxy"]]
+        det = w.get("box_det_xyxy")
+        mask_box = w.get("box_mask_xyxy")
+        # Re-apply mask∩det clamp when older indices stored the inflated mask AABB.
+        if det is not None:
+            d = [int(v) for v in det]
+            src = [int(v) for v in (mask_box or box)]
+            x0, y0 = max(d[0], src[0]), max(d[1], src[1])
+            x1, y1 = min(d[2], src[2]), min(d[3], src[3])
+            if x1 - x0 >= 8 and y1 - y0 >= 8:
+                box = [x0, y0, x1, y1]
+            else:
+                box = d
+        raw_id = w.get("idx", w.get("id", i))
+        try:
+            wid = int(raw_id)
+        except (TypeError, ValueError):
+            wid = int(i)
         windows.append(
             {
-                "idx": int(w["idx"]),
+                "idx": wid,
                 "score": float(w.get("score", 1.0)),
-                "box_xyxy": [int(v) for v in w["box_xyxy"]],
+                "box_xyxy": box,
+                "box_det_xyxy": [int(v) for v in det] if det is not None else box,
+                "from_mask": bool(w.get("from_mask", False)),
+                "mask_fill": w.get("mask_fill"),
             }
         )
     return facade, windows, index
@@ -349,6 +505,7 @@ def cluster_units(
     unary_weight: float,
     layout_mode: str = "structural",
     merge_mode: str = "structural",
+    merge_adjacent: bool = False,
     vert_gap: float = 0.55,
     cluster_mode: str = "shape_then_feat",
     k_max_box: int = 6,
@@ -379,7 +536,7 @@ def cluster_units(
     bay_raw: np.ndarray
     if merge_mode == "ast":
         ast_merge = _load(
-            EXP / "window_ast_predictor" / "scripts" / "overlay_facade_merge_boxes.py",
+            ROOT / "scripts" / "overlay_facade_merge_boxes_ast.py",
             "ast_merge",
         )
         merged_boxes, members, bay_raw, _ = ast_merge.merge_adjacent_boxes(
@@ -391,6 +548,7 @@ def cluster_units(
             merge_bays=False,
             col_tol=col_tol,
             merge_vertical=False,
+            adjacent=merge_adjacent,
         )
     else:
         if layout_mode == "structural":
@@ -408,6 +566,7 @@ def cluster_units(
             merge_bays=False,
             col_tol=col_tol,
             structural_col=structural_col,
+            adjacent=merge_adjacent,
         )
     merged_boxes, members = split_member_groups_by_floor(
         work_boxes, merged_boxes, members, floors_raw
@@ -522,6 +681,7 @@ def cluster_units(
         "columns": columns,
         "layout_mode": layout_mode,
         "merge_mode": merge_mode,
+        "merge_adjacent": merge_adjacent,
         "cluster_mode": cluster_mode,
     }
 
@@ -541,6 +701,87 @@ def pick_medoids(feats: np.ndarray, labels: np.ndarray) -> dict[int, int]:
         scores = sim.mean(axis=1)
         medoids[tid] = idxs[int(np.argmax(scores))]
     return medoids
+
+
+def apply_symmetry_repair(
+    facade: Image.Image,
+    boxes: list[list[int]],
+    labels: np.ndarray,
+    feats: np.ndarray,
+    *,
+    labels_box: np.ndarray | None = None,
+    twin_mirror_min: float = 0.35,
+    match_iou: float = 0.15,
+    size_mismatch_sym_gain: float = 0.004,
+) -> tuple[np.ndarray, list[str]]:
+    """L–R facade symmetry repair (twin MERGE + leftover STEAL/JOIN).
+
+    When ``labels_box`` is set, flips that would mix distinct box-geometry
+    groups are reverted (same gate as ``cluster_hierarchy.symmetry_repair_box_gated``).
+    """
+    if len(boxes) < 2:
+        return labels.astype(np.int32), ["symmetry: skipped (<2 units)"]
+
+    walk = _load(
+        ROOT / "scripts" / "walkthrough_symmetry_repair.py",
+        "e2e_sym_walk",
+    )
+    boxes_f = [[float(v) for v in b] for b in boxes]
+    labels_before = labels.astype(np.int32).copy()
+    cx, cy, facade_extent = walk.facade_axis_center(
+        boxes_f, extent_mode="boxes", image_size=facade.size
+    )
+    windows = [
+        {"id": f"u{i:03d}", "box_xyxy": boxes_f[i], "cluster": int(labels_before[i])}
+        for i in range(len(boxes_f))
+    ]
+    labels_after, log, _panels = walk.repair_all_clusters(
+        boxes=boxes_f,
+        labels=[int(x) for x in labels_before.tolist()],
+        feats=feats,
+        windows=windows,
+        facade=facade,
+        axis="v",
+        cx=cx,
+        cy=cy,
+        facade_extent=facade_extent,
+        img_size=facade.size,
+        extent_mode="boxes",
+        twin_mirror_min=twin_mirror_min,
+        match_iou=match_iou,
+        size_mismatch_sym_gain=size_mismatch_sym_gain,
+    )
+    out = np.asarray(labels_after, dtype=np.int32)
+
+    if labels_box is not None and len(labels_box) == len(out):
+        cluster_box_mode: dict[int, int] = {}
+        for lab in sorted(set(int(x) for x in out.tolist())):
+            idxs = [i for i, x in enumerate(out.tolist()) if int(x) == lab]
+            modes = [int(labels_box[i]) for i in idxs]
+            cluster_box_mode[lab] = max(set(modes), key=modes.count)
+        reverted = 0
+        for i in range(len(out)):
+            if int(out[i]) == int(labels_before[i]):
+                continue
+            new_c = int(out[i])
+            if cluster_box_mode.get(new_c) != int(labels_box[i]):
+                out[i] = labels_before[i]
+                reverted += 1
+        if reverted:
+            log.append(f"box-gate: reverted {reverted} symmetry flips across box groups")
+
+    uniq = sorted(set(int(x) for x in out.tolist()))
+    remap = {u: i for i, u in enumerate(uniq)}
+    out = np.asarray([remap[int(x)] for x in out.tolist()], dtype=np.int32)
+    n_before = len(set(int(x) for x in labels_before.tolist()))
+    n_after = len(uniq)
+    changed = sum(
+        1
+        for i in range(len(labels_before))
+        if int(labels_after[i]) != int(labels_before[i])
+    )
+    log.append(f"symmetry: types {n_before}→{n_after}  label_moves={changed}")
+    return out, log
 
 
 class StructurePredictor:
@@ -983,10 +1224,12 @@ def main() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
     # --- 1 detect ---
+    source = args.windows
     if args.from_index is not None:
         facade, raw_windows, index_meta = load_from_index(args.from_index)
         facade_path = Path(index_meta.get("facade_path", facade_path or ""))
         facade_id = str(index_meta.get("facade_id", facade_id))
+        source = str(index_meta.get("source", args.windows))
         print(f"reusing index: {len(raw_windows)} windows")
     else:
         if facade_path is None or not facade_path.is_file():
@@ -998,6 +1241,7 @@ def main() -> None:
                 raise SystemExit(f"missing CMP XML windows: {xml_path}")
             raw_windows = load_cmp_xml_windows(xml_path, facade.size, stem=facade_id)
             print(f"CMP XML windows: {len(raw_windows)} from {xml_path}")
+            source = "xml"
         else:
             raw_windows = detect_windows(
                 facade,
@@ -1007,20 +1251,45 @@ def main() -> None:
                 max_side_frac=args.max_side_frac,
                 device=device,
             )
-        (out_dir / "index_raw.json").write_text(
-            json.dumps(
-                {
-                    "facade_id": facade_id,
-                    "facade_path": str(facade_path),
-                    "source": args.windows,
-                    "n_windows": len(raw_windows),
-                    "windows": raw_windows,
-                },
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
+            source = "sam"
+    exclude_prompts = [p.strip() for p in args.exclude_prompts.split(",") if p.strip()]
+    exclude_mask = None
+    excluded_windows: list[dict[str, Any]] = []
+    if source == "sam" and exclude_prompts:
+        exclude_mask = detect_object_mask(
+            facade,
+            prompts=exclude_prompts,
+            threshold=args.exclude_threshold,
+            device=device,
         )
+        raw_windows, excluded_windows = drop_boxes_on_mask(
+            raw_windows, exclude_mask, min_cover=args.exclude_min_cover
+        )
+        print(
+            f"excluded {len(excluded_windows)} windows on {exclude_prompts}: "
+            f"{[r['exclude_cover'] for r in excluded_windows]}"
+        )
+        if exclude_mask is not None and exclude_mask.any():
+            draw_excluded(facade, exclude_mask, excluded_windows, raw_windows).save(
+                out_dir / "excluded_objects.png"
+            )
+    # Always persist the boxes actually used (incl. mask∩det clamp on reuse).
+    (out_dir / "index_raw.json").write_text(
+        json.dumps(
+            {
+                "facade_id": facade_id,
+                "facade_path": str(facade_path),
+                "source": source,
+                "n_windows": len(raw_windows),
+                "windows": raw_windows,
+                "exclude_prompts": exclude_prompts if source == "sam" else [],
+                "excluded_windows": excluded_windows,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     if len(raw_windows) < 2:
         raise SystemExit("need ≥2 windows")
@@ -1055,6 +1324,7 @@ def main() -> None:
         unary_weight=args.unary_weight,
         layout_mode=args.layout_mode,
         merge_mode=args.merge_mode,
+        merge_adjacent=args.merge_adjacent,
         vert_gap=args.vert_gap,
         cluster_mode=args.cluster_mode,
         k_max_box=args.k_max_box,
@@ -1069,6 +1339,20 @@ def main() -> None:
     members = clustered["members"]
     labels = clustered["labels"]
     feats = clustered["feats"]
+    if args.symmetry:
+        print("symmetry repair…")
+        labels, sym_log = apply_symmetry_repair(
+            facade,
+            merged_boxes,
+            labels,
+            feats,
+            labels_box=clustered.get("labels_box"),
+            twin_mirror_min=args.twin_mirror_min,
+        )
+        clustered["labels"] = labels
+        clustered["symmetry_log"] = sym_log
+        for line in sym_log[-8:]:
+            print(f"  {line}")
     n_types = len(set(int(x) for x in labels.tolist()))
     k_box = (
         len(set(clustered["labels_box"].tolist()))
@@ -1079,6 +1363,8 @@ def main() -> None:
         f"units: {len(raw_boxes)} raw → {len(merged_boxes)} merged  "
         f"cluster={clustered.get('cluster_mode', 'appearance')}  "
         f"merge={clustered.get('merge_mode', 'structural')}  "
+        f"adjacent={'on' if clustered.get('merge_adjacent') else 'off'}  "
+        f"symmetry={'on' if args.symmetry else 'off'}  "
         f"k_box={k_box}  types={n_types}  "
         f"layout={clustered.get('layout_mode', 'centroid')}  "
         f"cols={len(clustered.get('columns') or []) or 'n/a'}"
@@ -1099,6 +1385,11 @@ def main() -> None:
             max_side_frac=min(0.85, args.max_side_frac + 0.25),
             device=device,
         )
+        raw_doors, excluded_doors = drop_boxes_on_mask(
+            raw_doors, exclude_mask, min_cover=args.exclude_min_cover
+        )
+        if excluded_doors:
+            print(f"excluded {len(excluded_doors)} doors on {exclude_prompts}")
         kept_doors = filter_door_boxes(
             raw_doors,
             merged_boxes,

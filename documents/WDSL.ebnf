@@ -1,20 +1,211 @@
 (*
-  WDSL — window DSL concrete syntax  (facade_dsl8)
+  WDSL — window DSL  (facade_e2e, window_compiler vendor copy)
 
-  Authoring language for a single window. Parser: parse_wdsl.py
-  Compiles to window JSON IR consumed by compiler.py.
+  One window = a boundary shape, a frame, derived regions, a muntin program and
+  a recursive pane tree. The same language has three spellings:
 
-  Coordinates: local 2D, x right, y up. Root spans the boundary bbox.
+    A. Window JSON IR        normative. Stored in the façade recovery DSL as
+                             window_types[].structure_ir and compiled by
+                             vendor/window_compiler/compiler.py (compile_spec).
+    B. WDSL text syntax      authoring sugar, parsed by parse_wdsl.py into A.
+    C. Structure tokens      discrete-only serialization predicted by the
+                             structure model (window_ast/structure.py). Stored as
+                             window_types[].structure_tokens; decoded into A with
+                             default continuous values.
+
+  In the pipeline, A is what renders. Editing A (e.g. "shape": "rectangle" →
+  "arch_head") does NOT update C; tokens are a record of the prediction only.
+
+  Coordinates: local 2D, x right, y up, origin at the boundary's lower-left.
   Region u,v ∈ [0,1] are normalized to that region's bounding box
   (u horizontal, v vertical; v=0 bottom, v=1 top).
-
-  Lexer
-    - UTF-8. '#' starts a line comment (to end of line).
-    - Blank lines ignored except as separators.
-    - Keywords are case-sensitive except program op aliases (lowercased).
-    - Blocks `regions:`, `program:`, `output:`, `panes …:` collect subsequent
-      indented lines until the next top-level keyword.
+  Inside a façade the boundary size is overwritten per placement (see §5).
 *)
+
+
+(* ================================================================
+   §1  Shared lexical items
+   ================================================================ *)
+
+nl            = ? newline ? ;
+ws            = { " " | "\t" } ;
+comment       = "#", { ? any char except newline ? } ;
+ident         = letter, { letter | digit | "_" } ;
+letter        = "A".."Z" | "a".."z" ;
+digit         = "0".."9" ;
+int           = digit, { digit } ;
+number        = [ "-" ], digit, { digit }, [ ".", digit, { digit } ],
+                [ ( "e" | "E" ), [ "+" | "-" ], digit, { digit } ] ;
+string        = '"', { ? any char except '"' ? }, '"'
+              | "'", { ? any char except "'" ? }, "'" ;
+rel_base      = "min_side" | "max_side" | "width" | "height" ;
+
+shape_name    = "rectangle" | "circle" | "ellipse" | "semicircle"
+              | "quadrant" | "triangle" | "polygon"
+              | "trapezoid" | "trapezoid_head"
+              | "eyebrow" | "segmental_arch"
+              | "arch_head" | "rect_eyebrow" | "springline_arch"
+              | "head_body"
+              | "composite" | "spline" ;           (* composite, spline: JSON IR only *)
+
+
+(* ================================================================
+   §2  Window JSON IR  (normative)
+   JSON objects are written  { "key": value, ... }  ; "?" marks optional keys.
+   ================================================================ *)
+
+window_ir     = "{", '"type": "window"',
+                     [ ',"debug": ', json_bool ],
+                     ',"boundary": ', boundary,
+                     [ ',"frame": ', frame ],
+                     [ ',"regions": [', [ region_def, { ",", region_def } ], "]" ],
+                     [ ',"program": [', [ op, { ",", op } ], "]" ],
+                     [ ',"panes": ', ( pane_tree | "[", pane_tree, { ",", pane_tree }, "]" ) ],
+                     [ ',"output": ', output ],
+                "}" ;
+
+(* ---- scalars ---- *)
+scalar_json   = json_number
+              | "{", '"relative_to": ', ( '"absolute"' | '"', rel_base, '"' ),
+                     ',', ( '"value": ' | '"prior": ' ), json_number, "}" ;
+coord_json    = json_number                   (* 0..1 → normalized in region; else absolute *)
+              | "{", '"value": ', json_number, [ ',"relative_to": "normalized"' ], "}"
+              | scalar_json ;
+
+(* ---- boundary (id is always "root") ---- *)
+boundary      = "{", '"id": "root"', ',"shape": "', shape_name, '"', ',"params": ', shape_params, "}" ;
+
+(* shape_params by shape  (defaults as in shapes.build_shape_region):
+
+     rectangle        width=1, height=1
+     circle           diameter=1                      (alias size)
+     ellipse          width=1, height=1
+     semicircle       diameter=1 (alias width), flat="bottom"|"top"
+     quadrant         radius=1 (alias size), corner="bl"|"br"|"tl"|"tr"
+     triangle         width=1, height=1, kind="iso"|"right"
+     polygon          sides=6, width=1, height=width, radius=min(w,h)/2,
+                      orient="pointy"|"flat"  or  rotation=<radians>
+     trapezoid,
+     trapezoid_head   width=1, height=0.35*width (alias rise),
+                      top_width=0.65*width (alias head_top_width); top_width=0 → pointed
+     eyebrow,
+     segmental_arch   width=1, rise=0.2*width (aliases arch_height, height);
+                      rise is clamped just under width/2
+     arch_head,
+     rect_eyebrow,
+     springline_arch  width=1, rise=0.18*width (alias arch_height),
+                      and EITHER body_height (alias body)
+                      OR height = TOTAL height (body_height = height − rise);
+                      default body_height=1.  Contour = rectangle body + segmental head.
+     head_body        width=1, body_height=1, head_height=0.5*width,
+                      head="semicircle"|"arch"|"segmental"|"eyebrow"
+                          |"quadrant"|"trapezoid"|"triangle"|"pointed"|"pointed_arch",
+                      top_width (trapezoid head).  Arched heads: head_height is the
+                      rise, clamped to [0.25*width, width/2]; width/2 → semicircle.
+                      triangle|pointed|pointed_arch → trapezoid head, top_width=0.
+     composite        points=[[x,y],...]  (alias contour)
+                      OR parts=[ {"shape":..., "params":{...}}, ... ]  (contours merged)
+     spline           points=[[x,y],...]  (polyline, default unit square)
+
+   Any shape may also carry "contour": [[x,y],...], which overrides the generated
+   outline.  Discrete keys sides / orient / head / flat / corner are the only
+   boundary params that appear in structure tokens (§4). *)
+
+(* ---- frame ---- *)
+frame         = "{", [ '"thickness": ', scalar_json ],       (* default 0.06 (absolute) *)
+                     [ ',"depth": ', scalar_json ],          (* default 0.08 *)
+                     [ ',"material": "', material, '"' ],    (* default "painted_wood" *)
+                "}" ;
+material      = "painted_wood" | "frame" | "muntin" | "glass" | "wall"
+              | "door_wood" | "door_frame" | "threshold" | ident ;   (* unknown → frame *)
+
+(* ---- regions (evaluated in order; "root" is the boundary) ---- *)
+region_def    = "{", '"id": "', ident, '"',
+                     ',"from": "', ident, '"',              (* default "root" *)
+                     ',"operation": "', region_op, '"',
+                     [ ',"amount": ', scalar_json ],         (* inset only *)
+                     [ ',"bounds": ', uv_box ],              (* crop only; alias "crop" *)
+                "}" ;
+region_op     = "inset" | "crop" | "body" | "head" ;
+uv_box        = "{", [ '"u0": ', json_number ], [ ',"v0": ', json_number ],
+                     [ ',"u1": ', json_number ], [ ',"v1": ', json_number ], "}" ;
+                (* defaults 0,0,1,1 *)
+(* body / head: split `from` at the springline (params.body_height); valid only for
+   arch_head | rect_eyebrow | springline_arch | head_body boundaries.
+   The muntin clip region is "glass" if defined, else the first non-root region. *)
+
+(* ---- program (muntin ops, executed in order) ---- *)
+op            = "{", '"op": "', op_name, '"', { ",", op_field }, "}" ;
+op_name       = "define_region" | "inset"
+              | "split_vertical" | "split_horizontal" | "add_grid"
+              | "split_radial" | "insert_shape"
+              | "define_anchor" | "connect"
+              | "clip" | "trim" | "mirror" | "repeat" | "delete" | "merge" ;
+
+(* fields per op  (region = target region id; optional bounds/crop uv_box narrows it):
+
+     define_region, inset   id, from, operation="inset"|"crop", amount | bounds
+     split_vertical         region, x: coord_json, id="v_split"
+     split_horizontal       region, y: coord_json, id="h_split"
+                            (id="seam" marks the head/body junction; see §4)
+     add_grid               region, vertical|columns=1, horizontal|rows=1, id="grid"
+                            → equally spaced full-length bars
+     split_radial           region, ox=0.5, oy=0.5 (normalized origin),
+                            angles=[deg,...] | arc_start, arc_end (deg), count
+                            | count=4, angle_offset (rad),
+                            start_radius | offset (scalar) | from_arc=<arc id>, id="rad"
+     insert_shape           region, shape="line": u0=0.2 v0=0.5 u1=0.8 v1=0.5
+                                    shape="arc":  cx=0.5 cy=0, segments=16, id="arc",
+                                                  rise (+chord=1)   segmental arc, or
+                                                  radius=0.2, angle_start=0, angle_end=π
+     define_anchor          id, kind="point"|"center", region + u,v  |  at=[x,y]
+     connect                from, to  (anchor id | {"anchor":id} | {"at":[x,y]}),
+                            region?, id="connect"
+     clip                   boundary=<region id>        clip all segments
+     trim                   mask=<region id>, target?   clip segments with id prefix
+     mirror                 axis="y"(left↔right)|"x"(top↔bottom), region?, target?
+     repeat                 program|body=[op,...], count=1, dx=0, dy=0, region?
+     delete                 target=<segment id or id prefix>
+     merge                  no-op
+*)
+
+(* ---- recursive pane tree ---- *)
+pane_tree     = "{", [ '"region": "', ident, '"' ],        (* default "glass" *)
+                     [ ',"root": "', ident, '"' ],         (* default "root" *)
+                     ',"rules": {', pane_rule, { ",", pane_rule }, "}",
+                "}" ;
+pane_rule     = '"', ident, '": ', ( eps_rule | split_rule | grid_rule ) ;
+eps_rule      = '{"op": "eps"}' ;                          (* leaf, no muntins *)
+split_rule    = "{", '"op": "split"', ',"axis": "', ( "v" | "h" ), '"',
+                     ',"at": ', json_number,               (* fraction in (0,1) *)
+                     ',"children": ["', ident, '","', ident, '"]', "}" ;
+                (* v: children [left, right];  h: children [bottom, top] *)
+grid_rule     = "{", '"op": "grid"', ',"vertical": ', json_int, ',"horizontal": ', json_int,
+                     [ ',"children": [', '"', ident, '"', { ',"', ident, '"' }, "]" ], "}" ;
+                (* V vertical × H horizontal equally spaced bars.  Optional children:
+                   exactly (V+1)*(H+1) names, row-major from bottom-left.
+                   A list of pane trees (e.g. one for body, one for head) is allowed. *)
+
+(* ---- output ---- *)
+output        = "{", [ '"muntin_width": ', scalar_json ],      (* default 0.02 *)
+                     [ ',"muntin_depth": ', scalar_json ],     (* default 0.04 *)
+                     [ ',"glass_thickness": ', scalar_json ],  (* default 0.01 *)
+                "}" ;
+(* Values emitted by the structure model / decoder (§4):
+     frame  {thickness: 0.06*min_side, depth: 0.08, material: painted_wood}
+     output {muntin_width: 0.025*min_side, muntin_depth: 0.035, glass_thickness: 0.01}
+     glass  = inset(root, 0.06*min_side)                                      *)
+
+json_bool     = "true" | "false" ;
+json_number   = number ;
+json_int      = int ;
+
+
+(* ================================================================
+   §3  WDSL text syntax  (authoring sugar → §2)
+   Lexer: UTF-8, '#' comments, blank lines separate. Blocks `regions:`,
+   `program:`, `panes …:`, `output:` collect following indented lines.
+   ================================================================ *)
 
 document      = { comment | nl }, window_line, { nl },
                 [ frame_line, { nl } ],
@@ -24,156 +215,118 @@ document      = { comment | nl }, window_line, { nl },
                 [ output_block ],
                 [ "debug", nl ] ;
 
-nl            = ? newline ? ;
-comment       = "#", { ? any char except newline ? } ;
-ident         = letter, { letter | digit | "_" } ;
-letter        = "A".."Z" | "a".."z" ;
-digit         = "0".."9" ;
-number        = [ "-" ], digit, { digit }, [ ".", digit, { digit } ],
-                [ ( "e" | "E" ), [ "+" | "-" ], digit, { digit } ] ;
-rel_base      = "min_side" | "max_side" | "width" | "height" ;
-scalar        = number
-              | number, [ ws ], "*", [ ws ], rel_base ;
-ws            = { " " | "\t" } ;
-
-(* ——— window (root boundary) ——— *)
+scalar        = number | number, [ ws ], "*", [ ws ], rel_base ;
 
 window_line   = "window", ws, shape_call ;
 shape_call    = shape_name, [ "(", [ arg_list ], ")" ] ;
-shape_name    = "rectangle" | "circle" | "ellipse" | "semicircle"
-              | "quadrant" | "triangle" | "polygon" | "trapezoid"
-              | "trapezoid_head" | "eyebrow" | "segmental_arch"
-              | "head_body" | "arch_head" | "rect_eyebrow"
-              | "springline_arch" ;
 arg_list      = arg, { ",", arg } ;
 arg           = [ ident, "=" ], value ;
 value         = scalar | ident | string ;
-string        = '"', { ? any char except '"' ? }, '"'
-              | "'", { ? any char except "'" ? }, "'" ;
-
-(* Positional / keyword args by shape (parser defaults in parentheses):
-
-     rectangle(width, height)                  (1, 1)   aliases: w, h
-     circle(diameter)                          (1)      aliases: size
-     ellipse(width, height)
-     semicircle(diameter, flat=bottom)                  aliases: size
-     quadrant(radius, corner=bl)                        aliases: size
-     triangle(width, height, kind=iso)         → IR shape trapezoid, top_width=0
-     polygon(sides, width, height)                      aliases: size
+(* positional args:
+     rectangle(width, height)          circle(diameter)      ellipse(width, height)
+     semicircle(diameter, flat=)       quadrant(radius, corner=)
+     triangle(width, height, kind=)    polygon(sides, width, height)
      trapezoid(width, height, top_width)
-     eyebrow / segmental_arch(width, rise)
-     head_body(width, body, head=semicircle, head_height)
-       head ∈ { semicircle, trapezoid, triangle, pointed, pointed_arch }
-       triangle|pointed|pointed_arch → trapezoid head with top_width=0
-     arch_head / rect_eyebrow / springline_arch(width, body, rise)
-*)
-
-(* ——— frame ——— *)
+     eyebrow | segmental_arch(width, rise)
+     arch_head | rect_eyebrow | springline_arch(width, body, rise)
+     head_body(width, body, head=, head_height=)
+   Use body= for arch_head in text; the parser defaults body_height=1 when only
+   height= is given (JSON IR `height` = total height is honoured by the compiler). *)
 
 frame_line    = "frame", { ws, frame_kv } ;
-frame_kv      = "thickness", ws, scalar
-              | "depth", ws, scalar
-              | "material", ws, ident ;
-(* defaults: thickness=0.06*min_side, depth=0.08, material=painted_wood *)
-
-(* ——— regions (declarative zone rules) ——— *)
+frame_kv      = ( "thickness" | "depth" ), ws, scalar | "material", ws, ident ;
 
 regions_block = "regions:", nl, { ws, region_line, nl } ;
 region_line   = ident, ws, "=", ws, region_rhs ;
-region_rhs    = "inset", "(", parent, ",", scalar, ")"
-              | "crop", "(", parent, ",", crop_spec, ")"
-              | "body", "(", parent, ")"
-              | "head", "(", parent, ")" ;
-parent        = ident ;   (* "root" is the boundary; usually glass = inset(root, …) *)
-crop_spec     = number, ",", number, ",", number, ",", number
+region_rhs    = "inset", "(", ident, ",", scalar, ")"
+              | "crop", "(", ident, ",", crop_spec, ")"
+              | "body", "(", ident, ")"
+              | "head", "(", ident, ")" ;
+crop_spec     = number, ",", number, ",", number, ",", number          (* u0,v0,u1,v1 *)
               | crop_kw, { ",", crop_kw } ;
 crop_kw       = ( "u0" | "v0" | "u1" | "v1" | "v" ), "=", number ;
-(* crop positional: u0, v0, u1, v1.  crop(parent, v1=0.72) → [0,0,1,0.72] *)
-
-(* ——— program (muntin ops, in order) ——— *)
 
 program_block = "program:", nl, { ws, program_line, nl } ;
-program_line  = grid_stmt | split_v_stmt | split_h_stmt | seam_stmt
-              | radial_stmt | arc_stmt | lunette_stmt
-              | anchor_stmt | connect_stmt | mirror_stmt ;
-
-grid_stmt     = ( "grid" | "add_grid" ), ws, ident, ws, int, [ ws ], "x", [ ws ], int ;
-split_v_stmt  = ( "split_v" | "split_vertical" ), ws, ident, [ ws, x_pos ] ;
-split_h_stmt  = ( "split_h" | "split_horizontal" ), ws, ident, [ ws, y_pos ] ;
-seam_stmt     = "seam", ws, ident, [ ws, ( "top" | "upper" | "bottom" | "lower" | "base" ) ] ;
-                (* default: y=1 (top of region), except region=head → y=0 *)
-radial_stmt   = ( "split_radial" | "radial" | "fan" ), ws, ident, { ws, radial_opt } ;
-radial_opt    = int
-              | "count", ws, int
-              | "origin", ws, number, ws, number
-              | "from", ws, number, ws, number
-              | "from_arc", ws, ident
-              | "from", ws, ident
-              | "arc", ws, number, ws, number
-              | "angles", { ws, number }
-              | "offset", ws, scalar
-              | "rotate", ws, number ;
-                (* fan defaults: origin 0.5 0, arc 45 135, count 3 *)
-arc_stmt      = "arc", ws, ident, [ ws, ident ], { ws, arc_opt } ;
-arc_opt       = ( "origin" | "center" | "at" ), ws, number, ws, number
-              | "radius", ws, scalar
-              | "rise", ws, scalar
-              | "eyebrow", ws, scalar
-              | "from", ws, number
-              | "to", ws, number
-              | "semicircle" | "half"
-              | "segments", ws, int ;
-lunette_stmt  = "lunette", ws, ident, { ws, lunette_opt } ;
-lunette_opt   = "hub", ws, scalar | "count", ws, int | "arc", ws, number, ws, number ;
-                (* expands to arc hub + fan from_arc hub *)
-anchor_stmt   = "anchor", ws, ident, ws, ident, ws, number, ws, number ;
-                (* anchor <id> <region> <u> <v> *)
-connect_stmt  = "connect", ws, ident, ws, ident, ws, ident, [ ws, ident ] ;
-                (* connect <id> <from> <to> [region=glass] *)
-mirror_stmt   = "mirror", ws, ( "x" | "y" ), [ ws, ident ] ;
-
+program_line  = ( "grid" | "add_grid" ), ws, ident, ws, int, [ ws ], "x", [ ws ], int
+              | ( "split_v" | "split_vertical" ), ws, ident, [ ws, x_pos ]
+              | ( "split_h" | "split_horizontal" ), ws, ident, [ ws, y_pos ]
+              | "seam", ws, ident, [ ws, ( "top" | "upper" | "bottom" | "lower" | "base" ) ]
+              | ( "split_radial" | "radial" | "fan" ), ws, ident, { ws, radial_opt }
+              | "arc", ws, ident, [ ws, ident ], { ws, arc_opt }
+              | "lunette", ws, ident, { ws, lunette_opt }
+              | "anchor", ws, ident, ws, ident, ws, number, ws, number     (* id region u v *)
+              | "connect", ws, ident, ws, ident, ws, ident, [ ws, ident ]  (* id from to [region] *)
+              | "mirror", ws, ( "x" | "y" ), [ ws, ident ] ;
 x_pos         = number | "left" | "l" | "right" | "r" | "x=", scalar ;
 y_pos         = number | "top" | "bottom" | "y=", scalar ;
-int           = digit, { digit } ;
-
-(* ——— recursive pane grammar ——— *)
+radial_opt    = int | "count", ws, int | ( "origin" | "from" ), ws, number, ws, number
+              | ( "from_arc" | "from" ), ws, ident | "arc", ws, number, ws, number
+              | "angles", { ws, number } | "offset", ws, scalar | "rotate", ws, number ;
+arc_opt       = ( "origin" | "center" | "at" ), ws, number, ws, number
+              | ( "radius" | "rise" | "eyebrow" ), ws, scalar
+              | ( "from" | "to" ), ws, number | "semicircle" | "half" | "segments", ws, int ;
+lunette_opt   = "hub", ws, scalar | "count", ws, int | "arc", ws, number, ws, number ;
 
 panes_block   = "panes", [ ws, ident ], [ ":" ], nl, { ws, pane_line, nl } ;
-                (* default region = glass *)
 pane_line     = "@root", ws, ident
               | ident, ws, "eps"
               | ident, ws, "split", "(", ( "v" | "h" ), "=", number, ")", ws, ident, ws, ident
               | ident, ws, "grid", "(", int, [ ws ], "x", [ ws ], int, ")", { ws, ident } ;
 
-(* split(v=t): vertical split at fraction t; children left, right.
-   split(h=t): horizontal split at fraction t; children bottom, top.
-   eps: leaf (no further muntins).
-   grid(CxR): C vertical bars × R horizontal bars; optional named children. *)
+output_block  = "output:", nl, { ws, ( "muntin_width" | "muntin_depth" | "glass_thickness" ),
+                                 ws, scalar, nl } ;
 
-(* ——— output ——— *)
 
-output_block  = "output:", nl, { ws, ident, ws, scalar, nl } ;
-(* recognized keys: muntin_width, muntin_depth, glass_thickness
-   defaults: 0.025*min_side, 0.04, 0.01 *)
+(* ================================================================
+   §4  Structure tokens  (structure-model vocabulary; no continuous values)
+   Specials: <pad> <bos> <eos> <unk>.  Keywords: BOUNDARY FRAME REGION PROGRAM
+   OP OUTPUT PANES RULE END.  Other tokens are key=value strings.
+   ================================================================ *)
 
-(* ——— compiled JSON IR (abstract syntax the compiler actually runs) ———
+token_seq     = "BOUNDARY", "shape=" shape_name, { boundary_attr },
+                "REGION", { region_tok },
+                "PROGRAM", "n=" int, { op_tok },          (* exactly n op_tok *)
+                { panes_tok },
+                "END" ;
+boundary_attr = "sides=" int | "orient=" ident | "head=" ident
+              | "flat=" ident | "corner=" ident ;
+region_tok    = "id=" ident, "from=" ident, "operation=" region_op, [ "has_bounds=1" ] ;
+op_tok        = "OP", ( "op=seam", "R=" ident
+                      | "op=" op_name, [ "id=" ident ], [ "R=" ident ], [ "shape=" ident ],
+                        [ "V=" int ], [ "H=" int ], [ "count=" int ],
+                        [ "segments=" int ], [ "from_arc=" ident ] ) ;
+panes_tok     = "PANES", "region=" ident, "root=" ident, { rule_tok } ;
+rule_tok      = "RULE", "id=" ident,
+                ( "op=eps"
+                | "op=grid", "V=" int, "H=" int
+                | "op=split", "axis=" ( "v" | "h" ), "nc=" int, { "c" int "=" ident } ) ;
 
-  WDSL is a subset of the JSON IR. Extra JSON-only program ops exist in
-  operations.py: define_region, inset, insert_shape(line), clip, trim,
-  repeat, delete, merge.
+(* Serialization canonicalizes panes: through-crosses are rewritten H-then-V and
+   full rectangular through-grids collapse to one  op=grid V H  rule.
+   Rules are listed root-first (DFS).
+   Decoding fills continuous defaults: boundary params (e.g. arch_head
+   width=1 height=1.4 rise=0.35; rectangle 1×1.4), inset 0.06*min_side,
+   split at=0.5, seam → split_horizontal id=seam y=1 (body) / y=0 (head),
+   split_radial ox=0.5 oy=0 count=3 arc 20..160°, insert_shape arc hub
+   radius 0.25*min_side, plus the frame/output values listed in §2. *)
 
-  {
-    "type": "window",
-    "debug": bool,
-    "boundary": { "id": "root", "shape": <shape_name>, "params": { ... } },
-    "frame": { "thickness": <scalar|rel>, "depth": number, "material": string },
-    "regions": [ { "id", "from", "operation": inset|crop|body|head,
-                   "amount"?, "bounds"? } ],
-    "program": [ { "op": add_grid|split_vertical|split_horizontal|split_radial|
-                         insert_shape|define_anchor|connect|mirror|..., ... } ],
-    "panes": { "region", "root", "rules": { <id>: { "op": eps|split|grid, ... } } },
-    "output": { "muntin_width", "muntin_depth", "glass_thickness" }
-  }
 
-  rel scalar JSON: { "relative_to": min_side|max_side|width|height, "value": number }
+(* ================================================================
+   §5  Window IR inside a façade  (facade_compile.py / facade_spec.py)
+   ================================================================ *)
+(*
+  - Only structure is taken from the IR; size comes from the placement.
+    fit_window_ir_to_bounds(ir, ww, hh, preserve_aspect=false) sets
+      rectangle → width, height;  circle → diameter=min(ww,hh);
+      arch_head family → rise scaled with width (≤ width/2, ≤ 0.9*hh),
+                          body_height = hh − rise;
+      head_body → head_height scaled, body_height = hh − head;
+      trapezoid(_head) → top_width scaled;  eyebrow → rise = hh (≤ width/2);
+    then width/height are written to the fitted size.
+  - Native size (for aspect): circle diameter; compound heads without height =
+    body_height + rise/head_height; else (width, height).
+  - Wall opening: rectangle boundaries cut a box, every other boundary cuts a
+    prism following the root contour; both are grown ~5 mm to clear the frame.
+  - Frame, muntins and glass are built from the compiled context at the
+    placement origin, recessed by placement_params.recess.
 *)

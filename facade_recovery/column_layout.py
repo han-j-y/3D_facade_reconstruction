@@ -394,6 +394,282 @@ def _expand_unit_colspan(
         u["colspan"] = max(1, hi - lo)
 
 
+def _interval_overlap_frac(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Intersection length / min(widths); 0 if no overlap."""
+    lo = max(a[0], b[0])
+    hi = min(a[1], b[1])
+    inter = hi - lo
+    if inter <= 0:
+        return 0.0
+    wa = max(1e-6, a[1] - a[0])
+    wb = max(1e-6, b[1] - b[0])
+    return float(inter) / min(wa, wb)
+
+
+class _UnionFind:
+    def __init__(self, n: int) -> None:
+        self.p = list(range(n))
+        self.r = [0] * n
+
+    def find(self, x: int) -> int:
+        while self.p[x] != x:
+            self.p[x] = self.p[self.p[x]]
+            x = self.p[x]
+        return x
+
+    def union(self, a: int, b: int) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra == rb:
+            return
+        if self.r[ra] < self.r[rb]:
+            self.p[ra] = rb
+        elif self.r[ra] > self.r[rb]:
+            self.p[rb] = ra
+        else:
+            self.p[rb] = ra
+            self.r[ra] += 1
+
+
+def infer_bays_overlap_merge(
+    boxes: list[list[int]],
+    *,
+    iw: int,
+    overlap_thr: float = 0.80,
+    void_gap_frac: float = 0.0,
+    min_col_px: float = 8.0,
+    min_width_frac: float = 0.40,
+    max_width_frac: float = 2.00,
+) -> dict[str, Any]:
+    """Bay columns from typical-width seeds → overlap merge → optional void cleanup.
+
+    1. Seed only boxes with width in ``[min_width_frac, max_width_frac] × median``
+       (drops thin false hits and multi-bay-spanning wide boxes as bay *definers*).
+    2. Merge seeds whose intervals overlap by ≥ ``overlap_thr`` of the smaller width.
+    3. Optional void cleanup when ``void_gap_frac > 0``.
+    4. Expand column bounds to gap midpoints; assign *all* boxes (incl. filtered) by overlap.
+
+    Returns ``columns``, per-box ``bay`` labels, and intermediate envelopes for debug.
+    """
+    n = len(boxes)
+    if n == 0:
+        return {
+            "columns": [(0.0, float(iw))],
+            "bay": [],
+            "seeds": [],
+            "seed_indices": [],
+            "dropped_seed_indices": [],
+            "envelopes_overlap": [],
+            "envelopes_final": [],
+        }
+
+    seeds = [(float(b[0]), float(b[2])) for b in boxes]
+    widths = [max(1.0, float(b[2] - b[0])) for b in boxes]
+    med_box_w = float(np.median(widths))
+    w_lo = min_width_frac * med_box_w
+    w_hi = max_width_frac * med_box_w
+    seed_indices = [i for i, w in enumerate(widths) if w_lo <= w <= w_hi]
+    dropped_seed_indices = [i for i in range(n) if i not in set(seed_indices)]
+    if not seed_indices:
+        seed_indices = list(range(n))
+        dropped_seed_indices = []
+
+    uf = _UnionFind(n)
+    for a, i in enumerate(seed_indices):
+        for j in seed_indices[a + 1 :]:
+            if _interval_overlap_frac(seeds[i], seeds[j]) >= overlap_thr:
+                uf.union(i, j)
+
+    groups: dict[int, list[int]] = {}
+    for i in seed_indices:
+        groups.setdefault(uf.find(i), []).append(i)
+
+    envelopes_overlap: list[tuple[float, float]] = []
+    members_overlap: list[list[int]] = []
+    for idxs in groups.values():
+        lo = min(seeds[i][0] for i in idxs)
+        hi = max(seeds[i][1] for i in idxs)
+        envelopes_overlap.append((lo, hi))
+        members_overlap.append(sorted(idxs))
+
+    order = sorted(range(len(envelopes_overlap)), key=lambda k: envelopes_overlap[k][0])
+    envelopes_overlap = [envelopes_overlap[k] for k in order]
+    members_overlap = [members_overlap[k] for k in order]
+
+    # Merge overlapping envelopes if the union is still a plausible single-bay width
+    # (e.g. same-column panes with a small x-shift across floors).
+    def _merge_overlapping_envelopes(
+        envs: list[tuple[float, float]],
+        mems: list[list[int]],
+        *,
+        max_union_w: float,
+        thr: float,
+    ) -> tuple[list[tuple[float, float]], list[list[int]]]:
+        if not envs:
+            return [], []
+        uf_e = _UnionFind(len(envs))
+        for i in range(len(envs)):
+            for j in range(i + 1, len(envs)):
+                if _interval_overlap_frac(envs[i], envs[j]) < thr:
+                    continue
+                union_w = max(envs[i][1], envs[j][1]) - min(envs[i][0], envs[j][0])
+                if union_w <= max_union_w:
+                    uf_e.union(i, j)
+        groups_e: dict[int, list[int]] = {}
+        for i in range(len(envs)):
+            groups_e.setdefault(uf_e.find(i), []).append(i)
+        out_e: list[tuple[float, float]] = []
+        out_m: list[list[int]] = []
+        for idxs in groups_e.values():
+            lo = min(envs[i][0] for i in idxs)
+            hi = max(envs[i][1] for i in idxs)
+            mem: list[int] = []
+            for i in idxs:
+                mem.extend(mems[i])
+            out_e.append((lo, hi))
+            out_m.append(sorted(mem))
+        order_e = sorted(range(len(out_e)), key=lambda k: out_e[k][0])
+        return [out_e[k] for k in order_e], [out_m[k] for k in order_e]
+
+    envelopes_overlap, members_overlap = _merge_overlapping_envelopes(
+        envelopes_overlap,
+        members_overlap,
+        max_union_w=w_hi,
+        thr=0.15,
+    )
+
+    # Wide-box evidence: a box that substantially covers two adjacent envelopes
+    # (e.g. one opening detected as a double-wide) → merge those bays.
+    def _merge_bays_covered_by_wide(
+        envs: list[tuple[float, float]],
+        mems: list[list[int]],
+        *,
+        cover_frac: float = 0.55,
+    ) -> tuple[list[tuple[float, float]], list[list[int]]]:
+        if len(envs) < 2:
+            return envs, mems
+        uf_e = _UnionFind(len(envs))
+        for b in boxes:
+            bw = max(1.0, float(b[2] - b[0]))
+            if bw <= w_hi:
+                continue
+            interval = (float(b[0]), float(b[2]))
+            covered = []
+            for ei, env in enumerate(envs):
+                ew = max(1e-6, env[1] - env[0])
+                inter = max(0.0, min(interval[1], env[1]) - max(interval[0], env[0]))
+                if inter / ew >= cover_frac:
+                    covered.append(ei)
+            for a in range(len(covered)):
+                for c in covered[a + 1 :]:
+                    i, j = sorted((covered[a], c))
+                    if j != i + 1:
+                        continue
+                    # Require a real mullion gap (non-overlapping envelopes).
+                    # Overlapping envelopes are usually floor-to-floor x-drift, not
+                    # a double that a wide box should collapse (see cmp_b0010 c2).
+                    if envs[j][0] < envs[i][1]:
+                        continue
+                    uf_e.union(i, j)
+        groups_e: dict[int, list[int]] = {}
+        for i in range(len(envs)):
+            groups_e.setdefault(uf_e.find(i), []).append(i)
+        out_e: list[tuple[float, float]] = []
+        out_m: list[list[int]] = []
+        for idxs in groups_e.values():
+            lo = min(envs[i][0] for i in idxs)
+            hi = max(envs[i][1] for i in idxs)
+            mem: list[int] = []
+            for i in idxs:
+                mem.extend(mems[i])
+            out_e.append((lo, hi))
+            out_m.append(sorted(set(mem)))
+        order_e = sorted(range(len(out_e)), key=lambda k: out_e[k][0])
+        return [out_e[k] for k in order_e], [out_m[k] for k in order_e]
+
+    envelopes_overlap, members_overlap = _merge_bays_covered_by_wide(
+        envelopes_overlap, members_overlap
+    )
+
+    # Void cleanup (optional): merge adjacent envelopes separated by a thin gap.
+    env_widths = [max(1.0, hi - lo) for lo, hi in envelopes_overlap]
+    med_w = float(np.median(env_widths)) if env_widths else med_box_w
+    if void_gap_frac > 0:
+        max_void = max(min_col_px, void_gap_frac * med_w)
+        merged_env: list[tuple[float, float]] = []
+        merged_mem: list[list[int]] = []
+        for env, mem in zip(envelopes_overlap, members_overlap):
+            if not merged_env:
+                merged_env.append(env)
+                merged_mem.append(list(mem))
+                continue
+            prev_lo, prev_hi = merged_env[-1]
+            gap = env[0] - prev_hi
+            if gap <= max_void:
+                merged_env[-1] = (prev_lo, max(prev_hi, env[1]))
+                merged_mem[-1].extend(mem)
+            else:
+                merged_env.append(env)
+                merged_mem.append(list(mem))
+    else:
+        max_void = 0.0
+        merged_env = list(envelopes_overlap)
+        merged_mem = [list(m) for m in members_overlap]
+
+    envelopes_final = [(lo, hi) for lo, hi in merged_env]
+    n_bays = len(envelopes_final)
+    if n_bays == 0:
+        return {
+            "columns": [(0.0, float(iw))],
+            "bay": [0] * n,
+            "seeds": seeds,
+            "seed_indices": seed_indices,
+            "dropped_seed_indices": dropped_seed_indices,
+            "envelopes_overlap": envelopes_overlap,
+            "envelopes_final": envelopes_final,
+        }
+
+    # Column splits at mid-gaps; outer margin = half median gap (or half med_w).
+    gaps = [
+        max(0.0, envelopes_final[i + 1][0] - envelopes_final[i][1])
+        for i in range(n_bays - 1)
+    ]
+    med_gap = float(np.median(gaps)) if gaps else 0.5 * med_w
+    outer = max(min_col_px * 0.5, med_gap / 2.0 if med_gap > 0 else 0.25 * med_w)
+    facade_left = max(0.0, envelopes_final[0][0] - outer)
+    facade_right = min(float(iw), envelopes_final[-1][1] + outer)
+    splits = [
+        0.5 * (envelopes_final[i][1] + envelopes_final[i + 1][0])
+        for i in range(n_bays - 1)
+    ]
+    columns: list[tuple[float, float]] = []
+    for i in range(n_bays):
+        xl = facade_left if i == 0 else splits[i - 1]
+        xr = facade_right if i == n_bays - 1 else splits[i]
+        if xr - xl < min_col_px:
+            cx = 0.5 * (envelopes_final[i][0] + envelopes_final[i][1])
+            half = max(min_col_px / 2.0, (envelopes_final[i][1] - envelopes_final[i][0]) / 2.0)
+            xl, xr = cx - half, cx + half
+        columns.append((float(xl), float(xr)))
+
+    bay = [assign_box_to_columns(b, columns)[0] for b in boxes]
+    return {
+        "columns": columns,
+        "bay": bay,
+        "seeds": seeds,
+        "seed_indices": seed_indices,
+        "dropped_seed_indices": dropped_seed_indices,
+        "envelopes_overlap": envelopes_overlap,
+        "envelopes_final": envelopes_final,
+        "void_gap_px": float(max_void),
+        "med_seed_width": float(med_w),
+        "med_box_width": float(med_box_w),
+        "overlap_thr": float(overlap_thr),
+        "void_gap_frac": float(void_gap_frac),
+        "min_width_frac": float(min_width_frac),
+        "max_width_frac": float(max_width_frac),
+    }
+
+
 def infer_window_bay_columns(
     units: list[dict[str, Any]],
     iw: int,

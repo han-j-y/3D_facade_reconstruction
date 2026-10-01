@@ -84,6 +84,13 @@ def normalize_facade_spec(
             content_aspect = max(0.25, cw / ch)
     aspect = content_aspect
     total_w = facade_width if facade_width is not None else total_h * aspect
+    metric = all("h_m" in f for f in floors) and all("w_m" in b for b in bays)
+    if metric:
+        # template-instantiated DSLs carry absolute sizes; keep them verbatim
+        h_norms = [max(0.05, float(f["h_m"])) for f in floors]
+        w_norms = [max(0.05, float(b["w_m"])) for b in bays]
+        h_sum, w_sum = sum(h_norms), sum(w_norms)
+        total_h, total_w = h_sum, w_sum
 
     rows = [
         {
@@ -662,10 +669,47 @@ def world_placement_in_cell(
     return ox, oz, ww, hh
 
 
+def unify_type_sizes(items: list[dict[str, Any]]) -> None:
+    """Give every window of a type the type's median size, keeping each center.
+
+    ``items`` carry ``tok``, ``span``, ``ox``, ``oz``, ``ww``, ``hh`` (world) and
+    are updated in place. Single-cell and spanning placements of one type are
+    unified separately so a colspan window is not shrunk to single-bay width.
+    """
+    groups: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for p in items:
+        groups.setdefault((p["tok"], int(p.get("span", 1))), []).append(p)
+    for members in groups.values():
+        widths = sorted(float(p["ww"]) for p in members)
+        heights = sorted(float(p["hh"]) for p in members)
+        mw = widths[len(widths) // 2]
+        mh = heights[len(heights) // 2]
+        for p in members:
+            cx = p["ox"] + p["ww"] / 2.0
+            cz = p["oz"] + p["hh"] / 2.0
+            p["ww"], p["hh"] = mw, mh
+            p["ox"], p["oz"] = cx - mw / 2.0, cz - mh / 2.0
+
+
+def align_type_bottoms(items: list[dict[str, Any]], *, row_key: str = "r") -> None:
+    """Snap same-type windows on one floor row to their median bottom (sill) z."""
+    groups: dict[tuple[Any, str], list[dict[str, Any]]] = {}
+    for p in items:
+        groups.setdefault((p[row_key], p["tok"]), []).append(p)
+    for members in groups.values():
+        bottoms = sorted(float(p["oz"]) for p in members)
+        z = bottoms[len(bottoms) // 2]
+        for p in members:
+            p["oz"] = z
+
+
 def unified_pixel_scale(spec: dict[str, Any], total_w: float) -> float:
     """Single px→world scale (m/px) from horizontal façade extent."""
     xl, xr = image_facade_extent_x(spec)
     return float(total_w) / max(1.0, xr - xl)
+
+
+ARCH_HEAD_SHAPES = {"arch_head", "rect_eyebrow", "springline_arch"}
 
 
 def native_boundary_size(ir: dict[str, Any]) -> tuple[float, float]:
@@ -676,8 +720,55 @@ def native_boundary_size(ir: dict[str, Any]) -> tuple[float, float]:
         d = float(params.get("diameter", 1.0))
         return d, d
     w = float(params.get("width", 1.0))
+    if "height" not in params and "body_height" in params:
+        # compound head: total height is body + head
+        head_key = "rise" if shape in ARCH_HEAD_SHAPES else "head_height"
+        head = float(params.get(head_key, params.get("arch_height", w * 0.18)))
+        return w, float(params["body_height"]) + head
     h = float(params.get("height", params.get("width", 1.0)))
     return w, h
+
+
+def _rescale_head_params(
+    shape: str,
+    params: dict[str, Any],
+    *,
+    native_w: float,
+    target_w: float,
+    target_h: float,
+) -> None:
+    """Rescale compound-boundary sub-params so the contour spans target_w × target_h.
+
+    Shapes such as ``arch_head`` build their contour from a body height plus a head
+    term rather than from ``height``, so resizing only width/height leaves the head at
+    its native size and the total height wrong. The head keeps its proportion to the
+    width (preserving the arc's shape) and the body absorbs the remaining height.
+    """
+    sx = target_w / native_w if native_w > 0 else 1.0
+    if shape in ARCH_HEAD_SHAPES:
+        rise = float(params.get("rise", params.get("arch_height", native_w * 0.18)))
+        rise = min(
+            max(rise * sx, 1e-3), 0.5 * target_w * (1.0 - 1e-4), 0.9 * target_h
+        )
+        params.pop("arch_height", None)
+        params["rise"] = round(rise, 4)
+        params["body_height"] = round(max(target_h - rise, 1e-3), 4)
+    elif shape == "head_body":
+        head = float(params.get("head_height", native_w * 0.5))
+        head = min(max(head * sx, 1e-3), 0.9 * target_h)
+        params["head_height"] = round(head, 4)
+        params["body_height"] = round(max(target_h - head, 1e-3), 4)
+    elif shape in {"trapezoid", "trapezoid_head"}:
+        top = params.get("top_width", params.get("head_top_width"))
+        if top is not None:
+            params["top_width"] = round(
+                min(max(float(top) * sx, 0.0), target_w), 4
+            )
+    elif shape in {"eyebrow", "segmental_arch"}:
+        # pure arch: the rise *is* the height
+        params["rise"] = round(
+            min(max(target_h, 1e-3), 0.5 * target_w * (1.0 - 1e-4)), 4
+        )
 
 
 def image_y_to_world_z(y_px: float, spec: dict[str, Any], total_h: float) -> float:
@@ -762,17 +853,19 @@ def fit_window_ir_to_bounds(
     params = boundary.setdefault("params", {})
     tw = max(0.2, float(target_w))
     th = max(0.2, float(target_h))
-    if preserve_aspect:
-        nw, nh = native_boundary_size(out)
-        if nw > 0 and nh > 0:
-            s = min(tw / nw, th / nh)
-            tw, th = nw * s, nh * s
+    nw, nh = native_boundary_size(out)
+    if preserve_aspect and nw > 0 and nh > 0:
+        s = min(tw / nw, th / nh)
+        tw, th = nw * s, nh * s
     if shape == "rectangle":
         params["width"] = round(tw, 4)
         params["height"] = round(th, 4)
     elif shape == "circle":
         params["diameter"] = round(min(tw, th), 4)
     else:
+        _rescale_head_params(
+            shape, params, native_w=nw, target_w=tw, target_h=th
+        )
         params["width"] = round(tw, 4)
         params["height"] = round(th, 4)
     return out
