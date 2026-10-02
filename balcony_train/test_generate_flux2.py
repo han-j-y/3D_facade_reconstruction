@@ -266,7 +266,11 @@ class GenerateFlux2HelperTests(unittest.TestCase):
                 self.assertEqual(prefixes[3], "flux2_hexagon_surface_")
             if shape == "triangle":
                 self.assertIn("the floor shape is a triangle", joined)
+            for wall in ("red brick", "travertine stone", "charcoal grey render"):
+                self.assertIn(wall, joined, msg=shape)
+            self.assertIn("wet street after light rain", joined, msg=shape)
             if shape == "trapezoid":
+                self.assertNotIn("not a trapezoid", joined)
                 self.assertIn("the floor shape is a trapezoid", joined)
                 self.assertIn("floor plan", joined)
                 self.assertIn("only the", joined)
@@ -275,7 +279,14 @@ class GenerateFlux2HelperTests(unittest.TestCase):
                 self.assertTrue(lower.startswith("a long flat facade"), msg=prompt)
                 self.assertNotIn("corner", lower, msg=prompt)
                 self.assertIn("street", lower, msg=prompt)
-                self.assertIn("top of the floor is visible", lower, msg=prompt)
+                if shape == "triangle":
+                    self.assertIn("same height as the balcony", lower, msg=prompt)
+                    self.assertNotIn("above", lower, msg=prompt)
+                    self.assertNotIn("not a triangle", lower, msg=prompt)
+                    self.assertNotIn("not triangles", lower, msg=prompt)
+                    self.assertEqual(lower.count("triang"), 2, msg=prompt)
+                else:
+                    self.assertIn("top of the floor is visible", lower, msg=prompt)
             with tempfile.TemporaryDirectory() as tmp:
                 planned = iter_prompt_outputs(
                     Path(tmp), len(prefixes), prompts, f"flux2_{shape}_", prefixes

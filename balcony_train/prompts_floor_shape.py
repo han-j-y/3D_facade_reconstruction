@@ -41,6 +41,17 @@ ONE_FACADE = (
     "so the top of the floor is visible"
 )
 
+# Triangle scenes keep the camera level with the balcony; the floor point
+# shows through the side views instead of a downward look.
+TRIANGLE_FACADE = (
+    "a long flat facade fills the frame, one balcony in the center of that "
+    "single wall, identical windows continue on the left and on the right, "
+    "the wall is one plane, the edge of the building is outside the photo, "
+    "street photo from across the road, camera at the same height as the "
+    "balcony, every window, door, cornice and roof line on the facade is a "
+    "plain rectangle made of horizontal and vertical lines"
+)
+
 NEGATIVE_PROMPT = (
     "rectangular balcony, semicircular balcony, curved bow window, "
     "view from standing on the balcony, railing-only close-up, "
@@ -103,31 +114,61 @@ _EXTRAS: tuple[str, ...] = (
     "a thin stone cornice under the floor",
 )
 
+# Floor-shape scenes use their own wall/light/detail banks so a new batch
+# looks different from the enclosure set and from earlier floor batches.
+_FLOOR_FACADES: tuple[str, ...] = (
+    "red brick",
+    "dark grey brick",
+    "white painted brick",
+    "terracotta plaster",
+    "light blue plaster",
+    "travertine stone",
+    "board-marked exposed concrete",
+    "warm brown stone",
+    "dusty pink plaster",
+    "charcoal grey render",
+)
+_FLOOR_LIGHTS: tuple[str, ...] = (
+    "late afternoon golden light",
+    "wet street after light rain, grey sky",
+    "hazy summer light",
+    "low winter sun with long shadows",
+    "early evening light with warm lit windows",
+)
+_FLOOR_EXTRAS: tuple[str, ...] = (
+    "a glass balcony door with a plain frame behind the railing",
+    "a narrow drip edge along the underside of the slab",
+    "a small wall lamp beside the balcony door",
+    "a folded chair standing on the floor",
+    "climbing ivy on the wall beside the balcony",
+)
+
 _TRIANGLE_KIND: dict[str, str] = {
     "metal": (
-        "dark metal vertical bars follow only the two sloping edges of that "
-        "triangular floor, the bars are not triangles, the window is an ordinary rectangle"
+        "straight dark metal vertical bars of equal height stand along the two "
+        "sloping edges of the floor and meet at the front point"
     ),
     "masonry": (
-        "ordinary vertical masonry balusters follow that triangular floor edge, "
-        "the window stays rectangular"
+        "ordinary vertical masonry balusters of equal height stand along the two "
+        "sloping edges of the floor, with a flat level top rail"
     ),
     "solid": (
-        "a plain solid parapet follows the two sloping edges of that triangular "
-        "floor and meets at the front point, the parapet face itself is not a triangle"
+        "a plain solid parapet of constant height with a flat level top runs "
+        "along the two sloping edges of the floor and meets at the front point"
     ),
 }
 _TRAPEZOID_KIND: dict[str, str] = {
     "metal": (
-        "dark metal bars follow that floor edge, the railing is not a trapezoid "
-        "panel, the window is an ordinary rectangle"
+        "straight dark metal vertical bars of equal height stand along the front "
+        "and the two angled sides of the floor"
     ),
     "masonry": (
-        "ordinary vertical masonry balusters follow only that floor outline, "
-        "the window stays rectangular"
+        "ordinary vertical masonry balusters of equal height stand along the "
+        "front and the two angled sides of the floor, with a flat level top rail"
     ),
     "solid": (
-        "a plain solid parapet follows that floor, the parapet face itself is not a trapezoid"
+        "a plain solid parapet of constant height with a flat level top runs "
+        "along the front and the two angled sides of the floor"
     ),
 }
 _HEXAGON_KIND: dict[str, str] = {
@@ -164,6 +205,21 @@ def _slots(count: int = PROMPT_COUNT) -> list[dict[str, str]]:
     return slots
 
 
+def _floor_slots(count: int = PROMPT_COUNT) -> list[dict[str, str]]:
+    slots: list[dict[str, str]] = []
+    for i in range(count):
+        slots.append(
+            {
+                "floor": _FLOORS[(i + 3) % len(_FLOORS)],
+                "facade": _FLOOR_FACADES[i % len(_FLOOR_FACADES)],
+                "light": _FLOOR_LIGHTS[(i // len(_FLOOR_FACADES)) % len(_FLOOR_LIGHTS)],
+                "extra": _FLOOR_EXTRAS[(i + 2) % len(_FLOOR_EXTRAS)],
+                "view": _VIEWS[(i // 2 + 1) % len(_VIEWS)],
+            }
+        )
+    return slots
+
+
 def _kinds(shape: str, count: int) -> list[str]:
     cycle = _KIND_SUFFIXES[shape]
     return [cycle[i % len(cycle)] for i in range(count)]
@@ -171,21 +227,21 @@ def _kinds(shape: str, count: int) -> list[str]:
 
 def _triangle_prompts() -> list[str]:
     prompts: list[str] = []
-    for slot, kind in zip(_slots(), _kinds("triangle", PROMPT_COUNT)):
+    for slot, kind in zip(_floor_slots(), _kinds("triangle", PROMPT_COUNT)):
         prompts.append(
-            f"{ONE_FACADE}, {slot['view']}, the floor shape is a triangle, the top surface of the "
-            "concrete balcony floor is an isosceles triangle, apex of the floor "
-            "points away from the wall, the floor comes to one front point, the "
-            f"floor outline itself is triangular, {slot['floor']} floor, "
-            f"{slot['facade']} facade, {_TRIANGLE_KIND[kind]}, {slot['extra']}, "
-            f"{slot['light']}"
+            f"{TRIANGLE_FACADE}, {slot['view']}, the floor shape is a triangle: "
+            "the concrete balcony floor slab is triangular in plan, its wide base "
+            "runs along the wall and its apex is one point sticking straight out "
+            "from the wall at the center, only the floor slab has this shape, "
+            f"{slot['floor']} floor, {slot['facade']} facade, "
+            f"{_TRIANGLE_KIND[kind]}, {slot['extra']}, {slot['light']}"
         )
     return prompts
 
 
 def _trapezoid_prompts() -> list[str]:
     prompts: list[str] = []
-    for slot, kind in zip(_slots(), _kinds("trapezoid", PROMPT_COUNT)):
+    for slot, kind in zip(_floor_slots(), _kinds("trapezoid", PROMPT_COUNT)):
         prompts.append(
             f"{ONE_FACADE}, {slot['view']}, the floor shape is a trapezoid, only the floor is a "
             "trapezoid, this floor plan is a trapezoid, long edge of the floor on "
@@ -199,7 +255,7 @@ def _trapezoid_prompts() -> list[str]:
 
 def _hexagon_prompts() -> list[str]:
     prompts: list[str] = []
-    for slot, kind in zip(_slots(), _kinds("hexagon", PROMPT_COUNT)):
+    for slot, kind in zip(_floor_slots(), _kinds("hexagon", PROMPT_COUNT)):
         prompts.append(
             f"{ONE_FACADE}, seen from above so the whole floor outline shows, "
             "the floor shape is a hexagon, a deep balcony floor with six edges, "
