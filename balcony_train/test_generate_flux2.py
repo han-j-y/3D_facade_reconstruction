@@ -229,7 +229,14 @@ class GenerateFlux2HelperTests(unittest.TestCase):
         cues = {
             "triangle": ("triangular", "apex", "point"),
             "trapezoid": ("trapezoid", "75"),
-            "hexagon": ("hexagon", "chamfer", "30", "right angle", "six edges"),
+            "hexagon": (
+                "hexagon",
+                "chamfer",
+                "30",
+                "right angle",
+                "six edges",
+                "five straight sections",
+            ),
         }
         for shape, prompts in banks.items():
             prefixes = prefixes_for(shape)
@@ -248,6 +255,13 @@ class GenerateFlux2HelperTests(unittest.TestCase):
                 self.assertFalse(any("surface" in name for name in prefixes))
                 self.assertIn("floor", joined)
                 self.assertNotIn("privacy panel", joined)
+                square = sum("square on" in p for p in prompts)
+                turned = sum("degrees off square" in p for p in prompts)
+                self.assertEqual(square + turned, 50)
+                self.assertGreater(square, 0)
+                self.assertGreater(turned, square)
+                self.assertTrue(any("to the left" in p for p in prompts))
+                self.assertTrue(any("to the right" in p for p in prompts))
             if shape == "hexagon":
                 self.assertEqual(prefixes[3], "flux2_hexagon_surface_")
             if shape == "triangle":

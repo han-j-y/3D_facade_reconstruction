@@ -80,6 +80,21 @@ _FLOORS: tuple[str, ...] = (
     "10th",
     "11th",
 )
+# Small turns along the same street. Each one keeps the wall running past both
+# sides of the frame so FLUX does not swing round to the building edge.
+_VIEWS: tuple[str, ...] = (
+    "camera straight across the street, facing the wall square on",
+    "camera a little to the left down the street, looking at the wall about "
+    "15 degrees off square, the same wall continues past both sides of the frame",
+    "camera a little to the right down the street, looking at the wall about "
+    "15 degrees off square, the same wall continues past both sides of the frame",
+    "camera further to the left down the street, looking at the wall about "
+    "25 degrees off square, the side of the floor slab is visible, the same "
+    "wall continues past both sides of the frame",
+    "camera further to the right down the street, looking at the wall about "
+    "25 degrees off square, the side of the floor slab is visible, the same "
+    "wall continues past both sides of the frame",
+)
 _EXTRAS: tuple[str, ...] = (
     "small stone brackets under the slab",
     "plain metal brackets under the slab",
@@ -117,20 +132,19 @@ _TRAPEZOID_KIND: dict[str, str] = {
 }
 _HEXAGON_KIND: dict[str, str] = {
     "metal": (
-        "dark metal vertical bars follow that six-sided floor and bend twice on "
-        "each side, the window is an ordinary rectangle"
+        "dark metal vertical bars run along all five railing sections, the "
+        "window is an ordinary rectangle"
     ),
     "masonry": (
-        "ordinary vertical masonry balusters follow that six-sided floor and "
-        "bend twice on each side"
+        "ordinary vertical masonry balusters run along all five railing sections"
     ),
     "solid": (
-        "a plain solid parapet follows that six-sided floor and bends twice on "
-        "each side, the parapet face itself is not a hexagon"
+        "a plain solid parapet runs along all five railing sections, each "
+        "section is a flat rectangular panel"
     ),
     "surface": (
-        "frosted glass panels follow that six-sided floor, one panel on each "
-        "straight side and one panel on each diagonal chamfer, plus a wide front panel"
+        "frosted glass panels fill all five railing sections, one panel on each "
+        "straight side, one on each diagonal chamfer, and a wide front panel"
     ),
 }
 
@@ -144,6 +158,7 @@ def _slots(count: int = PROMPT_COUNT) -> list[dict[str, str]]:
                 "facade": _FACADES[i % len(_FACADES)],
                 "light": _LIGHTS[(i // len(_FACADES)) % len(_LIGHTS)],
                 "extra": _EXTRAS[i % len(_EXTRAS)],
+                "view": _VIEWS[(i // 2) % len(_VIEWS)],
             }
         )
     return slots
@@ -158,7 +173,7 @@ def _triangle_prompts() -> list[str]:
     prompts: list[str] = []
     for slot, kind in zip(_slots(), _kinds("triangle", PROMPT_COUNT)):
         prompts.append(
-            f"{ONE_FACADE}, the floor shape is a triangle, the top surface of the "
+            f"{ONE_FACADE}, {slot['view']}, the floor shape is a triangle, the top surface of the "
             "concrete balcony floor is an isosceles triangle, apex of the floor "
             "points away from the wall, the floor comes to one front point, the "
             f"floor outline itself is triangular, {slot['floor']} floor, "
@@ -172,7 +187,7 @@ def _trapezoid_prompts() -> list[str]:
     prompts: list[str] = []
     for slot, kind in zip(_slots(), _kinds("trapezoid", PROMPT_COUNT)):
         prompts.append(
-            f"{ONE_FACADE}, the floor shape is a trapezoid, only the floor is a "
+            f"{ONE_FACADE}, {slot['view']}, the floor shape is a trapezoid, only the floor is a "
             "trapezoid, this floor plan is a trapezoid, long edge of the floor on "
             "the wall, short front edge of the floor parallel to the wall, sides "
             f"of the floor meet the wall at about 75 degrees, {slot['floor']} floor, "
@@ -186,14 +201,17 @@ def _hexagon_prompts() -> list[str]:
     prompts: list[str] = []
     for slot, kind in zip(_slots(), _kinds("hexagon", PROMPT_COUNT)):
         prompts.append(
-            f"{ONE_FACADE}, the floor shape is a hexagon, the balcony floor starts "
-            "as a rectangle, the left and right edges leave the wall at a right "
-            "angle and run straight out, then each side turns onto a short diagonal "
-            "chamfer, then a wide front edge runs parallel to the wall, the chamfer "
-            "meets that front edge at about 30 degrees, six edges, the outline "
-            f"bends twice on the left and twice on the right, {slot['floor']} floor, "
-            f"{slot['facade']} facade, {_HEXAGON_KIND[kind]}, {slot['extra']}, "
-            f"{slot['light']}"
+            f"{ONE_FACADE}, seen from above so the whole floor outline shows, "
+            "the floor shape is a hexagon, a deep balcony floor with six edges, "
+            "the railing has five straight sections: a straight left side section "
+            "that leaves the wall at a right angle, a diagonal chamfer section, "
+            "a wide front section parallel to the wall, a diagonal chamfer "
+            "section, and a straight right side section that leaves the wall at a "
+            "right angle, the straight side sections are as long as the chamfer "
+            "sections and are clearly visible, each chamfer meets the front at "
+            "about 30 degrees, the railing bends twice on the left and twice on "
+            f"the right, {slot['floor']} floor, {slot['facade']} facade, "
+            f"{_HEXAGON_KIND[kind]}, {slot['extra']}, {slot['light']}"
         )
     return prompts
 
