@@ -26,6 +26,8 @@ document        = { comment | nl }, balcony_line, { nl },
                   [ railing_line, { nl } ],
                   [ railing_block ],
                   [ supports_block ],
+                  [ columns_block ],
+                  [ walls_block ],
                   [ opening_line, { nl } ],
                   [ glazing_block ],
                   [ output_block ],
@@ -72,14 +74,47 @@ struct_name     = "projecting" | "inset" | "composite" | "free_standing" ;
 (* ——— enclosure ——— *)
 
 enclosure_line  = "enclosure", ws, enclosure_name ;
-enclosure_name  = "open" | "enclosed" ;
-(* default: open.  enclosed — 3-sided glass box (no railing), 1 m mullions,
-   ceiling slab matches floor thickness. Nested WDSL glazing is optional
-   and not used for this mesh.
+enclosure_name  = "open" | "half_enclosed" | "enclosed" ;
+(* default: open.
+   half_enclosed — slab + railing + columns from the floor to a roof slab.
+                   Options in columns_block (ignored for other enclosures).
+   enclosed      — shell on every outer edge of the slab outline (any floor
+                   shape, e.g. hexagon oriel), no railing, roof slab.
+                   Options in walls_block (ignored for other enclosures).
+                   Nested WDSL glazing is optional and not used for this mesh.
+
+   Façade stacking (balcony_layout.link_stacks, grid row 0 = top floor):
+     - A half_enclosed / enclosed balcony whose bays overlap ≥ 50 % with a
+       balcony on the floor directly above shares that balcony's floor slab
+       as its roof (no own roof). The upper balcony is snapped to the lower
+       one's x range, depth and floor shape, so the stack lines up.
+     - With nothing above, it gets its own roof just under the next floor's
+       sill (or floor height, if authored).
+     - Open balconies never take a roof.
+
+   Window on an enclosed front (balcony_layout.front_window_targets):
+     A window on the same floor whose bays overlap the balcony and whose
+     center lies on the flat front edge is moved onto the enclosure front:
+     clamped 8 cm inside the front, the front panel becomes wall infill with
+     the opening cut, and the main wall is not cut there. If < 60 % of the
+     window width fits (narrow hexagon front, triangle, circle) the window
+     stays on the main wall behind the shell.
 
    Photo recovery always emits enclosure=open and does *not* vote on
-   enclosure (too hard to tell from SAM3 crops). Authoring / catalog may
-   still use enclosed. *)
+   enclosure (the classifier has no enclosure head yet). Authoring / catalog
+   may use half_enclosed / enclosed. *)
+
+columns_block   = "columns:", nl, { ws, column_kv, nl } ;
+column_kv       = "count", ws, int
+                | "width", ws, scalar
+                | "style", ws, ( "square" | "round" ) ;
+(* defaults: count=0 (one column at every off-wall bend of the outline:
+   rectangle 2, hexagon 4, triangle apex, circle 3), width=0.25, style=square *)
+
+walls_block     = "walls:", nl, { ws, wall_kv, nl } ;
+wall_kv         = "infill", ws, ( "glass" | "wall" ) ;
+(* default: glass (panes with ~1 m mullions). wall: 200 mm solid panels.
+   The front panel is forced to wall infill when a window is moved onto it. *)
 
 (* ——— extra floor params (optional; shape already on balcony_line) ——— *)
 
@@ -160,7 +195,9 @@ output_block    = "output:", nl, { ws, ident, ws, scalar, nl } ;
     "type": "balcony",
     "debug": bool,
     "structure": "projecting"|"inset"|"composite"|"free_standing",
-    "enclosure": "open"|"enclosed",
+    "enclosure": "open"|"half_enclosed"|"enclosed",
+    "columns"?: { "count": int, "width": <scalar>, "style": "square"|"round" },
+    "walls"?: { "infill": "glass"|"wall" },
     "floor": { "shape": "rectangle"|"circle"|"triangle"|"trapezoid"|"hexagon",
                "params": { "width": <scalar>, "depth": <scalar>, "height"? } },
     "railing": { "kind": "open_work"|"surface_panel"|"solid", "height": <scalar>,

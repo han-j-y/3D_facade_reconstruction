@@ -26,7 +26,11 @@ _PANE_WRAP = re.compile(r"^pane\((.+)\)$", re.I)
 
 FLOOR_SHAPES = frozenset({"rectangle", "circle", "triangle", "trapezoid", "hexagon"})
 STRUCTURES = frozenset({"projecting", "inset", "composite", "free_standing"})
-ENCLOSURES = frozenset({"open", "enclosed"})
+ENCLOSURES = frozenset({"open", "half_enclosed", "enclosed"})
+COLUMN_STYLES = frozenset({"square", "round"})
+WALL_INFILLS = frozenset({"glass", "wall"})
+COLUMN_DEFAULTS: dict[str, Any] = {"count": 0, "width": 0.25, "style": "square"}
+WALL_DEFAULTS: dict[str, Any] = {"infill": "glass"}
 RAIL_KINDS = frozenset({"open_work", "surface_panel", "solid"})
 RAIL_ALIASES = {
     "metal": "open_work",
@@ -37,7 +41,9 @@ RAIL_ALIASES = {
     "glass": "surface_panel",
 }
 OPENINGS = frozenset({"door", "window", "none"})
-BLOCK_NAMES = frozenset({"floor", "railing", "supports", "glazing", "output"})
+BLOCK_NAMES = frozenset(
+    {"floor", "railing", "supports", "glazing", "output", "columns", "walls"}
+)
 
 
 def parse_bdsl(text: str) -> dict[str, Any]:
@@ -96,6 +102,13 @@ def parse_bdsl(text: str) -> dict[str, Any]:
         raise ValueError("BDSL requires a balcony line")
     if ir["enclosure"] != "enclosed":
         ir["glazing"] = None
+        ir.pop("walls", None)
+    else:
+        ir["walls"] = {**WALL_DEFAULTS, **(ir.get("walls") or {})}
+    if ir["enclosure"] == "half_enclosed":
+        ir["columns"] = {**COLUMN_DEFAULTS, **(ir.get("columns") or {})}
+    else:
+        ir.pop("columns", None)
     ir["railing"]["kind"] = _normalize_rail_kind(
         str((ir.get("railing") or {}).get("kind") or "open_work")
     )
@@ -119,7 +132,7 @@ def to_facade_spec(ir: dict[str, Any], *, name: str = "balcony") -> dict[str, An
         col_w = max(4.0, width + 2.2)
         row_h = max(4.0, void_h + 1.5)
         bottom = 0.12
-    elif enclosure == "enclosed":
+    elif enclosure in ("enclosed", "half_enclosed"):
         clear = height if height > 0.05 else 2.5
         slab_t = float((ir.get("output") or {}).get("slab_thickness") or 0.20)
         col_w = max(2.4, width + 0.6)
@@ -199,6 +212,10 @@ def _apply_block(ir: dict[str, Any], name: str, body: list[tuple[str, str]]) -> 
         ir["glazing"] = _parse_nested_wdsl(text)
     elif name == "output":
         ir["output"] = _parse_output_block(body, ir["output"])
+    elif name == "columns":
+        ir["columns"] = _parse_columns_block(body, ir.get("columns") or {})
+    elif name == "walls":
+        ir["walls"] = _parse_walls_block(body, ir.get("walls") or {})
 
 
 def _dedent(raws: list[str]) -> list[str]:
@@ -377,6 +394,38 @@ def _parse_supports_block(body: list[tuple[str, str]], current: dict[str, Any]) 
             out["spacing"] = _parse_scalar(rest)
         else:
             raise ValueError(f"unknown supports field {stripped!r}")
+    return out
+
+
+def _parse_columns_block(body: list[tuple[str, str]], current: dict[str, Any]) -> dict[str, Any]:
+    out = dict(current)
+    for _, stripped in body:
+        key, _, rest = stripped.partition(" ")
+        key = key.lower()
+        if key == "count":
+            out["count"] = int(_parse_scalar(rest))
+        elif key == "width":
+            out["width"] = _parse_scalar(rest)
+        elif key == "style":
+            style = rest.strip()
+            if style not in COLUMN_STYLES:
+                raise ValueError(f"unknown column style {style!r}")
+            out["style"] = style
+        else:
+            raise ValueError(f"unknown columns field {stripped!r}")
+    return out
+
+
+def _parse_walls_block(body: list[tuple[str, str]], current: dict[str, Any]) -> dict[str, Any]:
+    out = dict(current)
+    for _, stripped in body:
+        key, _, rest = stripped.partition(" ")
+        if key.lower() != "infill":
+            raise ValueError(f"unknown walls field {stripped!r}")
+        infill = rest.strip()
+        if infill not in WALL_INFILLS:
+            raise ValueError(f"unknown wall infill {infill!r}")
+        out["infill"] = infill
     return out
 
 

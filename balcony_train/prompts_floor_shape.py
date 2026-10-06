@@ -32,24 +32,20 @@ _KIND_SUFFIXES: dict[str, tuple[str, ...]] = {
 }
 
 # Positive description of one flat wall. Naming the building edge makes
-# FLUX draw it, so this clause only says what is in the frame.
+# FLUX draw it, so this clause only says what is in the frame. The camera is
+# always a pedestrian on the street; the slab outline reads from its underside.
 ONE_FACADE = (
     "a long flat facade fills the frame, one balcony in the center of that "
     "single wall, identical windows continue on the left and on the right, "
     "the wall is one plane, the edge of the building is outside the photo, "
-    "street photo from across the road, camera a little above the balcony "
-    "so the top of the floor is visible"
+    "street photo taken by a pedestrian standing on the far sidewalk, camera "
+    "held at human eye level near the ground and tilted up toward the balcony, "
+    "the flat underside of the balcony floor is visible from below"
 )
 
-# Triangle scenes keep the camera level with the balcony; the floor point
-# shows through the side views instead of a downward look.
 TRIANGLE_FACADE = (
-    "a long flat facade fills the frame, one balcony in the center of that "
-    "single wall, identical windows continue on the left and on the right, "
-    "the wall is one plane, the edge of the building is outside the photo, "
-    "street photo from across the road, camera at the same height as the "
-    "balcony, every window, door, cornice and roof line on the facade is a "
-    "plain rectangle made of horizontal and vertical lines"
+    f"{ONE_FACADE}, every window, door, cornice and roof line on the facade is "
+    "a plain rectangle made of horizontal and vertical lines"
 )
 
 NEGATIVE_PROMPT = (
@@ -91,20 +87,16 @@ _FLOORS: tuple[str, ...] = (
     "10th",
     "11th",
 )
-# Small turns along the same street. Each one keeps the wall running past both
+# Small turns along the same sidewalk. Each one keeps the wall running past both
 # sides of the frame so FLUX does not swing round to the building edge.
 _VIEWS: tuple[str, ...] = (
-    "camera straight across the street, facing the wall square on",
-    "camera a little to the left down the street, looking at the wall about "
-    "15 degrees off square, the same wall continues past both sides of the frame",
-    "camera a little to the right down the street, looking at the wall about "
-    "15 degrees off square, the same wall continues past both sides of the frame",
-    "camera further to the left down the street, looking at the wall about "
-    "25 degrees off square, the side of the floor slab is visible, the same "
-    "wall continues past both sides of the frame",
-    "camera further to the right down the street, looking at the wall about "
-    "25 degrees off square, the side of the floor slab is visible, the same "
-    "wall continues past both sides of the frame",
+    "pedestrian straight across the street, facing the wall square on",
+    "pedestrian a few steps to the left along the sidewalk, looking at the wall "
+    "about 10 degrees off square, the same wall continues past both sides of "
+    "the frame",
+    "pedestrian a few steps to the right along the sidewalk, looking at the wall "
+    "about 10 degrees off square, the same wall continues past both sides of "
+    "the frame",
 )
 _EXTRAS: tuple[str, ...] = (
     "small stone brackets under the slab",
@@ -230,9 +222,13 @@ def _triangle_prompts() -> list[str]:
     for slot, kind in zip(_floor_slots(), _kinds("triangle", PROMPT_COUNT)):
         prompts.append(
             f"{TRIANGLE_FACADE}, {slot['view']}, the floor shape is a triangle: "
-            "the concrete balcony floor slab is triangular in plan, its wide base "
-            "runs along the wall and its apex is one point sticking straight out "
-            "from the wall at the center, only the floor slab has this shape, "
+            "the balcony floor is one thin flat horizontal concrete plate of even "
+            "thickness, triangular in plan, its wide base runs along the wall and "
+            "its apex is one point sticking straight out from the wall at the "
+            "center, the plate edge is a thin level band of the same height all "
+            "the way round, the flat level underside of the plate shows the same "
+            "three-sided outline pointing out from the wall, the wall under the "
+            "plate is plain and flat, only the floor plate has this outline, "
             f"{slot['floor']} floor, {slot['facade']} facade, "
             f"{_TRIANGLE_KIND[kind]}, {slot['extra']}, {slot['light']}"
         )
@@ -257,16 +253,18 @@ def _hexagon_prompts() -> list[str]:
     prompts: list[str] = []
     for slot, kind in zip(_floor_slots(), _kinds("hexagon", PROMPT_COUNT)):
         prompts.append(
-            f"{ONE_FACADE}, seen from above so the whole floor outline shows, "
-            "the floor shape is a hexagon, a deep balcony floor with six edges, "
-            "the railing has five straight sections: a straight left side section "
-            "that leaves the wall at a right angle, a diagonal chamfer section, "
-            "a wide front section parallel to the wall, a diagonal chamfer "
-            "section, and a straight right side section that leaves the wall at a "
-            "right angle, the straight side sections are as long as the chamfer "
-            "sections and are clearly visible, each chamfer meets the front at "
-            "about 30 degrees, the railing bends twice on the left and twice on "
-            f"the right, {slot['floor']} floor, {slot['facade']} facade, "
+            f"{ONE_FACADE}, {slot['view']}, the floor shape is a hexagon: a deep "
+            "box-shaped balcony like a rectangle whose two front ends are cut off "
+            "diagonally, six edges in plan, the railing has five straight "
+            "sections: a long straight left side section that leaves the wall at "
+            "a right angle and runs straight out toward the street, a short "
+            "diagonal chamfer section, a wide front section parallel to the wall, "
+            "a short diagonal chamfer section, and a long straight right side "
+            "section that leaves the wall at a right angle, a square post stands "
+            "at each of the four bends, the two side sections are clearly visible "
+            "running out from the wall, each chamfer meets the front at about 30 "
+            "degrees, the underside of the slab shows the same six-edged outline, "
+            f"{slot['floor']} floor, {slot['facade']} facade, "
             f"{_HEXAGON_KIND[kind]}, {slot['extra']}, {slot['light']}"
         )
     return prompts

@@ -1,0 +1,14 @@
+# Enclosed hexagonal bay (oriel): faces on every outer edge of the slab.
+# Glass infill by default; a window placed in the same floor×bay moves onto
+# the front face and turns the infill into wall.
+
+balcony hexagon(width=2.6, depth=1.0)
+
+structure projecting
+enclosure enclosed
+
+walls:
+  infill glass
+
+output:
+  slab_thickness 0.20

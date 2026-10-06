@@ -220,6 +220,12 @@ class GenerateFlux2HelperTests(unittest.TestCase):
         self.assertEqual(PROMPT_SETS["solid"]["prefix"], "flux2_solid_")
         self.assertEqual(PROMPT_SETS["metal"]["prefix"], "flux2_metal_")
 
+    def _assert_street_camera(self, lower: str, prompt: str) -> None:
+        self.assertIn("human eye level", lower, msg=prompt)
+        self.assertIn("underside of the balcony floor is visible", lower, msg=prompt)
+        for word in ("above", "top of the floor", "same height as the balcony"):
+            self.assertNotIn(word, lower, msg=prompt)
+
     def test_floor_plan_prompt_sets_rotate_kind_prefixes(self) -> None:
         banks = {
             "triangle": TRIANGLE_PROMPTS,
@@ -248,6 +254,13 @@ class GenerateFlux2HelperTests(unittest.TestCase):
             for cue in cues[shape]:
                 self.assertIn(cue, joined, msg=shape)
             self.assertEqual(len(prompts), 50)
+            square = sum("square on" in p for p in prompts)
+            turned = sum("about 10 degrees off square" in p for p in prompts)
+            self.assertEqual(square + turned, 50, msg=shape)
+            self.assertGreater(square, 0, msg=shape)
+            self.assertGreater(turned, square, msg=shape)
+            self.assertTrue(any("to the left" in p for p in prompts), msg=shape)
+            self.assertTrue(any("to the right" in p for p in prompts), msg=shape)
             if shape in ("triangle", "trapezoid"):
                 self.assertEqual(prefixes[0], f"flux2_{shape}_metal_")
                 self.assertEqual(prefixes[1], f"flux2_{shape}_masonry_")
@@ -255,13 +268,6 @@ class GenerateFlux2HelperTests(unittest.TestCase):
                 self.assertFalse(any("surface" in name for name in prefixes))
                 self.assertIn("floor", joined)
                 self.assertNotIn("privacy panel", joined)
-                square = sum("square on" in p for p in prompts)
-                turned = sum("degrees off square" in p for p in prompts)
-                self.assertEqual(square + turned, 50)
-                self.assertGreater(square, 0)
-                self.assertGreater(turned, square)
-                self.assertTrue(any("to the left" in p for p in prompts))
-                self.assertTrue(any("to the right" in p for p in prompts))
             if shape == "hexagon":
                 self.assertEqual(prefixes[3], "flux2_hexagon_surface_")
             if shape == "triangle":
@@ -279,14 +285,15 @@ class GenerateFlux2HelperTests(unittest.TestCase):
                 self.assertTrue(lower.startswith("a long flat facade"), msg=prompt)
                 self.assertNotIn("corner", lower, msg=prompt)
                 self.assertIn("street", lower, msg=prompt)
+                self._assert_street_camera(lower, prompt)
                 if shape == "triangle":
-                    self.assertIn("same height as the balcony", lower, msg=prompt)
-                    self.assertNotIn("above", lower, msg=prompt)
+                    self.assertIn("thin flat horizontal concrete plate", lower, msg=prompt)
+                    self.assertIn("underside of the plate", lower, msg=prompt)
                     self.assertNotIn("not a triangle", lower, msg=prompt)
                     self.assertNotIn("not triangles", lower, msg=prompt)
                     self.assertEqual(lower.count("triang"), 2, msg=prompt)
-                else:
-                    self.assertIn("top of the floor is visible", lower, msg=prompt)
+                if shape == "hexagon":
+                    self.assertIn("square post stands at each of the four bends", lower)
             with tempfile.TemporaryDirectory() as tmp:
                 planned = iter_prompt_outputs(
                     Path(tmp), len(prefixes), prompts, f"flux2_{shape}_", prefixes
@@ -318,6 +325,7 @@ class GenerateFlux2HelperTests(unittest.TestCase):
             lower = prompt.lower()
             self.assertTrue(lower.startswith("a long flat facade"), msg=prompt)
             self.assertNotIn("corner", lower)
+            self._assert_street_camera(lower, prompt)
             self.assertIn("beyond the exterior wall line", lower)
             self.assertIn("not recessed", lower)
         self.assertNotIn("loggia", half)

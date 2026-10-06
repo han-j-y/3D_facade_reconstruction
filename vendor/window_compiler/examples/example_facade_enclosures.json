@@ -1,0 +1,334 @@
+{
+  "type": "facade",
+  "schema": "window_compiler_facade_v1",
+  "meta": {
+    "notes": "Enclosure demo: B0 half_enclosed x2 (top keeps roof); B1 enclosed x2 with windows under an open balcony (shared floors); B2 hexagon oriel with window under a glass enclosure (upper aligns to hexagon)."
+  },
+  "wall": {
+    "depth": 0.42,
+    "base_front_y": 0.0,
+    "material": "wall"
+  },
+  "grid": {
+    "rows": [
+      {
+        "name": "F3",
+        "h": 3.0
+      },
+      {
+        "name": "F2",
+        "h": 3.0
+      },
+      {
+        "name": "F1",
+        "h": 3.0
+      },
+      {
+        "name": "F0",
+        "h": 3.4
+      }
+    ],
+    "cols": [
+      {
+        "name": "B0",
+        "w": 2.8
+      },
+      {
+        "name": "B1",
+        "w": 2.8
+      },
+      {
+        "name": "B2",
+        "w": 2.8
+      }
+    ]
+  },
+  "windows": {
+    "win_a": {
+      "type": "window",
+      "debug": true,
+      "boundary": {
+        "id": "root",
+        "shape": "rectangle",
+        "params": {
+          "width": 1.0,
+          "height": 1.6
+        }
+      },
+      "frame": {
+        "thickness": {
+          "relative_to": "min_side",
+          "value": 0.06
+        },
+        "depth": 0.08,
+        "material": "painted_wood"
+      },
+      "regions": [
+        {
+          "id": "glass",
+          "from": "root",
+          "operation": "inset",
+          "amount": {
+            "relative_to": "min_side",
+            "value": 0.06
+          }
+        }
+      ],
+      "program": [
+        {
+          "op": "split_vertical",
+          "id": "v_mid",
+          "region": "glass",
+          "x": {
+            "prior": 0.5,
+            "range": [
+              0.45,
+              0.55
+            ]
+          }
+        },
+        {
+          "op": "split_horizontal",
+          "id": "h_mid",
+          "region": "glass",
+          "y": {
+            "prior": 0.5,
+            "range": [
+              0.45,
+              0.55
+            ]
+          }
+        }
+      ],
+      "output": {
+        "muntin_width": {
+          "relative_to": "min_side",
+          "value": 0.025
+        },
+        "muntin_depth": 0.04,
+        "glass_thickness": 0.01
+      }
+    }
+  },
+  "doors": {},
+  "placement": [
+    [
+      "win_a",
+      "win_a",
+      "win_a"
+    ],
+    [
+      "win_a",
+      "win_a",
+      null
+    ],
+    [
+      "win_a",
+      "win_a",
+      "win_a"
+    ],
+    [
+      "win_a",
+      "win_a",
+      "win_a"
+    ]
+  ],
+  "balconies": {
+    "half": {
+      "type": "balcony",
+      "debug": false,
+      "structure": "projecting",
+      "enclosure": "half_enclosed",
+      "floor": {
+        "shape": "rectangle",
+        "params": {
+          "width": 2.4,
+          "depth": 1.0
+        }
+      },
+      "railing": {
+        "kind": "open_work",
+        "height": 1.0,
+        "material": "masonry"
+      },
+      "supports": {
+        "count": 0
+      },
+      "opening": "door",
+      "glazing": null,
+      "output": {
+        "slab_thickness": 0.12,
+        "railing_thickness": 0.04
+      },
+      "columns": {
+        "count": 0,
+        "width": 0.25,
+        "style": "round"
+      }
+    },
+    "enc_win": {
+      "type": "balcony",
+      "debug": false,
+      "structure": "projecting",
+      "enclosure": "enclosed",
+      "floor": {
+        "shape": "rectangle",
+        "params": {
+          "width": 2.4,
+          "depth": 1.0
+        }
+      },
+      "railing": {
+        "kind": "open_work",
+        "height": 1.1
+      },
+      "supports": {
+        "count": 0
+      },
+      "opening": "door",
+      "glazing": null,
+      "output": {
+        "slab_thickness": 0.2,
+        "railing_thickness": 0.04
+      },
+      "walls": {
+        "infill": "glass"
+      }
+    },
+    "oriel": {
+      "type": "balcony",
+      "debug": false,
+      "structure": "projecting",
+      "enclosure": "enclosed",
+      "floor": {
+        "shape": "hexagon",
+        "params": {
+          "width": 2.6,
+          "depth": 1.0
+        }
+      },
+      "railing": {
+        "kind": "open_work",
+        "height": 1.1
+      },
+      "supports": {
+        "count": 0
+      },
+      "opening": "door",
+      "glazing": null,
+      "output": {
+        "slab_thickness": 0.2,
+        "railing_thickness": 0.04
+      },
+      "walls": {
+        "infill": "glass"
+      }
+    },
+    "enc_glass": {
+      "type": "balcony",
+      "debug": false,
+      "structure": "projecting",
+      "enclosure": "enclosed",
+      "floor": {
+        "shape": "rectangle",
+        "params": {
+          "width": 2.4,
+          "depth": 1.0
+        }
+      },
+      "railing": {
+        "kind": "open_work",
+        "height": 1.1
+      },
+      "supports": {
+        "count": 0
+      },
+      "opening": "door",
+      "glazing": null,
+      "output": {
+        "slab_thickness": 0.2,
+        "railing_thickness": 0.04
+      },
+      "walls": {
+        "infill": "glass"
+      }
+    },
+    "open": {
+      "type": "balcony",
+      "debug": false,
+      "structure": "projecting",
+      "enclosure": "open",
+      "floor": {
+        "shape": "rectangle",
+        "params": {
+          "width": 2.4,
+          "depth": 1.0
+        }
+      },
+      "railing": {
+        "kind": "open_work",
+        "height": 1.1
+      },
+      "supports": {
+        "count": 0
+      },
+      "opening": "door",
+      "glazing": null,
+      "output": {
+        "slab_thickness": 0.12,
+        "railing_thickness": 0.04
+      }
+    }
+  },
+  "balcony_placement": [
+    {
+      "row": 2,
+      "col0": 0,
+      "col1": 0,
+      "type": "half"
+    },
+    {
+      "row": 1,
+      "col0": 0,
+      "col1": 0,
+      "type": "half"
+    },
+    {
+      "row": 2,
+      "col0": 1,
+      "col1": 1,
+      "type": "enc_win"
+    },
+    {
+      "row": 1,
+      "col0": 1,
+      "col1": 1,
+      "type": "enc_win"
+    },
+    {
+      "row": 0,
+      "col0": 1,
+      "col1": 1,
+      "type": "open"
+    },
+    {
+      "row": 2,
+      "col0": 2,
+      "col1": 2,
+      "type": "oriel"
+    },
+    {
+      "row": 1,
+      "col0": 2,
+      "col1": 2,
+      "type": "enc_glass"
+    }
+  ],
+  "placement_params": {
+    "width_ratio": 0.42,
+    "height_ratio": 0.5,
+    "bottom_margin_ratio": 0.14,
+    "recess": 0.01,
+    "mirror_x": true
+  }
+}

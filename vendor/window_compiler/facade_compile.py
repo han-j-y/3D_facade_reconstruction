@@ -7,6 +7,8 @@ from typing import Any
 import bpy
 
 from balcony_compile import add_balcony_meshes
+from balcony_layout import balcony_frames, front_window_targets
+from balcony_layout import front_y as balcony_front_y
 from blender_scene import build_blender_scene
 from compiler import compile_spec
 from door_scene import (
@@ -332,6 +334,12 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
     if bool(pp.get("align_type_bottom", True)):
         align_type_bottoms(planned_wins)
 
+    frames = balcony_frames(spec) if spec.get("balcony_placement") else []
+    for wi, (fi, (ox, oz, ww, hh)) in front_window_targets(frames, planned_wins).items():
+        p = planned_wins[wi]
+        p.update(ox=ox, oz=oz, ww=ww, hh=hh, on_balcony=fi)
+        p["oy"] = balcony_front_y(frames[fi]) - max(0.0, recess)
+
     for p in planned:
         if p["kind"] != "window":
             continue
@@ -350,7 +358,23 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
                 [(p["ox"] + q.x, p["oz"] + q.y) for q in contour_for_region(root)]
             )
 
+    front_openings: dict[int, list[dict[str, Any]]] = {}
+    for p in planned_wins:
+        if p.get("on_balcony") is None:
+            continue
+        front_openings.setdefault(int(p["on_balcony"]), []).append(
+            {
+                "x0": p["open_x0"],
+                "x1": p["open_x1"],
+                "z0": p["open_z0"],
+                "z1": p["open_z1"],
+                "outline": p.get("outline"),
+            }
+        )
+
     for p in planned:
+        if p.get("on_balcony") is not None:
+            continue
         if p.get("kind") == "door":
             dd = p.get("door_def") or {}
             top_z = p["oz"] + max(0.35, p["hh"])
@@ -415,7 +439,13 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
         n_segments += len(p["ctx"].segments)
 
     n_balc = add_balcony_meshes(
-        spec, wall_obj, facade_coll, cut_opening=_cut_opening
+        spec,
+        wall_obj,
+        facade_coll,
+        cut_opening=_cut_opening,
+        cut_opening_poly=_cut_opening_poly,
+        frames=frames or None,
+        front_openings=front_openings,
     )
 
     bounds = (-total_w / 2.0, total_w / 2.0, 0.0, total_h)

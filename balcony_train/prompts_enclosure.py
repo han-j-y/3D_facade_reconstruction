@@ -47,7 +47,7 @@ def _half_enclosed_prompts() -> list[str]:
     for i, slot in enumerate(_slots()):
         style = _HALF_STYLES[i % len(_HALF_STYLES)]
         prompts.append(
-            f"{ONE_FACADE}, {slot['floor']} floor, {slot['facade']} facade, "
+            f"{ONE_FACADE}, {slot['view']}, {slot['floor']} floor, {slot['facade']} facade, "
             f"{_PROJECTING}, half-enclosed balcony standing on that projecting "
             f"slab, {style}, open air visible between the columns, no glass walls, "
             f"still open to the outside air, {slot['extra']}, {slot['light']}"
@@ -60,7 +60,7 @@ def _enclosed_prompts() -> list[str]:
     for i, slot in enumerate(_slots()):
         style = _ENCLOSED_STYLES[i % len(_ENCLOSED_STYLES)]
         prompts.append(
-            f"{ONE_FACADE}, {slot['floor']} floor, {slot['facade']} facade, "
+            f"{ONE_FACADE}, {slot['view']}, {slot['floor']} floor, {slot['facade']} facade, "
             f"{_PROJECTING}, enclosed balcony on that projecting slab, {style}, "
             "glass walls so the balcony is not open to the outside air, no open "
             f"railing gaps, {slot['extra']}, {slot['light']}"

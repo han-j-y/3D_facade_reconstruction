@@ -12,8 +12,6 @@ from mathutils import Vector
 from balcony_plan import (  # noqa: E402
     BALUSTER_DIAMETER_M,
     BALUSTER_SPACING_M,
-    DEFAULT_SLAB_DEPTH_M,
-    ENCLOSED_CLEAR_H_M,
     MASONRY_BALUSTER_DIAMETER_M,
     MASONRY_BALUSTER_GAP_M,
     MASONRY_BALUSTER_SPACING_M,
@@ -44,125 +42,18 @@ from balcony_plan import (  # noqa: E402
     support_polyline,
     surface_panel_parts,
 )
-from facade_spec import get_cell, total_grid_size
+from balcony_layout import (
+    COLUMN_WIDTH_M,
+    OUTLINE_SHAPES as _OUTLINE_SHAPES,
+    STACKABLE,
+    balcony_frames,
+    column_points,
+)
 from geometry import assign_mat
 from materials import MATS
 from parse_bdsl import RAIL_ALIASES, RAIL_KINDS
 
-# Plans whose slab and railing follow slab_outline (not an axis-aligned box).
-_OUTLINE_SHAPES = frozenset({"triangle", "circle", "trapezoid", "hexagon"})
-
-
-def _span_xz(
-    spec: dict[str, Any],
-    row: int,
-    col0: int,
-    col1: int,
-    *,
-    mirror_x: bool,
-) -> tuple[float, float, float, float]:
-    a = get_cell(spec, int(row), int(col0), mirror_x=mirror_x)
-    b = get_cell(spec, int(row), int(col1), mirror_x=mirror_x)
-    return (
-        min(float(a["x0"]), float(b["x0"])),
-        max(float(a["x1"]), float(b["x1"])),
-        float(a["z0"]),
-        float(a["z1"]),
-    )
-
-
-def _mean_column_cx(
-    spec: dict[str, Any],
-    row: int,
-    col0: int,
-    col1: int,
-    *,
-    mirror_x: bool,
-) -> float:
-    """Mean X center of grid columns col0..col1 (inclusive)."""
-    c0, c1 = min(int(col0), int(col1)), max(int(col0), int(col1))
-    centers: list[float] = []
-    for col in range(c0, c1 + 1):
-        cell = get_cell(spec, int(row), col, mirror_x=mirror_x)
-        centers.append(0.5 * (float(cell["x0"]) + float(cell["x1"])))
-    return sum(centers) / len(centers)
-
-
-def _photo_x_span(
-    spec: dict[str, Any],
-    rec: dict[str, Any],
-    *,
-    mirror_x: bool,
-    bay_x0: float,
-    bay_x1: float,
-    row: int,
-    col0: int,
-    col1: int,
-) -> tuple[float, float, float]:
-    """Map photo box width/center to world X. Returns (x0, x1, cx).
-
-    Photo u=0 is left; with mirror_x the camera shows world +X on the left,
-    so ``world_x = (0.5 - cx_norm) * total_w``.
-    When cx_norm is missing, uses window_cx_norm (paired window boxes), then
-    bay_cx_norm (mean of photo bay bands), then the mean of associated grid
-    column centers (multi-bay balconies).
-    """
-    total_w, _ = total_grid_size(spec["grid"])
-    total_w = max(0.3, float(total_w))
-    bay_cx = _mean_column_cx(spec, row, col0, col1, mirror_x=mirror_x)
-
-    w_norm = rec.get("width_norm")
-    cx_norm = rec.get("cx_norm")
-    window_cx_norm = rec.get("window_cx_norm")
-    bay_cx_norm = rec.get("bay_cx_norm")
-    try:
-        w_norm_f = float(w_norm) if w_norm is not None else None
-        cx_norm_f = float(cx_norm) if cx_norm is not None else None
-        window_cx_norm_f = (
-            float(window_cx_norm) if window_cx_norm is not None else None
-        )
-        bay_cx_norm_f = float(bay_cx_norm) if bay_cx_norm is not None else None
-    except (TypeError, ValueError):
-        w_norm_f, cx_norm_f, window_cx_norm_f, bay_cx_norm_f = None, None, None, None
-
-    if w_norm_f is None or w_norm_f <= 0:
-        return bay_x0, bay_x1, bay_cx
-
-    span_w = max(0.25, min(total_w * 0.98, w_norm_f * total_w))
-    if cx_norm_f is not None:
-        cx_n = min(1.0, max(0.0, cx_norm_f))
-    elif window_cx_norm_f is not None:
-        cx_n = min(1.0, max(0.0, window_cx_norm_f))
-    elif bay_cx_norm_f is not None:
-        cx_n = min(1.0, max(0.0, bay_cx_norm_f))
-    else:
-        cx = bay_cx
-        x0 = cx - span_w / 2.0
-        x1 = cx + span_w / 2.0
-        half = total_w / 2.0
-        if x0 < -half:
-            x1 += -half - x0
-            x0 = -half
-        if x1 > half:
-            x0 -= x1 - half
-            x1 = half
-        return x0, x1, 0.5 * (x0 + x1)
-
-    if mirror_x:
-        cx = (0.5 - cx_n) * total_w
-    else:
-        cx = (cx_n - 0.5) * total_w
-    x0 = cx - span_w / 2.0
-    x1 = cx + span_w / 2.0
-    # Keep on façade
-    half = total_w / 2.0
-    if x0 < -half:
-        x1 += -half - x0
-        x0 = -half
-    if x1 > half:
-        x0 -= x1 - half
-        x1 = half
-    return x0, x1, 0.5 * (x0 + x1)
+ENCLOSED_WALL_M = 0.20
 
 
 def _link(obj: bpy.types.Object, coll: bpy.types.Collection) -> None:
@@ -258,116 +149,135 @@ def _add_solid_rect_parapet(
         )
 
 
-def _add_enclosed_rect_box(
+def _add_enclosed_shell(
     *,
     prefix: str,
-    cx: float,
-    x0: float,
-    x1: float,
+    outline: list[tuple[float, float]],
     y_wall: float,
-    depth: float,
-    z_floor_top: float,
-    clear_h: float,
-    slab_t: float,
-    glass_t: float,
+    z_lo: float,
+    z_hi: float,
+    infill: str,
+    wall_mat: str,
+    openings: list[dict[str, Any]],
+    cut_opening: Callable[..., None],
+    cut_opening_poly: Callable[..., None] | None,
     parent: bpy.types.Collection,
 ) -> None:
-    """Floor already placed. Ceiling + 3-sided glass + 1 m vertical mullions."""
-    if x1 < x0:
-        x0, x1 = x1, x0
-    width = max(0.4, x1 - x0)
-    depth = max(0.4, float(depth))
-    clear_h = max(1.2, float(clear_h))
-    glass_t = max(0.006, float(glass_t))
+    """Faces on every outer edge of the slab, floor top to ``z_hi``.
+
+    ``infill`` glass: glass panes with ~1 m mullions. ``infill`` wall: solid
+    panels; ``openings`` are cut through the flat front panel, where the
+    compiler places the matching windows.
+    """
+    mid = centroid(outline)
+    y_far = max(p[1] for p in outline)
+    height = max(0.3, z_hi - z_lo)
+    z_mid = z_lo + height / 2.0
     mull_w = MULLION_WIDTH_M
-    y_front = y_wall + depth
-    z_mid = z_floor_top + clear_h / 2.0
-    z_ceil = z_floor_top + clear_h + slab_t / 2.0
-
-    _cube(
-        name=f"{prefix}_ceil",
-        cx=cx,
-        cy=y_wall + depth / 2.0,
-        cz=z_ceil,
-        sx=width,
-        sy=depth,
-        sz=slab_t,
-        mat_key="slab",
-        parent=parent,
-    )
-
-    for i, (a, b) in enumerate(
-        glass_bays(width, MULLION_SPACING_M, mull_w, start_post=True, end_post=True)
-    ):
-        _cube(
-            name=f"{prefix}_glass_f_{i}",
-            cx=x0 + 0.5 * (a + b),
-            cy=y_front - glass_t / 2.0,
-            cz=z_mid,
-            sx=b - a,
-            sy=glass_t,
-            sz=clear_h,
-            mat_key="glass",
-            parent=parent,
-        )
-    for side, x_face, inward in (
-        ("L", x0, 1.0),
-        ("R", x1, -1.0),
-    ):
-        for i, (a, b) in enumerate(
-            glass_bays(
-                depth, MULLION_SPACING_M, mull_w, start_post=False, end_post=True
+    for e, (p0, p1) in enumerate(outer_edges(outline, y_wall)):
+        length = math.hypot(p1[0] - p0[0], p1[1] - p0[1])
+        if length < 1e-3:
+            continue
+        ux, uy = (p1[0] - p0[0]) / length, (p1[1] - p0[1]) / length
+        if infill == "wall":
+            t = min(ENCLOSED_WALL_M, max(0.05, length * 0.4))
+            a, b = inset_edge(p0, p1, mid, t / 2.0)
+            # Side panels square to the wall stop behind the front panel (no coplanar ends).
+            if abs(ux) < 1e-4 and length > t:
+                if abs(p1[1] - y_far) < 1e-4:
+                    b = (b[0], b[1] - uy * t)
+                if abs(p0[1] - y_far) < 1e-4:
+                    a = (a[0], a[1] + uy * t)
+            panel = _box_along_xy(
+                name=f"{prefix}_wall_{e}",
+                p0=a,
+                p1=b,
+                z_lo=z_lo,
+                z_hi=z_hi,
+                thickness=t,
+                mat_key=wall_mat,
+                parent=parent,
             )
+            is_front = abs(p0[1] - y_far) < 1e-4 and abs(p1[1] - y_far) < 1e-4
+            if panel is None or not is_front:
+                continue
+            for o in openings:
+                if o.get("outline") and cut_opening_poly is not None:
+                    cut_opening_poly(panel, o["outline"], front_y=y_far, depth=t)
+                else:
+                    cut_opening(
+                        panel,
+                        x0=o["x0"],
+                        z0=o["z0"],
+                        x1=o["x1"],
+                        z1=o["z1"],
+                        front_y=y_far,
+                        depth=t,
+                    )
+            continue
+
+        a, b = inset_edge(p0, p1, mid, GLASS_PANEL_M / 2.0)
+        for i, (s0, s1) in enumerate(
+            glass_bays(length, MULLION_SPACING_M, mull_w, start_post=True, end_post=True)
         ):
-            _cube(
-                name=f"{prefix}_glass_{side}_{i}",
-                cx=x_face + inward * glass_t / 2.0,
-                cy=y_wall + 0.5 * (a + b),
-                cz=z_mid,
-                sx=glass_t,
-                sy=b - a,
-                sz=clear_h,
+            _box_along_xy(
+                name=f"{prefix}_glass_{e}_{i}",
+                p0=(a[0] + ux * s0, a[1] + uy * s0),
+                p1=(a[0] + ux * s1, a[1] + uy * s1),
+                z_lo=z_lo,
+                z_hi=z_hi,
+                thickness=GLASS_PANEL_M,
                 mat_key="glass",
                 parent=parent,
             )
-
-    for i, s in enumerate(
-        grid_stations(width, MULLION_SPACING_M, include_start=True, include_end=True)
-    ):
-        if s <= 1e-9:
-            mx = x0 + mull_w / 2.0
-        elif s >= width - 1e-9:
-            mx = x1 - mull_w / 2.0
-        else:
-            mx = x0 + s
-        _cube(
-            name=f"{prefix}_mull_f_{i}",
-            cx=mx,
-            cy=y_front - mull_w / 2.0,
-            cz=z_mid,
-            sx=mull_w,
-            sy=mull_w,
-            sz=clear_h,
-            mat_key="slab",
-            parent=parent,
-        )
-    for side, x_face, inward in (
-        ("L", x0, 1.0),
-        ("R", x1, -1.0),
-    ):
         for i, s in enumerate(
-            grid_stations(
-                depth, MULLION_SPACING_M, include_start=False, include_end=False
-            )
+            grid_stations(length, MULLION_SPACING_M, include_start=True, include_end=True)
         ):
+            s = min(max(s, mull_w / 2.0), length - mull_w / 2.0)
+            mx, my = inset_point((p0[0] + ux * s, p0[1] + uy * s), mid, mull_w / 2.0)
             _cube(
-                name=f"{prefix}_mull_{side}_{i}",
-                cx=x_face + inward * mull_w / 2.0,
-                cy=y_wall + s,
+                name=f"{prefix}_mull_{e}_{i}",
+                cx=mx,
+                cy=my,
                 cz=z_mid,
                 sx=mull_w,
                 sy=mull_w,
-                sz=clear_h,
+                sz=height,
+                mat_key="slab",
+                parent=parent,
+            )
+
+
+def _add_columns(
+    *,
+    prefix: str,
+    points: list[tuple[float, float]],
+    z_lo: float,
+    z_hi: float,
+    width: float,
+    style: str,
+    parent: bpy.types.Collection,
+) -> None:
+    for i, (px, py) in enumerate(points):
+        if style == "round":
+            _cylinder_between(
+                name=f"{prefix}_col_{i}",
+                p0=(px, py, z_lo),
+                p1=(px, py, z_hi),
+                radius=width / 2.0,
+                mat_key="slab",
+                parent=parent,
+                vertices=16,
+            )
+        else:
+            _cube(
+                name=f"{prefix}_col_{i}",
+                cx=px,
+                cy=py,
+                cz=0.5 * (z_lo + z_hi),
+                sx=width,
+                sy=width,
+                sz=z_hi - z_lo,
                 mat_key="slab",
                 parent=parent,
             )
@@ -829,8 +739,16 @@ def add_balcony_meshes(
     facade_coll: bpy.types.Collection,
     *,
     cut_opening: Callable[..., None],
+    cut_opening_poly: Callable[..., None] | None = None,
+    frames: list[dict[str, Any] | None] | None = None,
+    front_openings: dict[int, list[dict[str, Any]]] | None = None,
 ) -> int:
-    """Slab + railing. Triangle plans use a prism; others stay boxes."""
+    """Slab + railing, plus columns / enclosure shells.
+
+    ``frames`` come from ``balcony_layout.balcony_frames`` (computed here when
+    omitted). ``front_openings`` maps a frame index to the window openings the
+    façade compiler moved onto that enclosed balcony's front face.
+    """
     library = spec.get("balconies") or {}
     placements = spec.get("balcony_placement") or []
     if not library or not placements:
@@ -839,61 +757,36 @@ def add_balcony_meshes(
     wall = spec.get("wall") or {}
     front_y = float(wall.get("base_front_y", 0.0))
     wall_depth = float(wall.get("depth", 0.42))
-    pp = spec.get("placement_params") or {}
-    mirror_x = bool(pp.get("mirror_x", True))
-    bottom_m = float(pp.get("bottom_margin_ratio", 0.14))
+    wall_mat = str(wall.get("material") or "wall")
+    if frames is None:
+        frames = balcony_frames(spec)
+    front_openings = front_openings or {}
 
     balc_coll = bpy.data.collections.new("Balconies")
     facade_coll.children.link(balc_coll)
 
     n = 0
-    for i, rec in enumerate(placements):
-        name = str(rec.get("type") or "")
-        ir = library.get(name)
-        if not isinstance(ir, dict):
-            print(f"warn: unknown balcony type {name!r}")
+    for frame in frames:
+        if frame is None:
             continue
-        row = int(rec.get("row", 0))
-        c0 = int(rec.get("col0", rec.get("col", 0)))
-        c1 = int(rec.get("col1", c0))
-        n_cols = len((spec.get("grid") or {}).get("cols") or [])
-        n_rows = len((spec.get("grid") or {}).get("rows") or [])
-        if not (0 <= row < n_rows and 0 <= c0 < n_cols and 0 <= c1 < n_cols):
-            print(f"warn: balcony placement out of grid {rec}")
-            continue
-
-        x0, x1, z0, z1 = _span_xz(spec, row, c0, c1, mirror_x=mirror_x)
-        x0, x1, cx = _photo_x_span(
-            spec,
-            rec,
-            mirror_x=mirror_x,
-            bay_x0=x0,
-            bay_x1=x1,
-            row=row,
-            col0=c0,
-            col1=c1,
-        )
-        span_w = max(0.3, x1 - x0)
-        cell_h = max(0.3, z1 - z0)
-        floor = ir.get("floor") or {}
-        params = floor.get("params") or {}
-        shape = str(floor.get("shape") or "rectangle").lower()
-        depth = float(DEFAULT_SLAB_DEPTH_M)
-        thick = float((ir.get("output") or {}).get("slab_thickness") or 0.12)
+        i = int(frame["index"])
+        name = frame["name"]
+        ir = library[name]
+        x0, x1, cx = frame["x0"], frame["x1"], frame["cx"]
+        span_w = frame["span_w"]
+        cell_h = frame["cell_h"]
+        params = (ir.get("floor") or {}).get("params") or {}
+        shape = frame["shape"]
+        depth = frame["depth"]
+        thick = frame["thick"]
         rail_h = float((ir.get("railing") or {}).get("height") or 1.1)
         kind = _rail_kind(str((ir.get("railing") or {}).get("kind") or "open_work"))
         rail_material = _rail_material((ir.get("railing") or {}).get("material"))
-        structure = str(ir.get("structure") or "projecting")
-        enclosure = str(ir.get("enclosure") or "open")
-
-        sill_z = z0 + cell_h * bottom_m
-        if structure == "free_standing":
-            deck_h = float(params.get("height") or 0.0)
-            if deck_h > 0.05:
-                sill_z = deck_h
+        structure = frame["structure"]
+        enclosure = frame["enclosure"]
+        sill_z = frame["sill_z"]
         slab_z = sill_z + thick / 2.0
-        pad = span_w * 0.01
-        bx0, bx1 = x0 + pad, x1 - pad
+        bx0, bx1 = frame["bx0"], frame["bx1"]
 
         prefix = f"Balc_{i}_{name}"
         if kind == "solid" or (kind == "open_work" and rail_material == "masonry"):
@@ -1036,24 +929,7 @@ def add_balcony_meshes(
 
         slab_y = front_y + depth / 2.0
         y_wall = front_y
-
-        if shape in _OUTLINE_SHAPES or (
-            enclosure == "enclosed" and shape == "rectangle"
-        ):
-            tw = float(params.get("width") or params.get("diameter") or 0.0)
-            if tw > 0.3:
-                tw = min(tw, span_w * 0.98)
-                bx0 = cx - tw / 2.0
-                bx1 = cx + tw / 2.0
-
-        outline = slab_outline(
-            shape if shape in _OUTLINE_SHAPES else "rectangle",
-            x0=bx0,
-            x1=bx1,
-            y_wall=y_wall,
-            depth=depth,
-            structure=structure,
-        )
+        outline = frame["outline"]
 
         if shape in _OUTLINE_SHAPES:
             _prism_xy(
@@ -1065,7 +941,11 @@ def add_balcony_meshes(
                 parent=balc_coll,
             )
         else:
-            sx_slab = (bx1 - bx0) if enclosure == "enclosed" else span_w * 0.98
+            sx_slab = (
+                (bx1 - bx0)
+                if enclosure in STACKABLE or frame["aligned"]
+                else span_w * 0.98
+            )
             _cube(
                 name=f"{prefix}_slab",
                 cx=cx,
@@ -1078,21 +958,50 @@ def add_balcony_meshes(
                 parent=balc_coll,
             )
 
+        z_floor_top = sill_z + thick
+        z_top = float(frame["top_z"] or z_floor_top)
+        if enclosure in STACKABLE and frame["roof"] == "own":
+            _prism_xy(
+                name=f"{prefix}_roof",
+                verts_xy=outline,
+                z0=z_top,
+                z1=z_top + thick,
+                mat_key="slab",
+                parent=balc_coll,
+            )
+        if enclosure == "half_enclosed":
+            cols = ir.get("columns") or {}
+            col_w = float(cols.get("width") or COLUMN_WIDTH_M)
+            _add_columns(
+                prefix=prefix,
+                points=column_points(
+                    frame, count=int(cols.get("count") or 0), width=col_w
+                ),
+                z_lo=z_floor_top,
+                z_hi=z_top,
+                width=col_w,
+                style=str(cols.get("style") or "square"),
+                parent=balc_coll,
+            )
+
         if enclosure == "enclosed":
-            if shape == "rectangle":
-                _add_enclosed_rect_box(
-                    prefix=prefix,
-                    cx=cx,
-                    x0=bx0,
-                    x1=bx1,
-                    y_wall=y_wall,
-                    depth=depth,
-                    z_floor_top=sill_z + thick,
-                    clear_h=max(1.8, float(params.get("height") or ENCLOSED_CLEAR_H_M)),
-                    slab_t=thick,
-                    glass_t=GLASS_PANEL_M,
-                    parent=balc_coll,
-                )
+            openings = front_openings.get(i) or []
+            infill = str((ir.get("walls") or {}).get("infill") or "glass")
+            if openings:
+                infill = "wall"
+            _add_enclosed_shell(
+                prefix=prefix,
+                outline=outline,
+                y_wall=y_wall,
+                z_lo=z_floor_top,
+                z_hi=z_top,
+                infill=infill,
+                wall_mat=wall_mat,
+                openings=openings,
+                cut_opening=cut_opening,
+                cut_opening_poly=cut_opening_poly,
+                parent=balc_coll,
+            )
         elif kind == "open_work":
             _add_open_work_guard(
                 prefix=prefix,
