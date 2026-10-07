@@ -38,7 +38,7 @@ nohup python -u balcony_train/run_flux2_rare50.py > runs/balcony_clf/flux2_rare5
 echo $! | tee runs/balcony_clf/flux2_rare50.pid
 ```
 
-That run clears previous files of those five prefixes in ``crops/unlabeled``, then writes 50 new images of each. Leave them at full size; the 120×44 resize below skips `flux2_triangle_`, `flux2_trapezoid_`, `flux2_hexagon_`, `flux2_half_enclosed_`, and `flux2_enclosed_`. ``label_from_prefix.py`` does not move them.
+That run clears previous files of those five prefixes in ``crops/unlabeled``, then writes 50 new images of each. Leave them at full size; the 120×44 resize below skips `flux2_triangle_`, `flux2_trapezoid_`, `flux2_hexagon_`, `flux2_half_enclosed_`, and `flux2_enclosed_`. ``label_from_prefix.py`` labels `flux2_{triangle,hexagon,trapezoid}_{masonry,metal,solid,surface}_` and leaves `flux2_half_enclosed_` and `flux2_enclosed_` in unlabeled.
 
 Prefixes: `flux2_masonry_`, `flux2_metal_`, `flux2_surface_`, `flux2_solid_`. Label in UI as
 `open_work`+`masonry`, `open_work`+`metal`, `surface_panel`, or `solid` respectively.

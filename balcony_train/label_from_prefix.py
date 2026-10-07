@@ -7,12 +7,21 @@ Maps::
     flux2_surface_*  -> surface_panel
     flux2_solid_*    -> solid
 
-Floor-plan and enclosure names (``flux2_triangle_``, ``flux2_trapezoid_``,
-``flux2_hexagon_``, ``flux2_half_enclosed_``, ``flux2_enclosed_``) stay in
-``unlabeled``.
+    flux2_{triangle,hexagon,trapezoid}_{masonry,metal}_*
+        -> open_work + that material + that floor shape
+    flux2_{triangle,hexagon,trapezoid}_surface_*
+        -> surface_panel + that floor shape
+    flux2_{triangle,hexagon,trapezoid}_solid_*
+        -> solid + that floor shape
+
+All of the above are enclosure ``open``.
+
+    flux2_half_enclosed_*  -> enclosure half_enclosed (kind unset)
+    flux2_enclosed_*       -> enclosure enclosed (kind unset)
 
 Moves matched files into ``crops/{kind}/`` and appends ``labels.jsonl`` via
-``save_annotation`` (same as Label UI).
+``save_annotation`` (same as Label UI). Enclosure-only files stay in
+``unlabeled/``; set their kind and floor in the Label UI.
 
 Example::
 
@@ -37,24 +46,37 @@ from balcony_train.labels import LABELED_IMAGE_SUFFIXES  # noqa: E402
 from balcony_train.paths import DEFAULT_CROPS_DIR, DEFAULT_LABELS_JSONL  # noqa: E402
 
 # Longest-prefix-first matching (order matters if names ever overlap).
-# Each row is (prefix, kind, material, floor_shape).
-# Floor-plan and enclosure crops stay in unlabeled for review. Their names
-# (flux2_triangle_, flux2_trapezoid_, flux2_hexagon_, flux2_half_enclosed_,
-# flux2_enclosed_) are intentionally absent here.
-PREFIX_LABELS: tuple[tuple[str, str, str | None, str | None], ...] = (
-    ("flux2_masonry_", "open_work", "masonry", None),
-    ("flux2_metal_", "open_work", "metal", None),
-    ("flux2_surface_", "surface_panel", None, None),
-    ("flux2_solid_", "solid", None, None),
+# Each row is (prefix, kind, material, floor_shape, enclosure).
+_FLOOR_PLAN_SHAPES: tuple[str, ...] = ("triangle", "hexagon", "trapezoid")
+_FLOOR_PLAN_KINDS: tuple[tuple[str, str, str | None], ...] = (
+    ("masonry", "open_work", "masonry"),
+    ("metal", "open_work", "metal"),
+    ("surface", "surface_panel", None),
+    ("solid", "solid", None),
+)
+PrefixLabel = tuple[str, str | None, str | None, str | None, str]
+
+PREFIX_LABELS: tuple[PrefixLabel, ...] = (
+    *(
+        (f"flux2_{shape}_{token}_", kind, material, shape, "open")
+        for shape in _FLOOR_PLAN_SHAPES
+        for token, kind, material in _FLOOR_PLAN_KINDS
+    ),
+    ("flux2_half_enclosed_", None, None, None, "half_enclosed"),
+    ("flux2_enclosed_", None, None, None, "enclosed"),
+    ("flux2_masonry_", "open_work", "masonry", None, "open"),
+    ("flux2_metal_", "open_work", "metal", None, "open"),
+    ("flux2_surface_", "surface_panel", None, None, "open"),
+    ("flux2_solid_", "solid", None, None, "open"),
 )
 
 
-def match_prefix(name: str) -> tuple[str, str, str | None, str | None] | None:
-    """Return (prefix, kind, material, floor_shape) for a known filename."""
+def match_prefix(name: str) -> PrefixLabel | None:
+    """Return (prefix, kind, material, floor_shape, enclosure) for a known filename."""
     lower = name.lower()
-    for prefix, kind, material, floor_shape in PREFIX_LABELS:
-        if lower.startswith(prefix):
-            return prefix, kind, material, floor_shape
+    for row in PREFIX_LABELS:
+        if lower.startswith(row[0]):
+            return row
     return None
 
 
@@ -81,7 +103,7 @@ def label_from_prefixes(
     unlabeled_dir = Path(unlabeled_dir)
     jsonl_path = Path(jsonl_path)
 
-    counts = {prefix: 0 for prefix, _, _, _ in PREFIX_LABELS}
+    counts = {row[0]: 0 for row in PREFIX_LABELS}
     counts["skipped_no_prefix"] = 0
     counts["labeled"] = 0
 
@@ -98,12 +120,8 @@ def label_from_prefixes(
             counts["skipped_no_prefix"] += 1
             print(f"skip (unknown prefix): {path.name}")
             continue
-        prefix, kind, material, floor_shape = matched
-        detail = kind
-        if material:
-            detail += f" + {material}"
-        if floor_shape:
-            detail += f" + {floor_shape}"
+        prefix, kind, material, floor_shape, enclosure = matched
+        detail = " + ".join(str(v) for v in (kind, material, floor_shape, enclosure) if v)
         if dry_run:
             print(f"DRY {path.name} -> {detail}")
         else:
@@ -115,6 +133,7 @@ def label_from_prefixes(
                 kind=kind,
                 material=material,
                 floor_shape=floor_shape,
+                enclosure=enclosure,
                 labels=labels,
             )
             print(f"{path.name} -> {detail}")
@@ -167,8 +186,8 @@ def main(argv: list[str] | None = None) -> int:
         dry_run=bool(args.dry_run),
     )
     print("---")
-    for prefix, _, _, _ in PREFIX_LABELS:
-        print(f"{prefix}*: {stats[prefix]}")
+    for row in PREFIX_LABELS:
+        print(f"{row[0]}*: {stats[row[0]]}")
     print(f"skipped_no_prefix: {stats['skipped_no_prefix']}")
     print(f"labeled: {stats['labeled']}")
     if args.dry_run:

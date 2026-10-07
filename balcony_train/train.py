@@ -1,7 +1,7 @@
-"""Train multitask kind, material, and floor-shape heads on frozen DINOv2.
+"""Train multitask kind, material, floor-shape, enclosure heads on frozen DINOv2.
 
 Saves ``checkpoints/railing_best.pt``. Material loss applies only to open_work.
-Floor loss applies only where ``floor_shape`` is set.
+Floor / enclosure / kind losses apply only where that label is set.
 
 ``--init-ckpt`` loads an existing kind/material checkpoint.
 ``--floor-only`` trains just the floor head and leaves those weights unchanged.
@@ -25,11 +25,15 @@ if str(ROOT) not in sys.path:
 from balcony_train.dataset import MultitaskCropDataset  # noqa: E402
 from balcony_train.labels import (  # noqa: E402
     CLASSES,
+    ENCLOSURE_IGNORE_INDEX,
+    ENCLOSURES,
     FLOOR_IGNORE_INDEX,
     FLOOR_SHAPES,
+    KIND_IGNORE_INDEX,
     MATERIAL_IGNORE_INDEX,
     MATERIALS,
     class_counts,
+    enclosure_counts,
     floor_counts,
     material_counts,
 )
@@ -62,15 +66,24 @@ def _metrics(
     mat_total = 0
     floor_correct = 0
     floor_total = 0
-    for images, kind_y, mat_y, floor_y in loader:
+    enc_correct = 0
+    enc_total = 0
+    for images, kind_y, mat_y, floor_y, enc_y in loader:
         images = images.to(device)
         kind_y = kind_y.to(device)
         mat_y = mat_y.to(device)
         floor_y = floor_y.to(device)
-        kind_logits, mat_logits, floor_logits = model(images)
+        enc_y = enc_y.to(device)
+        kind_logits, mat_logits, floor_logits, enc_logits = model(images)
+        kind_mask = kind_y != KIND_IGNORE_INDEX
         kind_pred = kind_logits.argmax(dim=1)
-        kind_correct += int((kind_pred == kind_y).sum().item())
-        kind_total += int(kind_y.numel())
+        kind_correct += int((kind_pred[kind_mask] == kind_y[kind_mask]).sum().item())
+        kind_total += int(kind_mask.sum().item())
+        enc_mask = enc_y != ENCLOSURE_IGNORE_INDEX
+        if bool(enc_mask.any()):
+            enc_pred = enc_logits.argmax(dim=1)
+            enc_correct += int((enc_pred[enc_mask] == enc_y[enc_mask]).sum().item())
+            enc_total += int(enc_mask.sum().item())
         mask = mat_y != MATERIAL_IGNORE_INDEX
         if bool(mask.any()):
             mat_pred = mat_logits.argmax(dim=1)
@@ -85,9 +98,11 @@ def _metrics(
         "kind_acc": kind_correct / max(kind_total, 1),
         "material_acc": mat_correct / max(mat_total, 1) if mat_total else float("nan"),
         "floor_acc": floor_correct / max(floor_total, 1) if floor_total else float("nan"),
+        "enclosure_acc": enc_correct / max(enc_total, 1) if enc_total else float("nan"),
         "n_kind": float(kind_total),
         "n_material": float(mat_total),
         "n_floor": float(floor_total),
+        "n_enclosure": float(enc_total),
     }
 
 
@@ -102,6 +117,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--material-loss-weight", type=float, default=1.0)
     ap.add_argument("--floor-loss-weight", type=float, default=1.0)
+    ap.add_argument("--enclosure-loss-weight", type=float, default=1.0)
     ap.add_argument("--train-frac", type=float, default=DEFAULT_TRAIN_FRAC)
     ap.add_argument("--val-frac", type=float, default=DEFAULT_VAL_FRAC)
     ap.add_argument("--test-frac", type=float, default=DEFAULT_TEST_FRAC)
@@ -148,6 +164,9 @@ def load_init_heads(model: RailingClassifier, ckpt_path: Path) -> bool:
     if "material_head" not in ckpt or mats != tuple(model.materials):
         raise SystemExit(f"init checkpoint missing material head: {ckpt_path}")
     model.material_head.load_state_dict(ckpt["material_head"])
+    encs = tuple(ckpt.get("enclosures") or ())
+    if "enclosure_head" in ckpt and encs == tuple(model.enclosures):
+        model.enclosure_head.load_state_dict(ckpt["enclosure_head"])
     floors = tuple(ckpt.get("floor_shapes") or ())
     if "floor_head" in ckpt and floors == tuple(model.floor_shapes):
         model.floor_head.load_state_dict(ckpt["floor_head"])
@@ -170,9 +189,10 @@ def main() -> None:
     counts = class_counts(samples)
     mat_counts = material_counts(samples)
     shape_counts = floor_counts(samples)
+    enc_counts = enclosure_counts(samples)
     print(
         f"labeled kind: {counts}  material(open_work): {mat_counts}  "
-        f"floor: {shape_counts}"
+        f"floor: {shape_counts}  enclosure: {enc_counts}"
     )
     print(f"labels={args.labels}  dir={args.data_dir}")
     if min(counts.values()) < 1:
@@ -193,6 +213,7 @@ def main() -> None:
     print(f"  train={len(train_idx)}  val={len(val_idx)}  test={len(test_idx)}")
     print(f"  per-fold kind: {record.get('split_counts')}")
     print(f"  per-fold material: {record.get('split_material_counts')}")
+    print(f"  per-fold enclosure: {record.get('split_enclosure_counts')}")
 
     device = torch.device(args.device)
     ds = MultitaskCropDataset(samples)
@@ -213,6 +234,7 @@ def main() -> None:
     train_counts = class_counts(train_rows)
     train_mat_counts = material_counts(train_rows)
     train_floor_counts = floor_counts(train_rows)
+    train_enc_counts = enclosure_counts(train_rows)
     if args.floor_only and args.init_ckpt is None:
         raise SystemExit("--floor-only requires --init-ckpt")
     if args.floor_only and sum(int(train_floor_counts[name]) for name in FLOOR_SHAPES) < 1:
@@ -238,10 +260,11 @@ def main() -> None:
             list(model.kind_head.parameters())
             + list(model.material_head.parameters())
             + list(model.floor_head.parameters())
+            + list(model.enclosure_head.parameters())
         )
-    model.kind_head.train()
-    model.material_head.train()
-    model.floor_head.train()
+    heads = (model.kind_head, model.material_head, model.floor_head, model.enclosure_head)
+    for head in heads:
+        head.train()
     opt = torch.optim.Adam(train_params, lr=args.lr)
     n = max(sum(int(train_counts[c]) for c in CLASSES), 1)
     k = max(len(CLASSES), 1)
@@ -250,7 +273,15 @@ def main() -> None:
         dtype=torch.float32,
         device=device,
     )
-    kind_loss_fn = nn.CrossEntropyLoss(weight=kind_weight)
+    kind_loss_fn = nn.CrossEntropyLoss(weight=kind_weight, ignore_index=KIND_IGNORE_INDEX)
+    enc_n = max(sum(int(train_enc_counts[e]) for e in ENCLOSURES), 1)
+    enc_weight = torch.tensor(
+        [enc_n / (len(ENCLOSURES) * max(int(train_enc_counts[e]), 1)) for e in ENCLOSURES],
+        dtype=torch.float32,
+        device=device,
+    )
+    enc_loss_fn = nn.CrossEntropyLoss(weight=enc_weight, ignore_index=ENCLOSURE_IGNORE_INDEX)
+    enc_w = float(args.enclosure_loss_weight)
 
     mat_n = max(sum(int(train_mat_counts[m]) for m in MATERIALS), 1)
     mat_k = max(len(MATERIALS), 1)
@@ -278,29 +309,37 @@ def main() -> None:
     best_score = -1.0
     best_state = None
     for epoch in range(1, args.epochs + 1):
-        model.kind_head.train()
-        model.material_head.train()
-        model.floor_head.train()
+        for head in heads:
+            head.train()
         model.backbone.eval()
         running = 0.0
         n_batch = 0
-        for images, kind_y, mat_y, floor_y in train_loader:
+        for images, kind_y, mat_y, floor_y, enc_y in train_loader:
             images = images.to(device)
             kind_y = kind_y.to(device)
             mat_y = mat_y.to(device)
             floor_y = floor_y.to(device)
-            kind_logits, mat_logits, floor_logits = model(images)
+            enc_y = enc_y.to(device)
+            kind_logits, mat_logits, floor_logits, enc_logits = model(images)
             has_floor = bool((floor_y != FLOOR_IGNORE_INDEX).any())
             if args.floor_only:
                 if not has_floor:
                     continue
                 loss = floor_w * floor_loss_fn(floor_logits, floor_y)
             else:
-                loss = kind_loss_fn(kind_logits, kind_y)
+                # An all-ignored batch makes CrossEntropyLoss NaN, so each term is gated.
+                terms = []
+                if bool((kind_y != KIND_IGNORE_INDEX).any()):
+                    terms.append(kind_loss_fn(kind_logits, kind_y))
                 if bool((mat_y != MATERIAL_IGNORE_INDEX).any()):
-                    loss = loss + mat_w * mat_loss_fn(mat_logits, mat_y)
+                    terms.append(mat_w * mat_loss_fn(mat_logits, mat_y))
                 if has_floor:
-                    loss = loss + floor_w * floor_loss_fn(floor_logits, floor_y)
+                    terms.append(floor_w * floor_loss_fn(floor_logits, floor_y))
+                if bool((enc_y != ENCLOSURE_IGNORE_INDEX).any()):
+                    terms.append(enc_w * enc_loss_fn(enc_logits, enc_y))
+                if not terms:
+                    continue
+                loss = sum(terms)
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -312,18 +351,24 @@ def main() -> None:
         kind_acc = metrics["kind_acc"]
         mat_acc = metrics["material_acc"]
         floor_acc = metrics["floor_acc"]
+        enc_acc = metrics["enclosure_acc"]
         parts = [f"kind_acc={kind_acc:.3f}"]
-        weights = [(kind_acc, 0.5)]
+        weights = [(kind_acc, 0.4)]
         if mat_acc == mat_acc:
             parts.append(f"mat_acc={mat_acc:.3f}")
-            weights.append((mat_acc, 0.25))
+            weights.append((mat_acc, 0.2))
         else:
             parts.append("mat_acc=n/a")
         if floor_acc == floor_acc:
             parts.append(f"floor_acc={floor_acc:.3f}")
-            weights.append((floor_acc, 0.25))
+            weights.append((floor_acc, 0.2))
         else:
             parts.append("floor_acc=n/a")
+        if enc_acc == enc_acc:
+            parts.append(f"enc_acc={enc_acc:.3f}")
+            weights.append((enc_acc, 0.2))
+        else:
+            parts.append("enc_acc=n/a")
         weight_sum = sum(w for _acc, w in weights)
         score = sum(acc * w for acc, w in weights) / weight_sum
         extra = "  ".join(parts)
@@ -331,25 +376,14 @@ def main() -> None:
         print(f"epoch {epoch:03d}  loss={train_loss:.4f}  {tag}_{extra}")
         if score >= best_score:
             best_score = score
-            best_state = {
-                "kind_head": {
-                    k: v.detach().cpu().clone()
-                    for k, v in model.kind_head.state_dict().items()
-                },
-                "material_head": {
-                    k: v.detach().cpu().clone()
-                    for k, v in model.material_head.state_dict().items()
-                },
-                "floor_head": {
-                    k: v.detach().cpu().clone()
-                    for k, v in model.floor_head.state_dict().items()
-                },
-            }
+            best_state = [
+                {k: v.detach().cpu().clone() for k, v in head.state_dict().items()}
+                for head in heads
+            ]
 
     if best_state is not None:
-        model.kind_head.load_state_dict(best_state["kind_head"])
-        model.material_head.load_state_dict(best_state["material_head"])
-        model.floor_head.load_state_dict(best_state["floor_head"])
+        for head, state in zip(heads, best_state):
+            head.load_state_dict(state)
     save_checkpoint(
         model,
         args.out,
@@ -357,9 +391,11 @@ def main() -> None:
         class_counts=counts,
         material_counts=mat_counts,
         floor_counts=shape_counts,
+        enclosure_counts=enc_counts,
         train_counts=train_counts,
         train_material_counts=train_mat_counts,
         train_floor_counts=train_floor_counts,
+        train_enclosure_counts=train_enc_counts,
         split_file=str(args.split_file),
         epochs=args.epochs,
     )

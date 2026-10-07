@@ -75,6 +75,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=1.0,
         help=">1 moves the camera closer (1.3 ≈ small side margins)",
     )
+    ap.add_argument(
+        "--swing",
+        type=float,
+        default=0.0,
+        help="degrees; >0 swings front -> viewer's left by DEG -> right by DEG instead of 360°",
+    )
+    ap.add_argument(
+        "--bob",
+        type=float,
+        default=0.0,
+        help="vertical camera drift as a fraction of façade height (one sine cycle; 0.03 is subtle)",
+    )
     ap.add_argument("--preview", action="store_true", help="render frame 1 PNG only")
     ap.add_argument(
         "--blender",
@@ -233,6 +245,8 @@ def _setup_camera_orbit(
     n_frames: int,
     fps: int,
     start_angle_deg: float,
+    swing_deg: float = 0.0,
+    bob_m: float = 0.0,
 ):
     import bpy
 
@@ -297,9 +311,27 @@ def _setup_camera_orbit(
         pivot.animation_data_clear()
     pivot.rotation_euler = (0.0, 0.0, 0.0)
     pivot.keyframe_insert("rotation_euler", frame=1)
-    pivot.rotation_euler = (0.0, 0.0, 2.0 * math.pi)
-    pivot.keyframe_insert("rotation_euler", frame=n_frames + 1)
-    _linearize_fcurves(pivot)
+    if swing_deg > 0:
+        # Negative Z turns the camera toward +X, the left of a viewer facing the façade.
+        s = math.radians(float(swing_deg))
+        turn = 1 + max(1, round((n_frames - 1) / 3))
+        pivot.rotation_euler = (0.0, 0.0, -s)
+        pivot.keyframe_insert("rotation_euler", frame=turn)
+        pivot.rotation_euler = (0.0, 0.0, s)
+        pivot.keyframe_insert("rotation_euler", frame=n_frames)
+    else:
+        pivot.rotation_euler = (0.0, 0.0, 2.0 * math.pi)
+        pivot.keyframe_insert("rotation_euler", frame=n_frames + 1)
+        _linearize_fcurves(pivot)
+
+    if cam.animation_data and cam.animation_data.action:
+        cam.animation_data_clear()
+    if bob_m > 0:
+        for f in range(1, n_frames + 1):
+            phase = 2.0 * math.pi * (f - 1) / max(1, n_frames - 1)
+            cam.location.z = cam_z + bob_m * math.sin(phase)
+            cam.keyframe_insert("location", index=2, frame=f)
+        cam.location.z = cam_z
 
     bpy.context.view_layer.update()
     return cam, pivot
@@ -389,6 +421,8 @@ def blender_main(args: argparse.Namespace) -> None:
         n_frames=args.frames,
         fps=args.fps,
         start_angle_deg=args.start_angle,
+        swing_deg=args.swing,
+        bob_m=max(0.0, float(args.bob)) * h,
     )
 
     blend_path = Path(bpy.data.filepath) if bpy.data.filepath else Path.cwd() / "facade.blend"
@@ -519,7 +553,8 @@ def host_main(args: argparse.Namespace) -> None:
         passthrough += ["--out", str(Path(args.out).expanduser().resolve())]
     passthrough += ["--frames", str(args.frames), "--fps", str(args.fps), "--res", args.res]
     passthrough += ["--lens", str(args.lens), "--start-angle", str(args.start_angle)]
-    passthrough += ["--zoom", str(args.zoom)]
+    passthrough += ["--zoom", str(args.zoom), "--swing", str(args.swing)]
+    passthrough += ["--bob", str(args.bob)]
     if args.preview:
         passthrough.append("--preview")
     cmd.extend(passthrough)

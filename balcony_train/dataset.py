@@ -13,6 +13,7 @@ from balcony_train.labels import (
     MATERIALS,
     MultitaskSample,
     class_counts,
+    enclosure_target,
     ensure_crop_dirs,
     iter_labeled_samples,
     iter_multitask_samples,
@@ -53,7 +54,7 @@ class RailingCropDataset(Dataset):
 
 
 class MultitaskCropDataset(Dataset):
-    """Returns (image, kind_idx, material_idx, floor_idx). Heads may be IGNORE."""
+    """Returns (image, kind, material, floor, enclosure) indexes. Heads may be IGNORE."""
 
     def __init__(self, samples: list[MultitaskSample] | list[tuple], *, transform=None) -> None:
         self.samples = list(samples)
@@ -64,6 +65,6 @@ class MultitaskCropDataset(Dataset):
 
     def __getitem__(self, idx: int) -> tuple:
         row = self.samples[idx]
-        _path, kind_idx, mat_idx, floor_idx = (row[0], *sample_targets(row))
+        kind_idx, mat_idx, floor_idx = sample_targets(row)
         img = Image.open(row[0]).convert("RGB")
-        return self.transform(img), kind_idx, mat_idx, floor_idx
+        return self.transform(img), kind_idx, mat_idx, floor_idx, enclosure_target(row)

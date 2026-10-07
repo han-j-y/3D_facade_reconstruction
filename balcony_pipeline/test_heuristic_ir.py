@@ -57,6 +57,23 @@ class RailingOnlyProfileTests(unittest.TestCase):
             "open_work_metal_hexagon",
         )
         self.assertEqual(floor_shape_from_ir({"floor": {"shape": "nope"}}), "rectangle")
+        self.assertEqual(
+            balcony_type_token({**ir, "enclosure": "half_enclosed"}, include_floor=True),
+            "open_work_metal_hexagon_half_enclosed",
+        )
+        self.assertEqual(balcony_type_token({**ir, "enclosure": "open"}), "open_work_metal")
+
+    def test_enclosure_override_from_classifier(self) -> None:
+        crop = Image.new("RGB", (64, 48), (120, 120, 120))
+        common = dict(box=[0, 0, 64, 48], image_size=(400, 300), profile_name="railing_only")
+        ir = infer_balcony_ir(crop, enclosure_override="enclosed", **common)
+        self.assertEqual(ir["enclosure"], "enclosed")
+        self.assertEqual(ir["output"]["slab_thickness"], 0.20)
+        ir = infer_balcony_ir(crop, enclosure_override="half_enclosed", **common)
+        self.assertEqual(ir["enclosure"], "half_enclosed")
+        self.assertIn("railing", ir)
+        ir = infer_balcony_ir(crop, enclosure_override="bogus", **common)
+        self.assertEqual(ir["enclosure"], "open")
 
     def test_infer_fixed_axes(self) -> None:
         crop = Image.new("RGB", (64, 48), (200, 200, 200))

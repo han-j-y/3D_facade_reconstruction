@@ -6,8 +6,9 @@ everything in the fold. ``--list`` / ``--list-out`` / ``--copy-to`` print,
 save, or copy the images that would be evaluated (no GPU / checkpoint needed).
 ``--errors-to`` scores the checkpoint, then copies mistakes under a new
 ``YYYY-MM-DD_HHMMSS`` folder there, as ``kind/true-{label}__pred-{label}/``,
-``material/true-{label}__pred-{label}/``, and
-``floor/true-{label}__pred-{label}/``.
+``material/true-{label}__pred-{label}/``,
+``floor/true-{label}__pred-{label}/``, and
+``enclosure/true-{label}__pred-{label}/``.
 """
 
 from __future__ import annotations
@@ -31,12 +32,16 @@ if str(ROOT) not in sys.path:
 from balcony_train.dataset import MultitaskCropDataset  # noqa: E402
 from balcony_train.labels import (  # noqa: E402
     CLASSES,
+    ENCLOSURE_IGNORE_INDEX,
+    ENCLOSURES,
     FLOOR_IGNORE_INDEX,
     FLOOR_SHAPES,
+    KIND_IGNORE_INDEX,
     MATERIAL_IGNORE_INDEX,
     MATERIALS,
     MultitaskSample,
     class_counts,
+    enclosure_counts,
     floor_counts,
     material_counts,
 )
@@ -103,7 +108,7 @@ def write_eval_list(
 
 
 class ScoredCrop(NamedTuple):
-    """One eval crop with kind, material, and floor predictions."""
+    """One eval crop with kind, material, floor, and enclosure predictions."""
 
     path: Path
     kind_true: int
@@ -112,6 +117,8 @@ class ScoredCrop(NamedTuple):
     mat_pred: int
     floor_true: int = FLOOR_IGNORE_INDEX
     floor_pred: int = FLOOR_IGNORE_INDEX
+    enc_true: int = ENCLOSURE_IGNORE_INDEX
+    enc_pred: int = ENCLOSURE_IGNORE_INDEX
 
 
 def misclass_folder_name(true_name: str, pred_name: str) -> str:
@@ -189,7 +196,7 @@ def copy_misclassified_images(
     """
     buckets: dict[Path, list[Path]] = defaultdict(list)
     for row in rows:
-        if int(row.kind_true) != int(row.kind_pred):
+        if int(row.kind_true) != KIND_IGNORE_INDEX and int(row.kind_true) != int(row.kind_pred):
             rel = Path("kind") / misclass_folder_name(
                 CLASSES[int(row.kind_true)],
                 CLASSES[int(row.kind_pred)],
@@ -209,6 +216,14 @@ def copy_misclassified_images(
             rel = Path("floor") / misclass_folder_name(
                 FLOOR_SHAPES[int(row.floor_true)],
                 FLOOR_SHAPES[int(row.floor_pred)],
+            )
+            buckets[rel].append(Path(row.path))
+        if int(row.enc_true) != ENCLOSURE_IGNORE_INDEX and int(row.enc_true) != int(
+            row.enc_pred
+        ):
+            rel = Path("enclosure") / misclass_folder_name(
+                ENCLOSURES[int(row.enc_true)],
+                ENCLOSURES[int(row.enc_pred)],
             )
             buckets[rel].append(Path(row.path))
 
@@ -373,6 +388,7 @@ def main() -> None:
     counts = class_counts(subset)
     mat_counts = material_counts(subset)
     shape_counts = floor_counts(subset)
+    enc_counts = enclosure_counts(subset)
     device = torch.device(args.device)
     model = load_classifier(args.ckpt, device)
     loader = DataLoader(
@@ -383,24 +399,30 @@ def main() -> None:
     kind_conf = torch.zeros((len(CLASSES), len(CLASSES)), dtype=torch.int64)
     mat_conf = torch.zeros((len(MATERIALS), len(MATERIALS)), dtype=torch.int64)
     floor_conf = torch.zeros((len(FLOOR_SHAPES), len(FLOOR_SHAPES)), dtype=torch.int64)
+    enc_conf = torch.zeros((len(ENCLOSURES), len(ENCLOSURES)), dtype=torch.int64)
     floor_trained = bool(getattr(model, "_floor_trained", False))
+    enc_trained = bool(getattr(model, "_enclosure_trained", False))
     scored: list[ScoredCrop] = []
     cursor = 0
     model.eval()
     with torch.no_grad():
-        for images, kind_y, mat_y, floor_y in loader:
-            kind_logits, mat_logits, floor_logits = model(images.to(device))
+        for images, kind_y, mat_y, floor_y, enc_y in loader:
+            kind_logits, mat_logits, floor_logits, enc_logits = model(images.to(device))
             kind_pred = kind_logits.argmax(dim=1).cpu()
             mat_pred = mat_logits.argmax(dim=1).cpu()
             floor_pred = floor_logits.argmax(dim=1).cpu()
+            enc_pred = enc_logits.argmax(dim=1).cpu()
             kt_list = kind_y.tolist()
             kp_list = kind_pred.tolist()
             mt_list = mat_y.tolist()
             mp_list = mat_pred.tolist()
             ft_list = floor_y.tolist()
             fp_list = floor_pred.tolist()
+            et_list = enc_y.tolist()
+            ep_list = enc_pred.tolist()
             for i, (t, p) in enumerate(zip(kt_list, kp_list)):
-                kind_conf[t, p] += 1
+                if int(t) != KIND_IGNORE_INDEX:
+                    kind_conf[t, p] += 1
                 src_i = eval_idx[cursor + i]
                 if floor_trained:
                     floor_true = int(ft_list[i])
@@ -408,6 +430,14 @@ def main() -> None:
                 else:
                     floor_true = FLOOR_IGNORE_INDEX
                     floor_pred_i = FLOOR_IGNORE_INDEX
+                if enc_trained:
+                    enc_true = int(et_list[i])
+                    enc_pred_i = int(ep_list[i])
+                    if enc_true != ENCLOSURE_IGNORE_INDEX:
+                        enc_conf[enc_true, enc_pred_i] += 1
+                else:
+                    enc_true = ENCLOSURE_IGNORE_INDEX
+                    enc_pred_i = ENCLOSURE_IGNORE_INDEX
                 scored.append(
                     ScoredCrop(
                         Path(samples[src_i][0]),
@@ -417,6 +447,8 @@ def main() -> None:
                         int(mp_list[i]),
                         floor_true,
                         floor_pred_i,
+                        enc_true,
+                        enc_pred_i,
                     )
                 )
             for t, p in zip(mt_list, mp_list):
@@ -466,6 +498,20 @@ def main() -> None:
             print(f"  {name:16s} {row}")
     else:
         print("floor head not in checkpoint")
+
+    if enc_trained:
+        enc_total = int(enc_conf.sum().item())
+        enc_correct = int(enc_conf.diag().sum().item())
+        print(
+            f"enclosure n={enc_total}  counts={enc_counts}  "
+            f"enc_acc={enc_correct / max(enc_total, 1):.3f}"
+        )
+        print("enclosure rows=true cols=pred  " + "  ".join(ENCLOSURES))
+        for i, name in enumerate(ENCLOSURES):
+            row = " ".join(f"{int(v):4d}" for v in enc_conf[i].tolist())
+            print(f"  {name:16s} {row}")
+    else:
+        print("enclosure head not in checkpoint")
 
     if args.errors_to is not None:
         copy_misclassified_images(scored, Path(args.errors_to))

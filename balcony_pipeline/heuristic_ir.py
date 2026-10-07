@@ -38,6 +38,7 @@ def railing_material_from_ir(ir: dict[str, Any]) -> str | None:
 
 
 _FLOOR_SHAPES = ("rectangle", "triangle", "circle", "hexagon", "trapezoid")
+_ENCLOSURES = ("open", "half_enclosed", "enclosed")
 
 
 def floor_shape_from_ir(ir: dict[str, Any]) -> str:
@@ -61,7 +62,16 @@ def balcony_type_token(ir: dict[str, Any], *, include_floor: bool = False) -> st
         token = kind
     if include_floor:
         token = f"{token}_{floor_shape_from_ir(ir)}"
+    enclosure = enclosure_from_ir(ir)
+    if enclosure != "open":
+        token = f"{token}_{enclosure}"
     return token
+
+
+def enclosure_from_ir(ir: dict[str, Any]) -> str:
+    """BDSL enclosure on an IR. Unknown values become open."""
+    e = str(ir.get("enclosure") or "open").strip().lower()
+    return e if e in _ENCLOSURES else "open"
 
 
 def _rail_kind(raw: Any) -> str:
@@ -304,13 +314,15 @@ def infer_balcony_ir(
     rail_kind_override: str | None = None,
     rail_material_override: str | None = None,
     floor_shape_override: str | None = None,
+    enclosure_override: str | None = None,
 ) -> dict[str, Any]:
     """Appearance cues → BDSL IR. Disabled axes use FIXED_DEFAULTS.
 
     ``rail_kind_override`` / ``rail_material_override`` skip the opaque-run
     heuristic (classifier or tests). Material applies only when kind is
     ``open_work`` (default ``metal``). ``floor_shape_override`` replaces the
-    aspect heuristic when the classifier labeled a plan.
+    aspect heuristic when the classifier labeled a plan, and
+    ``enclosure_override`` does the same for open / half_enclosed / enclosed.
     """
     p = resolve_profile(profile_name)
     arr = _to_np(crop)
@@ -328,7 +340,9 @@ def infer_balcony_ir(
     inner_mean = float(inner.mean()) if inner.size else float(gray.mean())
     inner_std = float(inner.std()) if inner.size else float(gray.std())
 
-    if p.get("enclosure"):
+    if enclosure_override and str(enclosure_override).strip().lower() in _ENCLOSURES:
+        enclosure = str(enclosure_override).strip().lower()
+    elif p.get("enclosure"):
         enclosure = "enclosed" if inner_mean > 140 and inner_std < 45 else "open"
     else:
         enclosure = str(FIXED_DEFAULTS["enclosure"])
@@ -405,7 +419,7 @@ def infer_balcony_ir(
         "supports": {"count": supports_count},
         "glazing": None,
         "output": {
-            "slab_thickness": 0.20 if enclosure == "enclosed" else 0.12,
+            "slab_thickness": 0.12 if enclosure == "open" else 0.20,
             "railing_thickness": rail_t,
         },
     }

@@ -1,13 +1,13 @@
-"""Tkinter Label UI for railing kind, material, and floor shape.
+"""Tkinter Label UI for railing kind, material, floor shape, and enclosure.
 
 Usage::
 
     python balcony_train/label_ui.py
     python balcony_train/label_ui.py --crops-dir runs/balcony_clf/crops
 
-Keys: 1/2/3 kind, M/N material (open_work),
-R/T/C/H/Z floor shape, Enter save, S skip, U undo, Q quit.
-hexagon and trapezoid are stored on the label only; BDSL does not compile them yet.
+Keys: 1/2/3 kind (0 = no railing, enclosed only), M/N material (open_work),
+R/T/C/H/Z floor shape, O/A/E enclosure (open / half_enclosed / enclosed),
+Enter save, S skip, U undo, Q quit.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ if str(ROOT) not in sys.path:
 
 from balcony_train.label_store import (  # noqa: E402
     find_image,
+    kind_optional,
     merge_label_sources,
     queue_stems,
     save_annotation,
@@ -34,13 +35,15 @@ from balcony_train.label_store import (  # noqa: E402
 )
 from balcony_train.labels import (  # noqa: E402
     CLASSES,
+    ENCLOSURES,
     FLOOR_SHAPES,
     MATERIALS,
     ensure_crop_dirs,
 )
 from balcony_train.paths import DEFAULT_CROPS_DIR, DEFAULT_LABELS_JSONL  # noqa: E402
 
-KIND_KEYS = {"1": "open_work", "2": "surface_panel", "3": "solid"}
+KIND_KEYS = {"0": "", "1": "open_work", "2": "surface_panel", "3": "solid"}
+ENCLOSURE_KEYS = {"o": "open", "a": "half_enclosed", "e": "enclosed"}
 MATERIAL_KEYS = {"m": "metal", "n": "masonry"}
 FLOOR_KEYS = {
     "r": "rectangle",
@@ -88,12 +91,14 @@ class LabelApp:
             unlabeled_only=not review_all,
             need_material=True,
             need_floor_shape=True,
+            need_enclosure=True,
         )
         self.index = 0
         self.undo_stack: list[dict] = []
         self.kind_var = tk.StringVar(value="")
         self.material_var = tk.StringVar(value="")
         self.floor_var = tk.StringVar(value="")
+        self.enclosure_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="")
         self.path_var = tk.StringVar(value="")
         self._photo: ImageTk.PhotoImage | None = None
@@ -126,12 +131,14 @@ class LabelApp:
         self.image_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         self.image_frame.bind("<Configure>", self._on_image_frame_configure)
 
-        kind_fr = ttk.LabelFrame(self.root, text="Kind (1/2/3)", padding=8)
+        kind_fr = ttk.LabelFrame(
+            self.root, text="Kind (1/2/3, 0 = no railing for enclosed)", padding=8
+        )
         kind_fr.pack(fill=tk.X, padx=8, pady=4)
-        for name, key in zip(CLASSES, ("1", "2", "3")):
+        for name, key in zip(("", *CLASSES), ("0", "1", "2", "3")):
             ttk.Radiobutton(
                 kind_fr,
-                text=f"{key}: {name}",
+                text=f"{key}: {name or 'none'}",
                 value=name,
                 variable=self.kind_var,
                 command=self._on_kind_change,
@@ -165,6 +172,20 @@ class LabelApp:
                 variable=self.floor_var,
             ).pack(side=tk.LEFT, padx=8)
 
+        enc_fr = ttk.LabelFrame(
+            self.root,
+            text="Enclosure — O open / A half_enclosed / E enclosed",
+            padding=8,
+        )
+        enc_fr.pack(fill=tk.X, padx=8, pady=4)
+        for name, key in zip(ENCLOSURES, ("O", "A", "E")):
+            ttk.Radiobutton(
+                enc_fr,
+                text=f"{key}: {name}",
+                value=name,
+                variable=self.enclosure_var,
+            ).pack(side=tk.LEFT, padx=8)
+
         btns = ttk.Frame(self.root, padding=8)
         btns.pack(fill=tk.X)
         ttk.Button(btns, text="Save (Enter)", command=self.save).pack(
@@ -177,8 +198,9 @@ class LabelApp:
         )
 
         help_txt = (
-            "Material is required only for open_work. Floor shape is required. "
-            "Labels → labels.jsonl; images move into crops/{kind}/."
+            "Material is required only for open_work. Floor shape and enclosure "
+            "are required. Kind may be none only for enclosed. "
+            "Labels → labels.jsonl; images move into crops/{kind}/ (no kind: unlabeled/)."
         )
         ttk.Label(self.root, text=help_txt, padding=8).pack(anchor=tk.W)
 
@@ -220,6 +242,9 @@ class LabelApp:
         if ch in FLOOR_KEYS:
             self.floor_var.set(FLOOR_KEYS[ch])
             return
+        if ch in ENCLOSURE_KEYS:
+            self.enclosure_var.set(ENCLOSURE_KEYS[ch])
+            return
         if keysym in ("Return", "KP_Enter"):
             self.save()
             return
@@ -254,8 +279,12 @@ class LabelApp:
         n_kind = {k: 0 for k in CLASSES}
         n_mat = {m: 0 for m in MATERIALS}
         n_floor = {name: 0 for name in FLOOR_SHAPES}
+        n_enc = {name: 0 for name in ENCLOSURES}
         n_open_no_mat = 0
         for rec in self.labels.values():
+            enc = rec.get("enclosure")
+            if enc in n_enc:
+                n_enc[enc] += 1
             kind = rec.get("kind")
             if kind in n_kind:
                 n_kind[kind] += 1
@@ -274,6 +303,7 @@ class LabelApp:
             + (f" missing={n_open_no_mat}" if n_open_no_mat else "")
         )
         parts.append("floor " + " ".join(f"{name}={n_floor[name]}" for name in FLOOR_SHAPES))
+        parts.append("enclosure " + " ".join(f"{name}={n_enc[name]}" for name in ENCLOSURES))
         return "  ".join(parts)
 
     def _show_current(self) -> None:
@@ -287,6 +317,7 @@ class LabelApp:
             self.kind_var.set("")
             self.material_var.set("")
             self.floor_var.set("")
+            self.enclosure_var.set("")
             self._set_material_enabled(False)
             return
 
@@ -307,6 +338,8 @@ class LabelApp:
         if kind == "open_work" and material in MATERIALS:
             self.material_var.set(material)
         self.floor_var.set(floor if floor in FLOOR_SHAPES else "")
+        enclosure = rec.get("enclosure") or ""
+        self.enclosure_var.set(enclosure if enclosure in ENCLOSURES else "")
 
         try:
             im = Image.open(path).convert("RGB")
@@ -330,10 +363,20 @@ class LabelApp:
         if path is None:
             messagebox.showwarning("Missing", f"Image not found for {stem}")
             return
-        kind = self.kind_var.get()
-        if kind not in CLASSES:
-            messagebox.showwarning("Kind required", "Select kind (1/2/3).")
+        enclosure = self.enclosure_var.get()
+        if enclosure not in ENCLOSURES:
+            messagebox.showwarning(
+                "Enclosure required",
+                "Select enclosure: open (O), half_enclosed (A), or enclosed (E).",
+            )
             return
+        kind = self.kind_var.get()
+        if kind not in CLASSES and not kind_optional(enclosure):
+            messagebox.showwarning(
+                "Kind required", "Select kind (1/2/3). Only enclosed may have none (0)."
+            )
+            return
+        kind = kind if kind in CLASSES else None
         material = self.material_var.get() if kind == "open_work" else None
         if kind == "open_work" and material not in MATERIALS:
             messagebox.showwarning(
@@ -360,6 +403,7 @@ class LabelApp:
                 kind=kind,
                 material=material,
                 floor_shape=floor,
+                enclosure=enclosure,
                 labels=self.labels,
             )
         except Exception as exc:
@@ -401,12 +445,13 @@ class LabelApp:
                 prev_path.unlink()
             cur.rename(prev_path)
 
-        if prev.get("kind"):
+        if prev.get("kind") or prev.get("enclosure"):
             self.labels[stem] = {
                 "path": prev.get("path") or f"{stem}.png",
                 "kind": prev.get("kind"),
                 "material": prev.get("material"),
                 "floor_shape": prev.get("floor_shape"),
+                "enclosure": prev.get("enclosure"),
             }
         else:
             self.labels.pop(stem, None)

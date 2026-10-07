@@ -42,6 +42,7 @@ from draw import (  # noqa: E402
 from filter import filter_balcony_boxes  # noqa: E402
 from heuristic_ir import (  # noqa: E402
     balcony_type_token,
+    enclosure_from_ir,
     floor_shape_from_ir,
     infer_balcony_ir,
     ir_to_tokens,
@@ -211,12 +212,14 @@ def infer_unit_ir(
     kind_override = None
     material_override = None
     floor_override = None
+    enclosure_override = None
     if predictor is not None:
         if hasattr(predictor, "predict_full"):
             pred = predictor.predict_full(crop)
             kind_override = pred.get("kind")
             material_override = pred.get("material")
             floor_override = pred.get("floor_shape")
+            enclosure_override = pred.get("enclosure")
         else:
             kind_override = predictor.predict(crop)
     return infer_balcony_ir(
@@ -227,17 +230,22 @@ def infer_unit_ir(
         rail_kind_override=kind_override,
         rail_material_override=material_override,
         floor_shape_override=floor_override,
+        enclosure_override=enclosure_override,
     )
 
 
 def _with_unit_floor(voted_ir: dict | None, member_ir: dict) -> dict:
-    """Voted railing IR with this unit's own floor plan."""
+    """Voted railing IR with this unit's own floor plan and enclosure."""
     if not isinstance(voted_ir, dict):
         return member_ir
     out = copy.deepcopy(voted_ir)
     floor = dict(member_ir.get("floor") or {})
     floor["shape"] = floor_shape_from_ir(member_ir)
     out["floor"] = floor
+    out["enclosure"] = enclosure_from_ir(member_ir)
+    member_slab = (member_ir.get("output") or {}).get("slab_thickness")
+    if member_slab is not None:
+        out["output"] = {**(out.get("output") or {}), "slab_thickness": member_slab}
     return out
 
 
@@ -495,7 +503,7 @@ def run(args: argparse.Namespace) -> Path | None:
             mat_s = f" material={material}" if material else ""
             print(
                 f"  unit_{int(u['unit_id']):03d}: railing={kind}{mat_s} "
-                f"floor={floor_shape_from_ir(ir)}"
+                f"floor={floor_shape_from_ir(ir)} enclosure={enclosure_from_ir(ir)}"
             )
         types_out = _types_grouped_by_token(
             units, crops_dir, out_dir, include_floor=per_unit_floor
@@ -558,9 +566,10 @@ def run(args: argparse.Namespace) -> Path | None:
                 units, crops_dir, out_dir, include_floor=True
             )
             for u in units:
+                ir = u.get("structure_ir") or {}
                 print(
                     f"  unit_{int(u['unit_id']):03d}: "
-                    f"floor={floor_shape_from_ir(u.get('structure_ir') or {})}"
+                    f"floor={floor_shape_from_ir(ir)} enclosure={enclosure_from_ir(ir)}"
                 )
         floor_note = " floor=per-unit" if per_unit_floor else ""
         vote_note = f"profile={profile_name} vote={axes_on} rail={rail_src}{floor_note}"

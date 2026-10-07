@@ -9,12 +9,17 @@ from typing import Any, Literal
 
 from balcony_train.labels import (
     CLASSES,
+    ENCLOSURE_IGNORE_INDEX,
+    ENCLOSURES,
     FLOOR_IGNORE_INDEX,
     FLOOR_SHAPES,
+    KIND_IGNORE_INDEX,
     MATERIAL_IGNORE_INDEX,
     MATERIALS,
     MultitaskSample,
     class_counts,
+    enclosure_counts,
+    enclosure_target,
     floor_counts,
     iter_multitask_samples,
     material_counts,
@@ -66,7 +71,7 @@ def stratified_split_indices(
     for idx, row in enumerate(samples):
         if len(row) >= 3:
             kind_idx, mat_idx, _floor_idx = sample_targets(row)
-            key = strat_key(kind_idx, mat_idx)
+            key = strat_key(kind_idx, mat_idx, enclosure_target(row))
         else:
             key = CLASSES[int(row[1])]
         by_key.setdefault(key, []).append(idx)
@@ -112,8 +117,9 @@ def _row_payload(
     mat_idx: int,
     floor_idx: int,
     base: Path,
+    enc_idx: int = ENCLOSURE_IGNORE_INDEX,
 ) -> dict[str, Any]:
-    kind = CLASSES[int(kind_idx)]
+    kind = CLASSES[int(kind_idx)] if int(kind_idx) >= 0 else None
     material = None
     if kind == "open_work" and int(mat_idx) >= 0:
         material = MATERIALS[int(mat_idx)]
@@ -124,6 +130,7 @@ def _row_payload(
         "kind": kind,
         "material": material,
         "floor_shape": floor,
+        "enclosure": ENCLOSURES[int(enc_idx)] if int(enc_idx) >= 0 else None,
     }
 
 
@@ -142,14 +149,14 @@ def build_split_record(
     normed: list[MultitaskSample] = []
     for row in samples:
         kind_idx, mat_idx, floor_idx = sample_targets(row)
-        normed.append((Path(row[0]), kind_idx, mat_idx, floor_idx))
+        normed.append((Path(row[0]), kind_idx, mat_idx, floor_idx, enclosure_target(row)))
 
     splits: dict[str, list[dict[str, Any]]] = {}
     for name in ("train", "val", "test"):
         rows: list[dict[str, Any]] = []
         for idx in indices[name]:
-            path, kind_idx, mat_idx, floor_idx = normed[idx]
-            rows.append(_row_payload(path, kind_idx, mat_idx, floor_idx, base))
+            path, kind_idx, mat_idx, floor_idx, enc_idx = normed[idx]
+            rows.append(_row_payload(path, kind_idx, mat_idx, floor_idx, base, enc_idx))
         splits[name] = rows
     return {
         "version": 2,
@@ -161,6 +168,11 @@ def build_split_record(
         "counts": class_counts(normed),
         "material_counts": material_counts(normed),
         "floor_counts": floor_counts(normed),
+        "enclosure_counts": enclosure_counts(normed),
+        "split_enclosure_counts": {
+            name: enclosure_counts([normed[i] for i in indices[name]])
+            for name in ("train", "val", "test")
+        },
         "split_counts": {
             name: class_counts([normed[i] for i in indices[name]])
             for name in ("train", "val", "test")
@@ -198,7 +210,7 @@ def samples_from_split_record(
     for row in rows:
         path = _resolve_path(row["path"], base)
         kind = str(row.get("kind") or row.get("label") or "")
-        kind_idx = CLASSES.index(kind)
+        kind_idx = CLASSES.index(kind) if kind in CLASSES else KIND_IGNORE_INDEX
         mat_raw = row.get("material")
         if kind == "open_work" and mat_raw in MATERIALS:
             mat_idx = MATERIALS.index(str(mat_raw))
@@ -209,7 +221,9 @@ def samples_from_split_record(
             floor_idx = FLOOR_SHAPES.index(str(floor_raw))
         else:
             floor_idx = FLOOR_IGNORE_INDEX
-        out.append((path, kind_idx, mat_idx, floor_idx))
+        enc_raw = row.get("enclosure")
+        enc_idx = ENCLOSURES.index(str(enc_raw)) if enc_raw in ENCLOSURES else ENCLOSURE_IGNORE_INDEX
+        out.append((path, kind_idx, mat_idx, floor_idx, enc_idx))
     return out
 
 

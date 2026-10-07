@@ -7,9 +7,12 @@ Each line::
 
 ``material`` is set only for ``kind=open_work``; otherwise ``null``.
 ``floor_shape`` is rectangle, triangle, circle, hexagon, or trapezoid.
-hexagon and trapezoid are stored for labeling; BDSL does not compile them yet.
+BDSL compiles all five; hexagon and trapezoid become plan outlines in
+``balcony_plan.slab_outline``.
+``enclosure`` is open, half_enclosed, or enclosed (BDSL ``enclosure``).
 Folder layout under ``crops/`` (``open_work/`` etc.) stays in sync for the
-existing kind-only trainer.
+existing kind-only trainer. Records with an enclosure but no kind keep their
+image in ``unlabeled/``.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from typing import Any
 
 from balcony_train.labels import (
     CLASSES,
+    ENCLOSURES,
     FLOOR_SHAPES,
     LABELED_IMAGE_SUFFIXES,
     MATERIALS,
@@ -66,6 +70,19 @@ def normalize_floor_shape(raw: Any) -> str | None:
     return name
 
 
+def normalize_enclosure(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    name = str(raw).strip().lower().replace("-", "_").replace(" ", "_")
+    if not name or name in ("null", "none"):
+        return None
+    if name == "half_enclosure":
+        name = "half_enclosed"
+    if name not in ENCLOSURES:
+        raise ValueError(f"unknown enclosure {raw!r}; expected {ENCLOSURES}")
+    return name
+
+
 def _is_image(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() in LABELED_IMAGE_SUFFIXES
 
@@ -107,6 +124,7 @@ def load_labels(jsonl_path: Path) -> dict[str, dict[str, Any]]:
                 "kind": kind,
                 "material": material,
                 "floor_shape": normalize_floor_shape(rec.get("floor_shape")),
+                "enclosure": normalize_enclosure(rec.get("enclosure")),
             }
     return by_stem
 
@@ -127,6 +145,7 @@ def labels_from_folders(crops_dir: Path) -> dict[str, dict[str, Any]]:
                 "kind": kind,
                 "material": None,
                 "floor_shape": None,
+                "enclosure": None,
             }
     return by_stem
 
@@ -146,11 +165,13 @@ def merge_label_sources(
         floor = rec.get("floor_shape")
         if floor is None:
             floor = normalize_floor_shape(prev.get("floor_shape"))
+        enclosure = rec.get("enclosure") or prev.get("enclosure")
         merged[stem] = {
             "path": rec.get("path") or prev.get("path") or f"{stem}.png",
             "kind": kind,
             "material": material,
             "floor_shape": floor,
+            "enclosure": enclosure,
         }
     return merged
 
@@ -165,7 +186,8 @@ def write_labels_jsonl(
     for stem in sorted(records.keys()):
         rec = records[stem]
         kind = normalize_kind(rec.get("kind"))
-        if kind is None:
+        enclosure = normalize_enclosure(rec.get("enclosure"))
+        if kind is None and enclosure is None:
             continue
         material = normalize_material(rec.get("material"), kind=kind)
         lines.append(
@@ -175,6 +197,7 @@ def write_labels_jsonl(
                     "kind": kind,
                     "material": material,
                     "floor_shape": normalize_floor_shape(rec.get("floor_shape")),
+                    "enclosure": enclosure,
                 },
                 ensure_ascii=False,
             )
@@ -216,6 +239,23 @@ def place_image_in_kind_folder(
     return dest
 
 
+def _place_in_unlabeled(crops_dir: Path, image_path: Path) -> Path:
+    src = Path(image_path).resolve()
+    dest = (Path(crops_dir) / "unlabeled" / src.name).resolve()
+    if src == dest:
+        return dest
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        dest.unlink()
+    shutil.move(str(src), str(dest))
+    return dest
+
+
+def kind_optional(enclosure: str | None) -> bool:
+    """A fully enclosed balcony has no railing, so kind may stay unset."""
+    return enclosure == "enclosed"
+
+
 def queue_stems(
     crops_dir: Path,
     labels: dict[str, dict[str, Any]],
@@ -223,6 +263,7 @@ def queue_stems(
     unlabeled_only: bool = True,
     need_material: bool = True,
     need_floor_shape: bool = False,
+    need_enclosure: bool = False,
 ) -> list[str]:
     """Stems to show in the UI, unlabeled / incomplete first."""
     images = {p.stem: p for p in iter_crop_images(crops_dir)}
@@ -233,10 +274,13 @@ def queue_stems(
         kind = rec.get("kind") if rec else None
         material = rec.get("material") if rec else None
         floor = rec.get("floor_shape") if rec else None
-        incomplete = kind is None
+        enclosure = rec.get("enclosure") if rec else None
+        incomplete = kind is None and not kind_optional(enclosure)
         if need_material and kind == "open_work" and material is None:
             incomplete = True
         if need_floor_shape and floor not in FLOOR_SHAPES:
+            incomplete = True
+        if need_enclosure and enclosure not in ENCLOSURES:
             incomplete = True
         if incomplete:
             todo.append(stem)
@@ -250,15 +294,20 @@ def save_annotation(
     crops_dir: Path,
     jsonl_path: Path,
     image_path: Path,
-    kind: str,
+    kind: str | None,
     material: str | None,
     floor_shape: str | None = None,
+    enclosure: str | None = None,
     labels: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Update JSONL + move file into kind folder. Returns full label map."""
+    """Update JSONL + move file into kind folder. Returns full label map.
+
+    Without a kind (enclosure-only label) the image moves to ``unlabeled/``.
+    """
     kind_n = normalize_kind(kind)
-    if kind_n is None:
-        raise ValueError("kind is required")
+    enc_n = normalize_enclosure(enclosure)
+    if kind_n is None and enc_n is None:
+        raise ValueError("kind or enclosure is required")
     mat_n = normalize_material(material, kind=kind_n)
     if kind_n == "open_work" and mat_n is None:
         raise ValueError("material required for open_work (metal or masonry)")
@@ -266,13 +315,17 @@ def save_annotation(
 
     crops_dir = Path(crops_dir)
     jsonl_path = Path(jsonl_path)
-    placed = place_image_in_kind_folder(crops_dir, image_path, kind_n)
+    if kind_n is not None:
+        placed = place_image_in_kind_folder(crops_dir, image_path, kind_n)
+    else:
+        placed = _place_in_unlabeled(crops_dir, image_path)
     records = labels if labels is not None else merge_label_sources(crops_dir, jsonl_path)
     records[placed.stem] = {
         "path": placed.name,
         "kind": kind_n,
         "material": mat_n,
         "floor_shape": floor_n,
+        "enclosure": enc_n,
     }
     write_labels_jsonl(jsonl_path, records)
     return records

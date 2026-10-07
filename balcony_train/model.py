@@ -1,4 +1,4 @@
-"""Frozen DINOv2 + multitask heads: kind, material, and floor shape."""
+"""Frozen DINOv2 + multitask heads: kind, material, floor shape, enclosure."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 from PIL import Image
 
-from balcony_train.labels import CLASSES, FLOOR_SHAPES, MATERIALS
+from balcony_train.labels import CLASSES, ENCLOSURES, FLOOR_SHAPES, MATERIALS
 from balcony_train.paths import DEFAULT_RAILING_CKPT
 
 BACKBONE = "dinov2_vits14"
@@ -33,13 +33,14 @@ def make_transform(image_size: int = IMAGE_SIZE):
 
 
 class RailingClassifier(nn.Module):
-    """DINOv2 ViT-S/14 (frozen) + kind, material, and floor heads."""
+    """DINOv2 ViT-S/14 (frozen) + kind, material, floor, and enclosure heads."""
 
     def __init__(self, *, pretrained: bool = True, freeze_backbone: bool = True) -> None:
         super().__init__()
         self.classes = CLASSES
         self.materials = MATERIALS
         self.floor_shapes = FLOOR_SHAPES
+        self.enclosures = ENCLOSURES
         self.freeze_backbone = bool(freeze_backbone)
         self.backbone = torch.hub.load(
             "facebookresearch/dinov2", BACKBONE, pretrained=bool(pretrained)
@@ -48,6 +49,7 @@ class RailingClassifier(nn.Module):
         self.kind_head = nn.Linear(self.feat_dim, len(CLASSES))
         self.material_head = nn.Linear(self.feat_dim, len(MATERIALS))
         self.floor_head = nn.Linear(self.feat_dim, len(FLOOR_SHAPES))
+        self.enclosure_head = nn.Linear(self.feat_dim, len(ENCLOSURES))
         # Legacy alias used by older single-head checkpoints / code paths.
         self.head = self.kind_head
         if self.freeze_backbone:
@@ -64,9 +66,14 @@ class RailingClassifier(nn.Module):
 
     def forward(
         self, x: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         feat = self.encode(x)
-        return self.kind_head(feat), self.material_head(feat), self.floor_head(feat)
+        return (
+            self.kind_head(feat),
+            self.material_head(feat),
+            self.floor_head(feat),
+            self.enclosure_head(feat),
+        )
 
 
 def load_backbone(model: RailingClassifier, device: torch.device) -> None:
@@ -74,6 +81,7 @@ def load_backbone(model: RailingClassifier, device: torch.device) -> None:
     model.kind_head.to(device)
     model.material_head.to(device)
     model.floor_head.to(device)
+    model.enclosure_head.to(device)
     if model.freeze_backbone:
         model.backbone.eval()
 
@@ -86,11 +94,13 @@ def save_checkpoint(model: RailingClassifier, path: Path, **extra: Any) -> None:
         "kind_head": model.kind_head.state_dict(),
         "material_head": model.material_head.state_dict(),
         "floor_head": model.floor_head.state_dict(),
+        "enclosure_head": model.enclosure_head.state_dict(),
         # Keep legacy key for tools that only inspect classes.
         "head": model.kind_head.state_dict(),
         "classes": list(model.classes),
         "materials": list(model.materials),
         "floor_shapes": list(model.floor_shapes),
+        "enclosures": list(model.enclosures),
         "backbone": BACKBONE,
         "image_size": IMAGE_SIZE,
         **extra,
@@ -130,6 +140,12 @@ def load_classifier(
         model._floor_trained = True  # type: ignore[attr-defined]
     else:
         model._floor_trained = False  # type: ignore[attr-defined]
+    encs = tuple(ckpt.get("enclosures") or ())
+    if "enclosure_head" in ckpt and encs == ENCLOSURES:
+        model.enclosure_head.load_state_dict(ckpt["enclosure_head"])
+        model._enclosure_trained = True  # type: ignore[attr-defined]
+    else:
+        model._enclosure_trained = False  # type: ignore[attr-defined]
     load_backbone(model, device)
     model.eval()
     return model
@@ -147,7 +163,7 @@ class RailingPredictor:
     @torch.no_grad()
     def predict_full(self, crop: Image.Image) -> dict[str, str | None]:
         x = self.tfm(crop.convert("RGB")).unsqueeze(0).to(self.device)
-        kind_logits, mat_logits, floor_logits = self.model(x)
+        kind_logits, mat_logits, floor_logits, enc_logits = self.model(x)
         kind = CLASSES[int(kind_logits.argmax(dim=1).item())]
         material: str | None = None
         if kind == "open_work":
@@ -158,7 +174,15 @@ class RailingPredictor:
         floor_shape: str | None = None
         if getattr(self.model, "_floor_trained", False):
             floor_shape = FLOOR_SHAPES[int(floor_logits.argmax(dim=1).item())]
-        return {"kind": kind, "material": material, "floor_shape": floor_shape}
+        enclosure: str | None = None
+        if getattr(self.model, "_enclosure_trained", False):
+            enclosure = ENCLOSURES[int(enc_logits.argmax(dim=1).item())]
+        return {
+            "kind": kind,
+            "material": material,
+            "floor_shape": floor_shape,
+            "enclosure": enclosure,
+        }
 
     @torch.no_grad()
     def predict(self, crop: Image.Image) -> str:

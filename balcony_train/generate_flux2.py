@@ -519,8 +519,9 @@ def main() -> None:
         prefixes = list(prefixes)  # type: ignore[arg-type]
     label_hint = str(spec["label_hint"])
 
-    # Floor-plan and enclosure crops stay in unlabeled so a later prefix
-    # label pass cannot move them into a kind folder.
+    # Generation writes floor-plan and enclosure crops into unlabeled.
+    # label_from_prefix.py later moves floor-plan names that include a kind
+    # token. Enclosure names stay in unlabeled.
     if spec.get("stay_unlabeled"):
         dest_dir = Path(args.crops_dir) / "unlabeled"
     else:

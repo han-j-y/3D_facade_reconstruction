@@ -14,25 +14,44 @@ class LabelFromPrefixTests(unittest.TestCase):
     def test_match_prefix(self) -> None:
         self.assertEqual(
             match_prefix("flux2_masonry_012.png"),
-            ("flux2_masonry_", "open_work", "masonry", None),
+            ("flux2_masonry_", "open_work", "masonry", None, "open"),
         )
         self.assertEqual(
             match_prefix("flux2_metal_001.png"),
-            ("flux2_metal_", "open_work", "metal", None),
+            ("flux2_metal_", "open_work", "metal", None, "open"),
         )
         self.assertEqual(
             match_prefix("flux2_surface_000.png"),
-            ("flux2_surface_", "surface_panel", None, None),
+            ("flux2_surface_", "surface_panel", None, None, "open"),
         )
         self.assertEqual(
             match_prefix("flux2_solid_003.png"),
-            ("flux2_solid_", "solid", None, None),
+            ("flux2_solid_", "solid", None, None, "open"),
         )
-        self.assertIsNone(match_prefix("flux2_triangle_metal_000.png"))
-        self.assertIsNone(match_prefix("flux2_hexagon_solid_002.png"))
-        self.assertIsNone(match_prefix("flux2_trapezoid_surface_001.png"))
-        self.assertIsNone(match_prefix("flux2_half_enclosed_000.png"))
-        self.assertIsNone(match_prefix("flux2_enclosed_000.png"))
+        self.assertEqual(
+            match_prefix("flux2_triangle_metal_000.png"),
+            ("flux2_triangle_metal_", "open_work", "metal", "triangle", "open"),
+        )
+        self.assertEqual(
+            match_prefix("flux2_hexagon_solid_002.png"),
+            ("flux2_hexagon_solid_", "solid", None, "hexagon", "open"),
+        )
+        self.assertEqual(
+            match_prefix("flux2_trapezoid_surface_001.png"),
+            ("flux2_trapezoid_surface_", "surface_panel", None, "trapezoid", "open"),
+        )
+        self.assertEqual(
+            match_prefix("flux2_trapezoid_masonry_002_2_from hexagon.png"),
+            ("flux2_trapezoid_masonry_", "open_work", "masonry", "trapezoid", "open"),
+        )
+        self.assertEqual(
+            match_prefix("flux2_half_enclosed_000.png"),
+            ("flux2_half_enclosed_", None, None, None, "half_enclosed"),
+        )
+        self.assertEqual(
+            match_prefix("flux2_enclosed_000.png"),
+            ("flux2_enclosed_", None, None, None, "enclosed"),
+        )
         self.assertIsNone(match_prefix("other_001.png"))
 
     def test_label_moves_and_writes_jsonl(self) -> None:
@@ -55,8 +74,8 @@ class LabelFromPrefixTests(unittest.TestCase):
                 unlabeled_dir=unlab,
                 jsonl_path=jsonl,
             )
-            self.assertEqual(stats["labeled"], 4)
-            self.assertEqual(stats["skipped_no_prefix"], 3)
+            self.assertEqual(stats["labeled"], 6)
+            self.assertEqual(stats["skipped_no_prefix"], 1)
             self.assertTrue((crops / "open_work" / "flux2_masonry_000.png").is_file())
             self.assertTrue((crops / "open_work" / "flux2_metal_000.png").is_file())
             self.assertTrue(
@@ -71,9 +90,16 @@ class LabelFromPrefixTests(unittest.TestCase):
             self.assertIsNone(labels["flux2_surface_000"]["material"])
             self.assertEqual(labels["flux2_solid_000"]["kind"], "solid")
             self.assertIsNone(labels["flux2_metal_000"]["floor_shape"])
-            self.assertNotIn("flux2_hexagon_masonry_000", labels)
-            self.assertTrue((unlab / "flux2_hexagon_masonry_000.png").is_file())
+            self.assertEqual(labels["flux2_hexagon_masonry_000"]["kind"], "open_work")
+            self.assertEqual(labels["flux2_hexagon_masonry_000"]["material"], "masonry")
+            self.assertEqual(labels["flux2_hexagon_masonry_000"]["floor_shape"], "hexagon")
+            self.assertTrue(
+                (crops / "open_work" / "flux2_hexagon_masonry_000.png").is_file()
+            )
             self.assertTrue((unlab / "flux2_enclosed_000.png").is_file())
+            self.assertIsNone(labels["flux2_enclosed_000"]["kind"])
+            self.assertEqual(labels["flux2_enclosed_000"]["enclosure"], "enclosed")
+            self.assertEqual(labels["flux2_masonry_000"]["enclosure"], "open")
 
 
 if __name__ == "__main__":

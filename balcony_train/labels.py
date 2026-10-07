@@ -16,16 +16,22 @@ FLOOR_SHAPES: tuple[str, ...] = (
     "hexagon",
     "trapezoid",
 )
+# Matches BDSL ``enclosure``.
+ENCLOSURES: tuple[str, ...] = ("open", "half_enclosed", "enclosed")
 # Dataset / loss mask: material head ignored when not open_work.
 MATERIAL_IGNORE_INDEX = -100
 # Floor head ignored when the crop has no floor_shape label.
 FLOOR_IGNORE_INDEX = -100
+# Kind head ignored for enclosure-only crops (e.g. fully enclosed, no railing).
+KIND_IGNORE_INDEX = -100
+# Enclosure head ignored when the crop has no enclosure label.
+ENCLOSURE_IGNORE_INDEX = -100
 
 # Labeled crop image extensions (case-insensitive on Windows).
 LABELED_IMAGE_SUFFIXES: tuple[str, ...] = (".png", ".jpg", ".jpeg", ".webp")
 
-# (path, kind_idx, material_idx, floor_idx). Ignore indexes skip that head.
-MultitaskSample = tuple[Path, int, int, int]
+# (path, kind_idx, material_idx, floor_idx, enclosure_idx). Ignore indexes skip that head.
+MultitaskSample = tuple[Path, int, int, int, int]
 
 
 def class_index(name: str) -> int:
@@ -49,12 +55,23 @@ def floor_index(name: str) -> int:
     return FLOOR_SHAPES.index(f)
 
 
+def enclosure_index(name: str) -> int:
+    e = str(name).strip().lower()
+    if e not in ENCLOSURES:
+        raise ValueError(f"unknown enclosure {name!r}; expected {ENCLOSURES}")
+    return ENCLOSURES.index(e)
+
+
 def sample_targets(row: tuple) -> tuple[int, int, int]:
     """Kind, material, floor indexes. Missing fields are ignore indexes."""
     kind_idx = int(row[1])
     mat_idx = int(row[2]) if len(row) >= 3 else MATERIAL_IGNORE_INDEX
     floor_idx = int(row[3]) if len(row) >= 4 else FLOOR_IGNORE_INDEX
     return kind_idx, mat_idx, floor_idx
+
+
+def enclosure_target(row: tuple) -> int:
+    return int(row[4]) if len(row) >= 5 else ENCLOSURE_IGNORE_INDEX
 
 
 def iter_labeled_samples(crops_dir: Path) -> list[tuple[Path, int]]:
@@ -79,10 +96,11 @@ def iter_multitask_samples(
     crops_dir: Path,
     labels_jsonl: Path | None = None,
 ) -> list[MultitaskSample]:
-    """Kind from folders; material and floor shape from labels.jsonl.
+    """Kind from folders; material, floor shape, enclosure from labels.jsonl.
 
     open_work without material defaults to ``metal``. A missing floor_shape
-    stays unlabeled (``FLOOR_IGNORE_INDEX``) and still trains kind.
+    or enclosure stays unlabeled (ignore index) and still trains the other
+    heads. Crops with an enclosure but no kind train only the heads they have.
     """
     from balcony_train.label_store import find_image, merge_label_sources
     from balcony_train.paths import DEFAULT_LABELS_JSONL
@@ -93,12 +111,14 @@ def iter_multitask_samples(
     rows: list[MultitaskSample] = []
     for stem, rec in sorted(merged.items()):
         kind = rec.get("kind")
-        if kind not in CLASSES:
+        enclosure = rec.get("enclosure")
+        if kind not in CLASSES and enclosure not in ENCLOSURES:
             continue
         path = find_image(crops_dir, stem)
         if path is None:
             continue
-        kind_idx = class_index(kind)
+        kind_idx = class_index(kind) if kind in CLASSES else KIND_IGNORE_INDEX
+        enc_idx = enclosure_index(enclosure) if enclosure in ENCLOSURES else ENCLOSURE_IGNORE_INDEX
         if kind == "open_work":
             mat = rec.get("material")
             if mat not in MATERIALS:
@@ -111,7 +131,7 @@ def iter_multitask_samples(
             floor_idx = floor_index(str(floor))
         else:
             floor_idx = FLOOR_IGNORE_INDEX
-        rows.append((path, kind_idx, mat_idx, floor_idx))
+        rows.append((path, kind_idx, mat_idx, floor_idx, enc_idx))
     return rows
 
 
@@ -119,7 +139,8 @@ def class_counts(samples: list[tuple[Any, int]] | list[MultitaskSample]) -> dict
     counts = {name: 0 for name in CLASSES}
     for row in samples:
         idx = int(row[1])
-        counts[CLASSES[idx]] += 1
+        if idx >= 0:
+            counts[CLASSES[idx]] += 1
     return counts
 
 
@@ -127,7 +148,7 @@ def material_counts(samples: list[MultitaskSample] | list[tuple]) -> dict[str, i
     counts = {name: 0 for name in MATERIALS}
     for row in samples:
         kind_idx, mat_idx, _floor_idx = sample_targets(row)
-        if CLASSES[kind_idx] != "open_work":
+        if kind_idx < 0 or CLASSES[kind_idx] != "open_work":
             continue
         if mat_idx < 0:
             continue
@@ -145,11 +166,26 @@ def floor_counts(samples: list[MultitaskSample] | list[tuple]) -> dict[str, int]
     return counts
 
 
-def strat_key(kind_idx: int, material_idx: int) -> str:
-    """Stratification key: open_work|metal, open_work|masonry, or bare kind."""
-    kind = CLASSES[int(kind_idx)]
+def enclosure_counts(samples: list[MultitaskSample] | list[tuple]) -> dict[str, int]:
+    counts = {name: 0 for name in ENCLOSURES}
+    for row in samples:
+        idx = enclosure_target(row)
+        if idx >= 0:
+            counts[ENCLOSURES[idx]] += 1
+    return counts
+
+
+def strat_key(kind_idx: int, material_idx: int, enclosure_idx: int = ENCLOSURE_IGNORE_INDEX) -> str:
+    """Stratification key: open_work|metal, open_work|masonry, or bare kind.
+
+    Non-open enclosures get their own stratum (``solid+half_enclosed``) so the
+    rare classes reach val/test too.
+    """
+    kind = CLASSES[int(kind_idx)] if int(kind_idx) >= 0 else "no_kind"
     if kind == "open_work" and int(material_idx) >= 0:
-        return f"{kind}|{MATERIALS[int(material_idx)]}"
+        kind = f"{kind}|{MATERIALS[int(material_idx)]}"
+    if int(enclosure_idx) >= 0 and ENCLOSURES[int(enclosure_idx)] != "open":
+        return f"{kind}+{ENCLOSURES[int(enclosure_idx)]}"
     return kind
 
 
