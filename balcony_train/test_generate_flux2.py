@@ -25,8 +25,6 @@ from balcony_train.prompts_enclosure import (  # noqa: E402
     HALF_ENCLOSED_PROMPTS,
 )
 from balcony_train.prompts_floor_shape import (  # noqa: E402
-    HEXAGON_PROMPTS,
-    TRAPEZOID_PROMPTS,
     TRIANGLE_PROMPTS,
     prefixes_for,
 )
@@ -113,10 +111,10 @@ class GenerateFlux2HelperTests(unittest.TestCase):
             "elliptical",
             "semicircular",
             "triangular",
-            "hexagonal",
-            "trapezoid",
         ):
             self.assertIn(shape, joined, msg=f"missing slab shape: {shape}")
+        for retired in ("hexagonal", "trapezoid"):
+            self.assertNotIn(retired, joined)
         self.assertTrue("classical" in joined)
         self.assertTrue("cornice" in joined or "bracket" in joined)
         self.assertLess(len(NEGATIVE_PROMPT), 500)
@@ -130,8 +128,6 @@ class GenerateFlux2HelperTests(unittest.TestCase):
                 "surface_panel",
                 "solid",
                 "triangle",
-                "trapezoid",
-                "hexagon",
                 "half_enclosed",
                 "enclosed",
             },
@@ -227,23 +223,8 @@ class GenerateFlux2HelperTests(unittest.TestCase):
             self.assertNotIn(word, lower, msg=prompt)
 
     def test_floor_plan_prompt_sets_rotate_kind_prefixes(self) -> None:
-        banks = {
-            "triangle": TRIANGLE_PROMPTS,
-            "trapezoid": TRAPEZOID_PROMPTS,
-            "hexagon": HEXAGON_PROMPTS,
-        }
-        cues = {
-            "triangle": ("triangular", "apex", "point"),
-            "trapezoid": ("trapezoid", "75"),
-            "hexagon": (
-                "hexagon",
-                "chamfer",
-                "30",
-                "right angle",
-                "six edges",
-                "five straight sections",
-            ),
-        }
+        banks = {"triangle": TRIANGLE_PROMPTS}
+        cues = {"triangle": ("triangular", "apex", "point")}
         for shape, prompts in banks.items():
             prefixes = prefixes_for(shape)
             self.assertEqual(PROMPT_SETS[shape]["prompts"], prompts)
@@ -261,39 +242,26 @@ class GenerateFlux2HelperTests(unittest.TestCase):
             self.assertGreater(turned, square, msg=shape)
             self.assertTrue(any("to the left" in p for p in prompts), msg=shape)
             self.assertTrue(any("to the right" in p for p in prompts), msg=shape)
-            if shape in ("triangle", "trapezoid"):
-                self.assertEqual(prefixes[0], f"flux2_{shape}_metal_")
-                self.assertEqual(prefixes[1], f"flux2_{shape}_masonry_")
-                self.assertEqual(prefixes[2], f"flux2_{shape}_solid_")
-                self.assertFalse(any("surface" in name for name in prefixes))
-                self.assertIn("floor", joined)
-                self.assertNotIn("privacy panel", joined)
-            if shape == "hexagon":
-                self.assertEqual(prefixes[3], "flux2_hexagon_surface_")
-            if shape == "triangle":
-                self.assertIn("the floor shape is a triangle", joined)
+            self.assertEqual(prefixes[0], f"flux2_{shape}_metal_")
+            self.assertEqual(prefixes[1], f"flux2_{shape}_masonry_")
+            self.assertEqual(prefixes[2], f"flux2_{shape}_solid_")
+            self.assertFalse(any("surface" in name for name in prefixes))
+            self.assertNotIn("privacy panel", joined)
+            self.assertIn("the floor shape is a triangle", joined)
             for wall in ("red brick", "travertine stone", "charcoal grey render"):
                 self.assertIn(wall, joined, msg=shape)
             self.assertIn("wet street after light rain", joined, msg=shape)
-            if shape == "trapezoid":
-                self.assertNotIn("not a trapezoid", joined)
-                self.assertIn("the floor shape is a trapezoid", joined)
-                self.assertIn("floor plan", joined)
-                self.assertIn("only the", joined)
             for prompt in prompts:
                 lower = prompt.lower()
                 self.assertTrue(lower.startswith("a long flat facade"), msg=prompt)
                 self.assertNotIn("corner", lower, msg=prompt)
                 self.assertIn("street", lower, msg=prompt)
                 self._assert_street_camera(lower, prompt)
-                if shape == "triangle":
-                    self.assertIn("thin flat horizontal concrete plate", lower, msg=prompt)
-                    self.assertIn("underside of the plate", lower, msg=prompt)
-                    self.assertNotIn("not a triangle", lower, msg=prompt)
-                    self.assertNotIn("not triangles", lower, msg=prompt)
-                    self.assertEqual(lower.count("triang"), 2, msg=prompt)
-                if shape == "hexagon":
-                    self.assertIn("square post stands at each of the four bends", lower)
+                self.assertIn("thin flat horizontal concrete plate", lower, msg=prompt)
+                self.assertIn("underside of the plate", lower, msg=prompt)
+                self.assertNotIn("not a triangle", lower, msg=prompt)
+                self.assertNotIn("not triangles", lower, msg=prompt)
+                self.assertEqual(lower.count("triang"), 2, msg=prompt)
             with tempfile.TemporaryDirectory() as tmp:
                 planned = iter_prompt_outputs(
                     Path(tmp), len(prefixes), prompts, f"flux2_{shape}_", prefixes

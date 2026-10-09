@@ -34,8 +34,9 @@ class LabelStoreTests(unittest.TestCase):
         self.assertEqual(normalize_kind("baluster"), "open_work")
         self.assertEqual(normalize_material("masonry", kind="open_work"), "masonry")
         self.assertIsNone(normalize_material("masonry", kind="solid"))
-        self.assertEqual(normalize_floor_shape("Hexagon"), "hexagon")
-        self.assertEqual(normalize_floor_shape("trapezoid"), "trapezoid")
+        self.assertEqual(normalize_floor_shape("Triangle"), "triangle")
+        self.assertEqual(normalize_floor_shape("Hexagon"), "rectangle")
+        self.assertEqual(normalize_floor_shape("trapezoid"), "rectangle")
         self.assertIsNone(normalize_floor_shape(None))
         with self.assertRaises(ValueError):
             normalize_floor_shape("pentagon")
@@ -106,11 +107,11 @@ class LabelStoreTests(unittest.TestCase):
                 image_path=src,
                 kind="solid",
                 material=None,
-                floor_shape="hexagon",
+                floor_shape="circle",
             )
-            self.assertEqual(labels["hex"]["floor_shape"], "hexagon")
+            self.assertEqual(labels["hex"]["floor_shape"], "circle")
             loaded = load_labels(jsonl)
-            self.assertEqual(loaded["hex"]["floor_shape"], "hexagon")
+            self.assertEqual(loaded["hex"]["floor_shape"], "circle")
             q = queue_stems(crops, labels, unlabeled_only=True, need_floor_shape=True)
             self.assertEqual(q, [])
 
@@ -122,13 +123,13 @@ class LabelStoreTests(unittest.TestCase):
                 image_path=trap,
                 kind="solid",
                 material=None,
-                floor_shape="trapezoid",
+                floor_shape="triangle",
                 labels=labels,
             )
             plain = crops / "solid" / "plain.png"
             _touch_png(plain)
             merged = merge_label_sources(crops, jsonl)
-            self.assertEqual(merged["trap"]["floor_shape"], "trapezoid")
+            self.assertEqual(merged["trap"]["floor_shape"], "triangle")
             self.assertIsNone(merged["plain"]["floor_shape"])
             pending = queue_stems(
                 crops, merged, unlabeled_only=True, need_floor_shape=True

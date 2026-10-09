@@ -6,9 +6,8 @@ Each line::
      "floor_shape": "rectangle"}
 
 ``material`` is set only for ``kind=open_work``; otherwise ``null``.
-``floor_shape`` is rectangle, triangle, circle, hexagon, or trapezoid.
-BDSL compiles all five; hexagon and trapezoid become plan outlines in
-``balcony_plan.slab_outline``.
+``floor_shape`` is rectangle, triangle, or circle (legacy hexagon and
+trapezoid load as rectangle).
 ``enclosure`` is open, half_enclosed, or enclosed (BDSL ``enclosure``).
 Folder layout under ``crops/`` (``open_work/`` etc.) stays in sync for the
 existing kind-only trainer. Records with an enclosure but no kind keep their
@@ -27,6 +26,7 @@ from balcony_train.labels import (
     ENCLOSURES,
     FLOOR_SHAPES,
     LABELED_IMAGE_SUFFIXES,
+    LEGACY_FLOOR_SHAPES,
     MATERIALS,
     ensure_crop_dirs,
 )
@@ -65,6 +65,7 @@ def normalize_floor_shape(raw: Any) -> str | None:
     name = str(raw).strip().lower()
     if not name or name in ("null", "none"):
         return None
+    name = LEGACY_FLOOR_SHAPES.get(name, name)
     if name not in FLOOR_SHAPES:
         raise ValueError(f"unknown floor shape {raw!r}; expected {FLOOR_SHAPES}")
     return name

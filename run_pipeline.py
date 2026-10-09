@@ -1738,6 +1738,9 @@ def run_one(
                 railing_ckpt=args.railing_ckpt,
                 no_railing_ckpt=args.no_railing_ckpt,
                 balcony_center=args.balcony_center,
+                no_enclosed=False,
+                depth_dir=ROOT / "runs" / "da3_enclosure",
+                enclosed_sam3_cache=ROOT / "runs" / "sam3_da3_volumes" / "sam3_seeds.json",
             )
             merged_path = _bp.run(bp_args)
             if merged_path and merged_path.is_file():

@@ -27,7 +27,7 @@ python balcony_train/generate_flux2.py -n 50 --quantized --device cuda --prompt-
 python balcony_train/generate_flux2.py -n 40 --quantized --device cuda --prompt-set solid
 ```
 
-Rare floor plans and enclosure, 50 prompts each (triangle, trapezoid, hexagon, half-enclosed, enclosed). On GruVi, one process loads the model once and keeps running after the laptop shuts down:
+Floor shapes are rectangle, triangle, and circle. Rare floor plan and enclosure, 50 prompts each (triangle, half-enclosed, enclosed). On GruVi, one process loads the model once and keeps running after the laptop shuts down:
 
 ```text
 module load LANG/PYTHON/3.11.0
@@ -38,7 +38,7 @@ nohup python -u balcony_train/run_flux2_rare50.py > runs/balcony_clf/flux2_rare5
 echo $! | tee runs/balcony_clf/flux2_rare50.pid
 ```
 
-That run clears previous files of those five prefixes in ``crops/unlabeled``, then writes 50 new images of each. Leave them at full size; the 120×44 resize below skips `flux2_triangle_`, `flux2_trapezoid_`, `flux2_hexagon_`, `flux2_half_enclosed_`, and `flux2_enclosed_`. ``label_from_prefix.py`` labels `flux2_{triangle,hexagon,trapezoid}_{masonry,metal,solid,surface}_` and leaves `flux2_half_enclosed_` and `flux2_enclosed_` in unlabeled.
+That run clears previous files of those three prefixes in ``crops/unlabeled``, then writes 50 new images of each. Leave them at full size; the 120×44 resize below skips `flux2_triangle_`, `flux2_half_enclosed_`, `flux2_enclosed_`, and the older full-frame `flux2_trapezoid_` / `flux2_hexagon_` crops. ``label_from_prefix.py`` labels `flux2_triangle_{masonry,metal,solid}_` as triangle, the older `flux2_{hexagon,trapezoid}_*` crops as rectangle, and leaves `flux2_half_enclosed_` and `flux2_enclosed_` in unlabeled.
 
 Prefixes: `flux2_masonry_`, `flux2_metal_`, `flux2_surface_`, `flux2_solid_`. Label in UI as
 `open_work`+`masonry`, `open_work`+`metal`, `surface_panel`, or `solid` respectively.

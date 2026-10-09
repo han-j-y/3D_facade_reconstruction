@@ -1,24 +1,20 @@
-"""FLUX.2 prompts for rare balcony floor plans: triangle, trapezoid, hexagon.
+"""FLUX.2 prompts for the rare triangle balcony floor plan.
 
-Each shape has 50 photos. Triangle and trapezoid rotate metal openwork,
-masonry openwork, and a solid parapet. Hexagon also rotates a surface panel.
-The triangle or trapezoid is the floor slab only. Windows, rails, and wall
-panels stay ordinary rectangles.
+50 photos rotating metal openwork, masonry openwork, and a solid parapet.
+The triangle is the floor slab only. Windows, rails, and wall panels stay
+ordinary rectangles.
 
 These crops must keep the slab outline. Do not run them through
 ``resize_flux_images.py`` (that rewrite is a 120×44 railing band).
 
-Plans match ``balcony_plan.slab_outline``:
-- triangle: isosceles, wall edge is the base, apex at the front center
-- trapezoid: long edge on the wall, shorter front parallel to the wall,
-  each side meets the wall at about 75 degrees
-- hexagon: a rectangle whose left and right edges leave the wall at a
-  right angle, then a short diagonal chamfer, then a wide front parallel
-  to the wall. Six edges. The outline bends twice on each side.
+The plan matches ``balcony_plan.slab_outline``: isosceles, wall edge is the
+base, apex at the front center.
 """
 
 from __future__ import annotations
 
+# Full-frame crops skipped by the 120×44 resize. Hexagon and trapezoid crops
+# on disk (now labeled rectangle) are full frame too.
 FLOOR_PLAN_PREFIXES: tuple[str, ...] = (
     "flux2_triangle_",
     "flux2_trapezoid_",
@@ -27,8 +23,6 @@ FLOOR_PLAN_PREFIXES: tuple[str, ...] = (
 
 _KIND_SUFFIXES: dict[str, tuple[str, ...]] = {
     "triangle": ("metal", "masonry", "solid"),
-    "trapezoid": ("metal", "masonry", "solid"),
-    "hexagon": ("metal", "masonry", "solid", "surface"),
 }
 
 # Positive description of one flat wall. Naming the building edge makes
@@ -149,37 +143,6 @@ _TRIANGLE_KIND: dict[str, str] = {
         "along the two sloping edges of the floor and meets at the front point"
     ),
 }
-_TRAPEZOID_KIND: dict[str, str] = {
-    "metal": (
-        "straight dark metal vertical bars of equal height stand along the front "
-        "and the two angled sides of the floor"
-    ),
-    "masonry": (
-        "ordinary vertical masonry balusters of equal height stand along the "
-        "front and the two angled sides of the floor, with a flat level top rail"
-    ),
-    "solid": (
-        "a plain solid parapet of constant height with a flat level top runs "
-        "along the front and the two angled sides of the floor"
-    ),
-}
-_HEXAGON_KIND: dict[str, str] = {
-    "metal": (
-        "dark metal vertical bars run along all five railing sections, the "
-        "window is an ordinary rectangle"
-    ),
-    "masonry": (
-        "ordinary vertical masonry balusters run along all five railing sections"
-    ),
-    "solid": (
-        "a plain solid parapet runs along all five railing sections, each "
-        "section is a flat rectangular panel"
-    ),
-    "surface": (
-        "frosted glass panels fill all five railing sections, one panel on each "
-        "straight side, one on each diagonal chamfer, and a wide front panel"
-    ),
-}
 
 
 def _slots(count: int = PROMPT_COUNT) -> list[dict[str, str]]:
@@ -235,63 +198,19 @@ def _triangle_prompts() -> list[str]:
     return prompts
 
 
-def _trapezoid_prompts() -> list[str]:
-    prompts: list[str] = []
-    for slot, kind in zip(_floor_slots(), _kinds("trapezoid", PROMPT_COUNT)):
-        prompts.append(
-            f"{ONE_FACADE}, {slot['view']}, the floor shape is a trapezoid, only the floor is a "
-            "trapezoid, this floor plan is a trapezoid, long edge of the floor on "
-            "the wall, short front edge of the floor parallel to the wall, sides "
-            f"of the floor meet the wall at about 75 degrees, {slot['floor']} floor, "
-            f"{slot['facade']} facade, {_TRAPEZOID_KIND[kind]}, {slot['extra']}, "
-            f"{slot['light']}"
-        )
-    return prompts
-
-
-def _hexagon_prompts() -> list[str]:
-    prompts: list[str] = []
-    for slot, kind in zip(_floor_slots(), _kinds("hexagon", PROMPT_COUNT)):
-        prompts.append(
-            f"{ONE_FACADE}, {slot['view']}, the floor shape is a hexagon: a deep "
-            "box-shaped balcony like a rectangle whose two front ends are cut off "
-            "diagonally, six edges in plan, the railing has five straight "
-            "sections: a long straight left side section that leaves the wall at "
-            "a right angle and runs straight out toward the street, a short "
-            "diagonal chamfer section, a wide front section parallel to the wall, "
-            "a short diagonal chamfer section, and a long straight right side "
-            "section that leaves the wall at a right angle, a square post stands "
-            "at each of the four bends, the two side sections are clearly visible "
-            "running out from the wall, each chamfer meets the front at about 30 "
-            "degrees, the underside of the slab shows the same six-edged outline, "
-            f"{slot['floor']} floor, {slot['facade']} facade, "
-            f"{_HEXAGON_KIND[kind]}, {slot['extra']}, {slot['light']}"
-        )
-    return prompts
-
-
 TRIANGLE_PROMPTS: list[str] = _triangle_prompts()
-TRAPEZOID_PROMPTS: list[str] = _trapezoid_prompts()
-HEXAGON_PROMPTS: list[str] = _hexagon_prompts()
+_BANKS: dict[str, list[str]] = {"triangle": TRIANGLE_PROMPTS}
 
 
 def prefixes_for(shape: str) -> list[str]:
     """Filename prefixes aligned one-for-one with that shape's prompts."""
-    bank = {
-        "triangle": TRIANGLE_PROMPTS,
-        "trapezoid": TRAPEZOID_PROMPTS,
-        "hexagon": HEXAGON_PROMPTS,
-    }[shape]
+    bank = _BANKS[shape]
     return [f"flux2_{shape}_{kind}_" for kind in _kinds(shape, len(bank))]
 
 
 def prompt_rows(shape: str) -> list[tuple[str, str]]:
     """``(prompt, filename_prefix)`` in the same order as ``prefixes_for``."""
-    bank = {
-        "triangle": TRIANGLE_PROMPTS,
-        "trapezoid": TRAPEZOID_PROMPTS,
-        "hexagon": HEXAGON_PROMPTS,
-    }[shape]
+    bank = _BANKS[shape]
     prefixes = prefixes_for(shape)
     if len(bank) != len(prefixes):
         raise ValueError(f"{shape} prompts and prefixes differ in length")

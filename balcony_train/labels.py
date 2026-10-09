@@ -9,13 +9,9 @@ CLASSES: tuple[str, ...] = ("open_work", "surface_panel", "solid")
 # Material only applies when kind == open_work (mesh proportions).
 MATERIALS: tuple[str, ...] = ("metal", "masonry")
 # Plan shape stored on labels and trained when set.
-FLOOR_SHAPES: tuple[str, ...] = (
-    "rectangle",
-    "triangle",
-    "circle",
-    "hexagon",
-    "trapezoid",
-)
+FLOOR_SHAPES: tuple[str, ...] = ("rectangle", "triangle", "circle")
+# Retired plan names still found in older labels, splits, and IR files.
+LEGACY_FLOOR_SHAPES: dict[str, str] = {"hexagon": "rectangle", "trapezoid": "rectangle"}
 # Matches BDSL ``enclosure``.
 ENCLOSURES: tuple[str, ...] = ("open", "half_enclosed", "enclosed")
 # Dataset / loss mask: material head ignored when not open_work.
@@ -50,6 +46,7 @@ def material_index(name: str) -> int:
 
 def floor_index(name: str) -> int:
     f = str(name).strip().lower()
+    f = LEGACY_FLOOR_SHAPES.get(f, f)
     if f not in FLOOR_SHAPES:
         raise ValueError(f"unknown floor shape {name!r}; expected {FLOOR_SHAPES}")
     return FLOOR_SHAPES.index(f)
@@ -127,6 +124,7 @@ def iter_multitask_samples(
         else:
             mat_idx = MATERIAL_IGNORE_INDEX
         floor = rec.get("floor_shape")
+        floor = LEGACY_FLOOR_SHAPES.get(floor, floor)
         if floor in FLOOR_SHAPES:
             floor_idx = floor_index(str(floor))
         else:

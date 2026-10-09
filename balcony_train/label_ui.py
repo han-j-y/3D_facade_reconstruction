@@ -45,13 +45,7 @@ from balcony_train.paths import DEFAULT_CROPS_DIR, DEFAULT_LABELS_JSONL  # noqa:
 KIND_KEYS = {"0": "", "1": "open_work", "2": "surface_panel", "3": "solid"}
 ENCLOSURE_KEYS = {"o": "open", "a": "half_enclosed", "e": "enclosed"}
 MATERIAL_KEYS = {"m": "metal", "n": "masonry"}
-FLOOR_KEYS = {
-    "r": "rectangle",
-    "t": "triangle",
-    "c": "circle",
-    "h": "hexagon",
-    "z": "trapezoid",
-}
+FLOOR_KEYS = {"r": "rectangle", "t": "triangle", "c": "circle"}
 # Fallback when the image pane has not been laid out yet.
 PREVIEW_FALLBACK = (900, 700)
 
@@ -160,11 +154,11 @@ class LabelApp:
 
         floor_fr = ttk.LabelFrame(
             self.root,
-            text="Floor shape — R rectangle / T triangle / C circle / H hexagon / Z trapezoid",
+            text="Floor shape — R rectangle / T triangle / C circle",
             padding=8,
         )
         floor_fr.pack(fill=tk.X, padx=8, pady=4)
-        for name, key in zip(FLOOR_SHAPES, ("R", "T", "C", "H", "Z")):
+        for name, key in zip(FLOOR_SHAPES, ("R", "T", "C")):
             ttk.Radiobutton(
                 floor_fr,
                 text=f"{key}: {name}",
@@ -388,8 +382,7 @@ class LabelApp:
         if floor not in FLOOR_SHAPES:
             messagebox.showwarning(
                 "Floor shape required",
-                "Select floor shape: rectangle (R), triangle (T), circle (C), "
-                "hexagon (H), or trapezoid (Z).",
+                "Select floor shape: rectangle (R), triangle (T), or circle (C).",
             )
             return
 

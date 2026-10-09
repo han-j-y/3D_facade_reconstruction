@@ -1,4 +1,4 @@
-"""Generate 50 images each for the five rare balcony sets, one model load.
+"""Generate 50 images each for the three rare balcony sets, one model load.
 
 Start this on GruVi, confirm the log is moving, then the laptop can shut
 down. The process stays on the remote machine.
@@ -10,8 +10,8 @@ down. The process stays on the remote machine.
     nohup python -u balcony_train/run_flux2_rare50.py > runs/balcony_clf/flux2_rare50.log 2>&1 &
     echo $! | tee runs/balcony_clf/flux2_rare50.pid
 
-Previous ``flux2_triangle_``, ``flux2_trapezoid_``, ``flux2_hexagon_``,
-``flux2_half_enclosed_``, and ``flux2_enclosed_`` files in unlabeled are
+Previous ``flux2_triangle_``, ``flux2_half_enclosed_``, and
+``flux2_enclosed_`` files in unlabeled are
 removed first so the batch is exactly 50 each. Pass ``--keep-existing`` to
 leave them and append.
 """
@@ -36,15 +36,11 @@ from balcony_train.paths import DEFAULT_CROPS_DIR  # noqa: E402
 
 RARE_SETS: tuple[str, ...] = (
     "triangle",
-    "trapezoid",
-    "hexagon",
     "half_enclosed",
     "enclosed",
 )
 CLEAR_PREFIXES: tuple[str, ...] = (
     "flux2_triangle_",
-    "flux2_trapezoid_",
-    "flux2_hexagon_",
     "flux2_half_enclosed_",
     "flux2_enclosed_",
 )

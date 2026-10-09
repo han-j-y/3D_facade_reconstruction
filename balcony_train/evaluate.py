@@ -497,7 +497,7 @@ def main() -> None:
             row = " ".join(f"{int(v):4d}" for v in floor_conf[i].tolist())
             print(f"  {name:16s} {row}")
     else:
-        print("floor head not in checkpoint")
+        print(f"floor head missing or not trained on {FLOOR_SHAPES}; retrain to evaluate floor")
 
     if enc_trained:
         enc_total = int(enc_conf.sum().item())

@@ -54,7 +54,7 @@ class StackTests(unittest.TestCase):
             "enc": _ir("enclosed"),
             "half": _ir("half_enclosed"),
             "open": _ir("open", width=2.4),
-            "hex": _ir("enclosed", shape="hexagon", width=2.4),
+            "circ": _ir("enclosed", shape="circle", width=2.4),
         }
 
     def test_column_of_enclosures_shares_floors(self) -> None:
@@ -93,9 +93,9 @@ class StackTests(unittest.TestCase):
         self.assertFalse(other["aligned"])
 
     def test_upper_takes_lower_plan_shape(self) -> None:
-        spec = _spec([_at(3, 1, "hex"), _at(2, 1, "open")], self.lib)
+        spec = _spec([_at(3, 1, "circ"), _at(2, 1, "open")], self.lib)
         lower, upper = balcony_frames(spec)
-        self.assertEqual(upper["shape"], "hexagon")
+        self.assertEqual(upper["shape"], "circle")
         self.assertEqual(upper["outline"], lower["outline"])
 
 
@@ -147,8 +147,8 @@ class FrontWindowTests(unittest.TestCase):
         self.assertEqual(front_window_targets(frames, [self._window(spec, 2, 1)]), {})
 
     def test_narrow_front_keeps_wall_window(self) -> None:
-        lib = {"hex": _ir("enclosed", shape="hexagon", width=2.6)}
-        spec = _spec([_at(2, 1, "hex")], lib)
+        lib = {"slim": _ir("enclosed", width=0.8)}
+        spec = _spec([_at(2, 1, "slim")], lib)
         frames = balcony_frames(spec)
         fx0, fx1 = front_edge_x(frames[0])
         self.assertLess(fx1 - fx0, 1.0)
@@ -162,11 +162,11 @@ class FrontWindowTests(unittest.TestCase):
 
 class ColumnTests(unittest.TestCase):
     def test_default_columns_follow_bends(self) -> None:
-        lib = {"r": _ir("half_enclosed"), "h": _ir("half_enclosed", shape="hexagon", width=2.4)}
-        spec = _spec([_at(2, 0, "r"), _at(2, 2, "h")], lib)
-        rect, hexa = balcony_frames(spec)
+        lib = {"r": _ir("half_enclosed"), "c": _ir("half_enclosed", shape="circle", width=2.4)}
+        spec = _spec([_at(2, 0, "r"), _at(2, 2, "c")], lib)
+        rect, circ = balcony_frames(spec)
         self.assertEqual(len(column_points(rect)), 2)
-        self.assertEqual(len(column_points(hexa)), 4)
+        self.assertEqual(len(column_points(circ)), 3)
         self.assertEqual(len(column_points(rect, count=3)), 3)
         for x, y in column_points(rect):
             self.assertGreater(y, rect["y_wall"])

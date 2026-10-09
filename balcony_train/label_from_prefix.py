@@ -7,12 +7,10 @@ Maps::
     flux2_surface_*  -> surface_panel
     flux2_solid_*    -> solid
 
-    flux2_{triangle,hexagon,trapezoid}_{masonry,metal}_*
-        -> open_work + that material + that floor shape
-    flux2_{triangle,hexagon,trapezoid}_surface_*
-        -> surface_panel + that floor shape
-    flux2_{triangle,hexagon,trapezoid}_solid_*
-        -> solid + that floor shape
+    flux2_triangle_{masonry,metal}_*  -> open_work + that material + triangle
+    flux2_triangle_surface_*          -> surface_panel + triangle
+    flux2_triangle_solid_*            -> solid + triangle
+    flux2_{hexagon,trapezoid}_*       -> same kinds, floor rectangle
 
 All of the above are enclosure ``open``.
 
@@ -42,7 +40,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from balcony_train.label_store import merge_label_sources, save_annotation  # noqa: E402
-from balcony_train.labels import LABELED_IMAGE_SUFFIXES  # noqa: E402
+from balcony_train.labels import LABELED_IMAGE_SUFFIXES, LEGACY_FLOOR_SHAPES  # noqa: E402
 from balcony_train.paths import DEFAULT_CROPS_DIR, DEFAULT_LABELS_JSONL  # noqa: E402
 
 # Longest-prefix-first matching (order matters if names ever overlap).
@@ -58,7 +56,7 @@ PrefixLabel = tuple[str, str | None, str | None, str | None, str]
 
 PREFIX_LABELS: tuple[PrefixLabel, ...] = (
     *(
-        (f"flux2_{shape}_{token}_", kind, material, shape, "open")
+        (f"flux2_{shape}_{token}_", kind, material, LEGACY_FLOOR_SHAPES.get(shape, shape), "open")
         for shape in _FLOOR_PLAN_SHAPES
         for token, kind, material in _FLOOR_PLAN_KINDS
     ),

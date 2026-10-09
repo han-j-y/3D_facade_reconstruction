@@ -4,6 +4,10 @@ Does not edit run.py / run_pipeline.py. Reuses SAM3 detect, box merge, DINOv2
 cluster, medoid, and majority-vote *pattern* with a balcony fingerprint.
 
 Requires an existing window facade_dsl.json (floor×bay from the window track).
+Enclosed volumes (SAM3+DA3) are sliced onto that grid, snapped to column
+width, and merged as ``balc_enclosed``. Open railings on the same cell are
+dropped; an open balcony on the floor above keeps its slab (aligned to the
+enclosed footprint by the compiler).
 
   python balcony_pipeline/run_balcony.py --image PHOTO.png --windows-dsl facade_dsl.json --out-dir runs/balcony_demo
 """
@@ -31,6 +35,12 @@ if str(HERE) not in sys.path:
 
 import run_pipeline as rp  # noqa: E402
 
+from enclosed import (  # noqa: E402
+    drop_open_under_enclosed,
+    enclosed_ir,
+    ensure_da3_depth,
+    place_enclosed_volumes,
+)
 from cluster import cluster_balcony_boxes  # noqa: E402
 from draw import (  # noqa: E402
     draw_boxes,
@@ -121,7 +131,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "do not majority-vote floor shape; each balcony keeps its predicted "
-            "plan (rectangle, triangle, circle, hexagon, trapezoid). "
+            "plan (rectangle, triangle, circle). "
             "Implied by --no-railing-vote"
         ),
     )
@@ -148,6 +158,23 @@ def parse_args() -> argparse.Namespace:
             "bay (mean of bays_center bands), or photo (detection box cx_norm)"
         ),
     )
+    ap.add_argument(
+        "--no-enclosed",
+        action="store_true",
+        help="skip SAM3+DA3 enclosed volumes (open-railing track only)",
+    )
+    ap.add_argument(
+        "--depth-dir",
+        type=Path,
+        default=ROOT / "runs" / "da3_enclosure",
+        help="DA3 ``<stem>_depth.npy`` directory for enclosed volumes",
+    )
+    ap.add_argument(
+        "--enclosed-sam3-cache",
+        type=Path,
+        default=ROOT / "runs" / "sam3_da3_volumes" / "sam3_seeds.json",
+        help="SAM3 seed cache for enclosed / oriel / bay prompts",
+    )
     return ap.parse_args()
 
 
@@ -155,7 +182,9 @@ def _clear_stage_pngs(out_dir: Path, stem: str) -> None:
     for name in (
         f"s1_detect_balconies_{stem}.png",
         f"s1b_filtered_balconies_{stem}.png",
+        f"s1c_enclosed_volumes_{stem}.png",
         f"s2_snap_floors_bays_{stem}.png",
+        f"s2b_enclosed_snap_{stem}.png",
         f"s3_cluster_balcony_types_{stem}.png",
         f"s4_vote_balcony_ir_{stem}.png",
     ):
@@ -199,6 +228,39 @@ def resolve_railing_predictor(args: argparse.Namespace, device: torch.device):
         path = Path(ckpt) if ckpt else DEFAULT_RAILING_CKPT
         print(f"railing classifier missing ({path}); using heuristic")
     return predictor
+
+
+def detect_enclosed_volume_boxes(
+    image: Image.Image,
+    image_path: Path,
+    *,
+    device: torch.device,
+    depth_dir: Path,
+    cache_path: Path,
+    sam3_threshold: float = 0.15,
+) -> list[dict]:
+    """Run the SAM3+DA3 volume detector. Infers DA3 depth if the npy is missing."""
+    stem = image_path.stem
+    depth_path = ensure_da3_depth(image_path, depth_dir, device=str(device))
+    if depth_path is None:
+        return []
+    from balcony_train.try_da3_enclosure import resize_depth
+    from balcony_train.try_sam3_da3_volumes import detect_volumes, run_sam3
+
+    depth = resize_depth(np.load(depth_path), image.width, image.height)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    seeds_map = run_sam3(
+        [image_path],
+        device=device,
+        cache_path=Path(cache_path),
+        threshold=sam3_threshold,
+    )
+    seeds = seeds_map.get(stem, [])
+    if not seeds:
+        print("warn: no SAM3 enclosed seeds; skip enclosed volumes")
+        return []
+    return detect_volumes(image, depth, seeds)
 
 
 def infer_unit_ir(
@@ -373,154 +435,169 @@ def run(args: argparse.Namespace) -> Path | None:
         out_dir / f"s1_detect_balconies_{stem}.png",
         force=True,
     )
-    if not raw_boxes:
-        if args.force:
-            _reset_image_outputs(out_dir, stem)
-        print("warn: no balcony detections; skip merge")
-        return None
-
-    print("=== 1a Filter false balconies (window band + rooftop) ===")
-    filtered_boxes, drop_log = filter_balcony_boxes(
-        raw_boxes,
-        facade,
-        windows_dsl.get("instances") or [],
-    )
-    n_drop = sum(1 for e in drop_log if not e["keep"])
-    print(f"  {len(raw_boxes)} raw -> {len(filtered_boxes)} kept  (dropped {n_drop})")
-    for e in drop_log:
-        if e["keep"]:
-            continue
-        print(f"    drop {e['box']}  reasons={e['reasons']}")
-    save(
-        draw_boxes(
+    snapped: list[dict] = []
+    if raw_boxes:
+        print("=== 1a Filter false balconies (window band + rooftop) ===")
+        filtered_boxes, drop_log = filter_balcony_boxes(
+            raw_boxes,
             facade,
-            filtered_boxes,
-            title=(
-                f"1a. Filtered balconies  kept={len(filtered_boxes)}/"
-                f"{len(raw_boxes)}  (below-windows | juliet-width | window-cover | no-window-above)"
-            ),
-            color=(40, 180, 90),
-        ),
-        out_dir / f"s1b_filtered_balconies_{stem}.png",
-        force=True,
-    )
-    if not filtered_boxes:
-        print("warn: all balcony detections filtered out; skip merge")
-        return None
-    raw_boxes = filtered_boxes
-
-    print("=== 1b Unitize (balcony merge: Pass-1 IoU/containment only) ===")
-    iw, ih = facade.size
-    cx = np.array([0.5 * (b[0] + b[2]) / iw for b in raw_boxes], dtype=np.float64)
-    cy = np.array([0.5 * (b[1] + b[3]) / ih for b in raw_boxes], dtype=np.float64)
-    merged_boxes, members, _bay_raw, _floor_raw = rp.merge_mod.merge_adjacent_boxes(
-        raw_boxes,
-        cx,
-        cy,
-        row_tol=args.row_tol,
-        adj_gap=1.0,
-        merge_bays=False,
-        col_tol=args.col_tol,
-        mode="balcony",
-    )
-    print(f"  {len(raw_boxes)} raw -> {len(merged_boxes)} units (mode=balcony)")
-
-    print("=== 2 Associate to window floors/bays ===")
-    snapped = snap_units(merged_boxes, windows_dsl)
-    for u, mem in zip(snapped, members):
-        u["member_raw_idxs"] = mem
-    save(
-        draw_snap(
-            facade,
-            snapped,
-            f"2. Snap to window grid  n={len(snapped)}",
-        ),
-        out_dir / f"s2_snap_floors_bays_{stem}.png",
-    )
-
-    floors = [int(u["floor"]) for u in snapped]
-    bays = [int(u["bay"]) for u in snapped]
-    clustered = cluster_boxes(facade, merged_boxes, floors, bays, args, device)
-    labels = clustered["labels"]
-    feats = clustered["feats"]
-    n_types = len(set(int(x) for x in labels.tolist()))
-    save(
-        draw_cluster_overlay(
-            facade,
-            merged_boxes,
-            labels,
-            f"3. Cluster balcony types  types={n_types} units={len(merged_boxes)}",
-        ),
-        out_dir / f"s3_cluster_balcony_types_{stem}.png",
-    )
-
-    medoids = rp.pick_medoids(feats, labels)
-    units: list[dict] = []
-    for ui, u in enumerate(snapped):
-        tid = int(labels[ui])
-        type_dir = crops_dir / f"type_{tid:02d}"
-        type_dir.mkdir(parents=True, exist_ok=True)
-        crop_path = type_dir / f"unit_{ui:03d}.png"
-        _write_image(facade.crop(tuple(u["box_xyxy"])), crop_path)
-        units.append(
-            {
-                **u,
-                "type_id": tid,
-                "asset": str(crop_path.relative_to(out_dir)),
-                "is_exemplar": ui == medoids[tid],
-            }
+            windows_dsl.get("instances") or [],
         )
+        n_drop = sum(1 for e in drop_log if not e["keep"])
+        print(f"  {len(raw_boxes)} raw -> {len(filtered_boxes)} kept  (dropped {n_drop})")
+        for e in drop_log:
+            if e["keep"]:
+                continue
+            print(f"    drop {e['box']}  reasons={e['reasons']}")
+        save(
+            draw_boxes(
+                facade,
+                filtered_boxes,
+                title=(
+                    f"1a. Filtered balconies  kept={len(filtered_boxes)}/"
+                    f"{len(raw_boxes)}  (below-windows | juliet-width | window-cover | no-window-above)"
+                ),
+                color=(40, 180, 90),
+            ),
+            out_dir / f"s1b_filtered_balconies_{stem}.png",
+            force=True,
+        )
+        raw_boxes = filtered_boxes
+    if raw_boxes:
+        print("=== 1b Unitize (balcony merge: Pass-1 IoU/containment only) ===")
+        iw, ih = facade.size
+        cx = np.array([0.5 * (b[0] + b[2]) / iw for b in raw_boxes], dtype=np.float64)
+        cy = np.array([0.5 * (b[1] + b[3]) / ih for b in raw_boxes], dtype=np.float64)
+        merged_boxes, members, _bay_raw, _floor_raw = rp.merge_mod.merge_adjacent_boxes(
+            raw_boxes,
+            cx,
+            cy,
+            row_tol=args.row_tol,
+            adj_gap=1.0,
+            merge_bays=False,
+            col_tol=args.col_tol,
+            mode="balcony",
+        )
+        print(f"  {len(raw_boxes)} raw -> {len(merged_boxes)} units (mode=balcony)")
+        print("=== 2 Associate to window floors/bays ===")
+        snapped = snap_units(merged_boxes, windows_dsl)
+        for u, mem in zip(snapped, members):
+            u["member_raw_idxs"] = mem
+        save(
+            draw_snap(
+                facade,
+                snapped,
+                f"2. Snap to window grid  n={len(snapped)}",
+            ),
+            out_dir / f"s2_snap_floors_bays_{stem}.png",
+        )
+    else:
+        print("warn: no open balcony detections")
 
+    enclosed_units: list[dict] = []
+    if not bool(getattr(args, "no_enclosed", False)):
+        print("=== 1c Enclosed volumes (SAM3+DA3) ===")
+        vol_boxes = detect_enclosed_volume_boxes(
+            facade,
+            image_path,
+            device=device,
+            depth_dir=Path(getattr(args, "depth_dir", ROOT / "runs" / "da3_enclosure")),
+            cache_path=Path(
+                getattr(
+                    args,
+                    "enclosed_sam3_cache",
+                    ROOT / "runs" / "sam3_da3_volumes" / "sam3_seeds.json",
+                )
+            ),
+        )
+        save(
+            draw_boxes(
+                facade,
+                [r["box_xyxy"] for r in vol_boxes],
+                title=f"1c. Enclosed volumes  n={len(vol_boxes)}",
+                color=(220, 160, 40),
+            ),
+            out_dir / f"s1c_enclosed_volumes_{stem}.png",
+            force=True,
+        )
+        enclosed_units = place_enclosed_volumes(
+            vol_boxes, windows_dsl, unit_id0=len(snapped)
+        )
+        if enclosed_units:
+            save(
+                draw_snap(
+                    facade,
+                    enclosed_units,
+                    f"2b. Enclosed snap  n={len(enclosed_units)}  (column width)",
+                ),
+                out_dir / f"s2b_enclosed_snap_{stem}.png",
+            )
+            print(
+                f"  {len(vol_boxes)} volume(s) -> {len(enclosed_units)} floor placements"
+            )
+        if snapped and enclosed_units:
+            snapped, dropped_open = drop_open_under_enclosed(snapped, enclosed_units)
+            for u in dropped_open:
+                print(
+                    f"    drop open F{u.get('floor')} "
+                    f"B{u.get('bay_start')}-{u.get('bay_end')} under enclosed"
+                )
+
+    units: list[dict] = []
     types_out: list[dict] = []
     profile_name = getattr(args, "recovery_profile", None) or DEFAULT_PROFILE
     axes_on = [k for k, v in resolve_profile(profile_name).items() if v]
     per_unit_railing = bool(getattr(args, "no_railing_vote", False))
-    # --no-railing-vote already keeps each crop's IR, including its floor plan.
     per_unit_floor = bool(getattr(args, "no_floor_shape_vote", False)) or per_unit_railing
-    predictor = resolve_railing_predictor(args, device)
-    rail_src = "classifier" if predictor is not None else "heuristic"
-    ir_label = "Classifier IR" if predictor is not None else "Heuristic IR"
+    predictor = None
+    rail_src = "heuristic"
+    vote_note = f"profile={profile_name}"
 
-    if per_unit_railing:
-        print(
-            f"=== 4 {ir_label} per unit (no vote; profile={profile_name} infer={axes_on}) ==="
-        )
-        for u in units:
-            crop = Image.open(out_dir / u["asset"]).convert("RGB")
-            ir = infer_unit_ir(
-                crop,
-                u,
-                image_size=facade.size,
-                profile_name=profile_name,
-                predictor=predictor,
-            )
-            tokens = ir_to_tokens(ir, profile_name=profile_name)
-            kind = railing_kind_from_ir(ir)
-            material = railing_material_from_ir(ir)
-            u["structure_ir_member"] = ir
-            u["structure_ir"] = ir
-            u["structure_tokens"] = tokens
-            mat_s = f" material={material}" if material else ""
-            print(
-                f"  unit_{int(u['unit_id']):03d}: railing={kind}{mat_s} "
-                f"floor={floor_shape_from_ir(ir)} enclosure={enclosure_from_ir(ir)}"
-            )
-        types_out = _types_grouped_by_token(
-            units, crops_dir, out_dir, include_floor=per_unit_floor
-        )
-        vote_note = (
-            f"profile={profile_name} per-unit infer={axes_on} "
-            f"rail={rail_src} floor=per-unit"
-        )
+    if not snapped:
+        print("warn: no open balcony units after snap / enclosed conflict")
     else:
-        print(f"=== 4 {ir_label} + majority vote (profile={profile_name} vote={axes_on}) ===")
-        for tid, med_i in sorted(medoids.items()):
-            exemplar = units[med_i]
-            canon = crops_dir / f"type_{tid:02d}" / "exemplar.png"
-            shutil.copy(out_dir / exemplar["asset"], canon)
-            member_units = [u for u in units if int(u["type_id"]) == int(tid)]
-            member_preds = []
-            for u in member_units:
+        merged_boxes = [u["box_xyxy"] for u in snapped]
+        floors = [int(u["floor"]) for u in snapped]
+        bays = [int(u["bay"]) for u in snapped]
+        clustered = cluster_boxes(facade, merged_boxes, floors, bays, args, device)
+        labels = clustered["labels"]
+        feats = clustered["feats"]
+        n_types = len(set(int(x) for x in labels.tolist()))
+        save(
+            draw_cluster_overlay(
+                facade,
+                merged_boxes,
+                labels,
+                f"3. Cluster balcony types  types={n_types} units={len(merged_boxes)}",
+            ),
+            out_dir / f"s3_cluster_balcony_types_{stem}.png",
+        )
+
+        medoids = rp.pick_medoids(feats, labels)
+        for ui, u in enumerate(snapped):
+            tid = int(labels[ui])
+            type_dir = crops_dir / f"type_{tid:02d}"
+            type_dir.mkdir(parents=True, exist_ok=True)
+            crop_path = type_dir / f"unit_{ui:03d}.png"
+            _write_image(facade.crop(tuple(u["box_xyxy"])), crop_path)
+            units.append(
+                {
+                    **u,
+                    "type_id": tid,
+                    "asset": str(crop_path.relative_to(out_dir)),
+                    "is_exemplar": ui == medoids[tid],
+                }
+            )
+
+        predictor = resolve_railing_predictor(args, device)
+        rail_src = "classifier" if predictor is not None else "heuristic"
+        ir_label = "Classifier IR" if predictor is not None else "Heuristic IR"
+
+        if per_unit_railing:
+            print(
+                f"=== 4 {ir_label} per unit (no vote; profile={profile_name} infer={axes_on}) ==="
+            )
+            for u in units:
                 crop = Image.open(out_dir / u["asset"]).convert("RGB")
                 ir = infer_unit_ir(
                     crop,
@@ -530,49 +607,123 @@ def run(args: argparse.Namespace) -> Path | None:
                     predictor=predictor,
                 )
                 tokens = ir_to_tokens(ir, profile_name=profile_name)
-                member_preds.append({"unit_id": int(u["unit_id"]), "ir": ir, "tokens": tokens})
+                kind = railing_kind_from_ir(ir)
+                material = railing_material_from_ir(ir)
                 u["structure_ir_member"] = ir
-            voted = vote_cluster_ir(
-                member_preds, prefer_unit_id=med_i, profile_name=profile_name
-            )
-            for u in member_units:
-                if per_unit_floor:
-                    u["structure_ir"] = _with_unit_floor(
-                        voted["structure_ir"], u["structure_ir_member"]
-                    )
-                else:
-                    u["structure_ir"] = voted["structure_ir"]
-            vote = voted["vote"]
-            print(
-                f"  type_{tid:02d}: vote "
-                f"{vote.get('winner_count', 0)}/{vote.get('n_valid', 0)} "
-                f"unique={vote.get('n_unique', 0)}"
-            )
-            if not per_unit_floor:
-                types_out.append(
-                    {
-                        "type_id": tid,
-                        "name": f"balc_type_{tid:02d}",
-                        "n_instances": len(member_units),
-                        "exemplar_unit": med_i,
-                        "exemplar_asset": str(canon.relative_to(out_dir)),
-                        "structure_ir": voted["structure_ir"],
-                        "structure_tokens": voted["structure_tokens"],
-                        "structure_vote": voted["vote"],
-                    }
-                )
-        if per_unit_floor:
-            types_out = _types_grouped_by_token(
-                units, crops_dir, out_dir, include_floor=True
-            )
-            for u in units:
-                ir = u.get("structure_ir") or {}
+                u["structure_ir"] = ir
+                u["structure_tokens"] = tokens
+                mat_s = f" material={material}" if material else ""
                 print(
-                    f"  unit_{int(u['unit_id']):03d}: "
+                    f"  unit_{int(u['unit_id']):03d}: railing={kind}{mat_s} "
                     f"floor={floor_shape_from_ir(ir)} enclosure={enclosure_from_ir(ir)}"
                 )
-        floor_note = " floor=per-unit" if per_unit_floor else ""
-        vote_note = f"profile={profile_name} vote={axes_on} rail={rail_src}{floor_note}"
+            types_out = _types_grouped_by_token(
+                units, crops_dir, out_dir, include_floor=per_unit_floor
+            )
+            vote_note = (
+                f"profile={profile_name} per-unit infer={axes_on} "
+                f"rail={rail_src} floor=per-unit"
+            )
+        else:
+            print(
+                f"=== 4 {ir_label} + majority vote (profile={profile_name} vote={axes_on}) ==="
+            )
+            for tid, med_i in sorted(medoids.items()):
+                exemplar = units[med_i]
+                canon = crops_dir / f"type_{tid:02d}" / "exemplar.png"
+                shutil.copy(out_dir / exemplar["asset"], canon)
+                member_units = [u for u in units if int(u["type_id"]) == int(tid)]
+                member_preds = []
+                for u in member_units:
+                    crop = Image.open(out_dir / u["asset"]).convert("RGB")
+                    ir = infer_unit_ir(
+                        crop,
+                        u,
+                        image_size=facade.size,
+                        profile_name=profile_name,
+                        predictor=predictor,
+                    )
+                    tokens = ir_to_tokens(ir, profile_name=profile_name)
+                    member_preds.append(
+                        {"unit_id": int(u["unit_id"]), "ir": ir, "tokens": tokens}
+                    )
+                    u["structure_ir_member"] = ir
+                voted = vote_cluster_ir(
+                    member_preds, prefer_unit_id=med_i, profile_name=profile_name
+                )
+                for u in member_units:
+                    if per_unit_floor:
+                        u["structure_ir"] = _with_unit_floor(
+                            voted["structure_ir"], u["structure_ir_member"]
+                        )
+                    else:
+                        u["structure_ir"] = voted["structure_ir"]
+                vote = voted["vote"]
+                print(
+                    f"  type_{tid:02d}: vote "
+                    f"{vote.get('winner_count', 0)}/{vote.get('n_valid', 0)} "
+                    f"unique={vote.get('n_unique', 0)}"
+                )
+                if not per_unit_floor:
+                    types_out.append(
+                        {
+                            "type_id": tid,
+                            "name": f"balc_type_{tid:02d}",
+                            "n_instances": len(member_units),
+                            "exemplar_unit": med_i,
+                            "exemplar_asset": str(canon.relative_to(out_dir)),
+                            "structure_ir": voted["structure_ir"],
+                            "structure_tokens": voted["structure_tokens"],
+                            "structure_vote": voted["vote"],
+                        }
+                    )
+            if per_unit_floor:
+                types_out = _types_grouped_by_token(
+                    units, crops_dir, out_dir, include_floor=True
+                )
+                for u in units:
+                    ir = u.get("structure_ir") or {}
+                    print(
+                        f"  unit_{int(u['unit_id']):03d}: "
+                        f"floor={floor_shape_from_ir(ir)} enclosure={enclosure_from_ir(ir)}"
+                    )
+            floor_note = " floor=per-unit" if per_unit_floor else ""
+            vote_note = (
+                f"profile={profile_name} vote={axes_on} rail={rail_src}{floor_note}"
+            )
+
+    if enclosed_units:
+        enc_dir = crops_dir / "enclosed"
+        enc_dir.mkdir(parents=True, exist_ok=True)
+        for u in enclosed_units:
+            crop_path = enc_dir / f"unit_{int(u['unit_id']):03d}.png"
+            _write_image(facade.crop(tuple(u["box_xyxy"])), crop_path)
+            u["asset"] = str(crop_path.relative_to(out_dir))
+            u["type_id"] = 1000
+        canon = enc_dir / "exemplar.png"
+        shutil.copy(out_dir / enclosed_units[0]["asset"], canon)
+        types_out.append(
+            {
+                "type_id": 1000,
+                "name": "balc_enclosed",
+                "n_instances": len(enclosed_units),
+                "exemplar_unit": int(enclosed_units[0]["unit_id"]),
+                "exemplar_asset": str(canon.relative_to(out_dir)),
+                "structure_ir": enclosed_ir(),
+                "structure_tokens": ["enclosure=enclosed"],
+                "structure_vote": {
+                    "mode": "enclosed_volume",
+                    "n_members": len(enclosed_units),
+                    "unit_ids": [int(u["unit_id"]) for u in enclosed_units],
+                },
+            }
+        )
+        units.extend(enclosed_units)
+        print(f"=== 4b Enclosed IR  n={len(enclosed_units)} (column width, no railing) ===")
+
+    if not units:
+        print("warn: no balcony or enclosed detections; skip merge")
+        return None
 
     save(
         draw_vote(types_out, out_dir, vote_note),
@@ -596,6 +747,7 @@ def run(args: argparse.Namespace) -> Path | None:
     merged["meta"]["balcony_per_unit_railing"] = per_unit_railing
     merged["meta"]["balcony_per_unit_floor"] = per_unit_floor
     merged["meta"]["balcony_railing_source"] = rail_src
+    merged["meta"]["n_enclosed_units"] = len(enclosed_units)
     if predictor is not None:
         merged["meta"]["balcony_railing_ckpt"] = str(predictor.ckpt_path)
     out_dsl = out_dir / "facade_dsl_with_balconies.json"

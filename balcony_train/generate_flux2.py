@@ -8,8 +8,7 @@ Prompt sets (``--prompt-set``):
   - ``metal`` — open_work + metal (bars / wrought iron / open patterns)
   - ``surface_panel`` — modern frame + glass/metal/privacy panels
   - ``solid`` — opaque wall / parapet mass
-  - ``triangle`` / ``trapezoid`` / ``hexagon`` / ``half_enclosed`` /
-    ``enclosed`` — 50 prompts each. These always write ``crops/unlabeled/``.
+  - ``triangle`` / ``half_enclosed`` / ``enclosed`` — 50 prompts each. These always write ``crops/unlabeled/``.
     Keep the full frame; do not resize these to 120×44.
 
 Unattended 50-each run on the remote GPU (one model load, survives SSH
@@ -48,8 +47,6 @@ from balcony_train.prompts_enclosure import (  # noqa: E402
     HALF_ENCLOSED_PROMPTS,
 )
 from balcony_train.prompts_floor_shape import (  # noqa: E402
-    HEXAGON_PROMPTS,
-    TRAPEZOID_PROMPTS,
     TRIANGLE_PROMPTS,
     prefixes_for,
 )
@@ -86,20 +83,6 @@ PROMPT_SETS: dict[str, dict[str, object]] = {
         "prompts": TRIANGLE_PROMPTS,
         "prefixes": prefixes_for("triangle"),
         "prefix": "flux2_triangle_",
-        "label_hint": "Saved in crops/unlabeled. Do not 120x44-resize.",
-        "stay_unlabeled": True,
-    },
-    "trapezoid": {
-        "prompts": TRAPEZOID_PROMPTS,
-        "prefixes": prefixes_for("trapezoid"),
-        "prefix": "flux2_trapezoid_",
-        "label_hint": "Saved in crops/unlabeled. Do not 120x44-resize.",
-        "stay_unlabeled": True,
-    },
-    "hexagon": {
-        "prompts": HEXAGON_PROMPTS,
-        "prefixes": prefixes_for("hexagon"),
-        "prefix": "flux2_hexagon_",
         "label_hint": "Saved in crops/unlabeled. Do not 120x44-resize.",
         "stay_unlabeled": True,
     },
@@ -225,7 +208,7 @@ def iter_prompt_outputs(
     """Planned ``(path, prompt)`` pairs. Does not write files.
 
     When ``prefixes`` is set it must match ``prompts`` one-for-one, and each
-    image uses that pair (metal, masonry, solid, and surface only for hexagon).
+    image uses that pair (metal, masonry, or solid for triangle).
     A single ``prefix`` keeps the old sequential ``{prefix}NNN.png`` names.
     """
     if not prompts:
@@ -411,7 +394,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "comma-separated prompt sets, model loaded once "
-            "(example: triangle,trapezoid,hexagon,half_enclosed,enclosed)"
+            "(example: triangle,half_enclosed,enclosed)"
         ),
     )
     ap.add_argument(

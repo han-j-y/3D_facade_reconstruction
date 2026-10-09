@@ -39,8 +39,6 @@ FLOOR_COLORS = {
     "rectangle": "#1f77b4",
     "triangle": "#ff7f0e",
     "circle": "#2ca02c",
-    "hexagon": "#9467bd",
-    "trapezoid": "#d62728",
 }
 
 

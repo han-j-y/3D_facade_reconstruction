@@ -2,7 +2,7 @@
   "type": "facade",
   "schema": "window_compiler_facade_v1",
   "meta": {
-    "notes": "Enclosure demo: B0 half_enclosed x2 (top keeps roof); B1 enclosed x2 with windows under an open balcony (shared floors); B2 hexagon oriel with window under a glass enclosure (upper aligns to hexagon)."
+    "notes": "Enclosure demo: B0 half_enclosed x2 (top keeps roof); B1 enclosed x2 with windows under an open balcony (shared floors); B2 semicircular oriel with window under a glass enclosure (upper aligns to the circle)."
   },
   "wall": {
     "depth": 0.42,
@@ -201,7 +201,7 @@
       "structure": "projecting",
       "enclosure": "enclosed",
       "floor": {
-        "shape": "hexagon",
+        "shape": "circle",
         "params": {
           "width": 2.6,
           "depth": 1.0

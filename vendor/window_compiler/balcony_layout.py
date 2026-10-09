@@ -24,7 +24,7 @@ from balcony_plan import (
 from facade_spec import get_cell, total_grid_size
 
 STACKABLE = frozenset({"half_enclosed", "enclosed"})
-OUTLINE_SHAPES = frozenset({"triangle", "circle", "trapezoid", "hexagon"})
+OUTLINE_SHAPES = frozenset({"triangle", "circle"})
 
 STACK_MIN_OVERLAP = 0.5
 MIN_CLEAR_H_M = 1.2

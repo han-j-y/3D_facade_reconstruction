@@ -73,9 +73,9 @@ class MultitaskLabelsTests(unittest.TestCase):
             )
             rows = iter_multitask_samples(crops, jsonl)
             by_stem = {p.stem: (k, m, f) for p, k, m, f, _e in rows}
-            self.assertEqual(by_stem["hex"][2], 3)
+            self.assertEqual(by_stem["hex"][2], 0)
             self.assertEqual(by_stem["b"][2], FLOOR_IGNORE_INDEX)
-            self.assertEqual(floor_counts(rows)["hexagon"], 1)
+            self.assertEqual(floor_counts(rows)["rectangle"], 1)
             self.assertEqual(sum(floor_counts(rows).values()), 1)
 
     def test_enclosure_only_rows_train_without_kind(self) -> None:

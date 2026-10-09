@@ -37,7 +37,7 @@ def railing_material_from_ir(ir: dict[str, Any]) -> str | None:
     return _rail_material((ir.get("railing") or {}).get("material"))
 
 
-_FLOOR_SHAPES = ("rectangle", "triangle", "circle", "hexagon", "trapezoid")
+_FLOOR_SHAPES = ("rectangle", "triangle", "circle")
 _ENCLOSURES = ("open", "half_enclosed", "enclosed")
 
 
@@ -52,7 +52,7 @@ def floor_shape_from_ir(ir: dict[str, Any]) -> str:
 def balcony_type_token(ir: dict[str, Any], *, include_floor: bool = False) -> str:
     """Type name stem: open_work_metal / open_work_masonry / surface_panel / solid.
 
-    ``include_floor`` appends the plan (``open_work_metal_circle``, ``solid_trapezoid``)
+    ``include_floor`` appends the plan (``open_work_metal_circle``, ``solid_triangle``)
     so Blender does not share one slab outline across different floor shapes.
     """
     kind = railing_kind_from_ir(ir)
@@ -361,7 +361,7 @@ def infer_balcony_ir(
 
     if floor_shape_override:
         floor_shape = str(floor_shape_override).strip().lower()
-        if floor_shape not in {"rectangle", "triangle", "circle", "hexagon", "trapezoid"}:
+        if floor_shape not in _FLOOR_SHAPES:
             floor_shape = str(FIXED_DEFAULTS["floor_shape"])
     elif p.get("floor_shape"):
         if aspect < 0.75:

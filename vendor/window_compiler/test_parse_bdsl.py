@@ -33,23 +33,19 @@ class ParseRailKindTests(unittest.TestCase):
         self.assertEqual(self._parse("railing metal"), "open_work")
         self.assertEqual(self._parse("railing glass"), "surface_panel")
 
-    def test_trapezoid_floor(self) -> None:
+    def test_triangle_floor(self) -> None:
         ir = parse_bdsl(
-            "balcony trapezoid(width=2.0, depth=1.5)\n"
+            "balcony triangle(width=2.0, depth=1.5)\n"
             "structure projecting\n"
             "enclosure open\n"
             "railing open_work height 1.1\n"
         )
-        self.assertEqual(ir["floor"]["shape"], "trapezoid")
+        self.assertEqual(ir["floor"]["shape"], "triangle")
 
-    def test_hexagon_floor(self) -> None:
-        ir = parse_bdsl(
-            "balcony hexagon(width=3.0, depth=1.5)\n"
-            "structure projecting\n"
-            "enclosure open\n"
-            "railing open_work height 1.1\n"
-        )
-        self.assertEqual(ir["floor"]["shape"], "hexagon")
+    def test_retired_floor_shapes_rejected(self) -> None:
+        for name in ("hexagon", "trapezoid"):
+            with self.assertRaises(ValueError):
+                parse_bdsl(f"balcony {name}(width=3.0, depth=1.5)\n")
 
     def test_default_kind(self) -> None:
         ir = parse_bdsl("balcony rectangle(width=1, depth=0.8)\n")
@@ -99,12 +95,12 @@ class ParseEnclosureTests(unittest.TestCase):
         self.assertEqual(ir["railing"]["kind"], "open_work")
 
     def test_half_enclosed_column_defaults(self) -> None:
-        ir = parse_bdsl("balcony hexagon(width=3, depth=1)\nenclosure half_enclosed\n")
+        ir = parse_bdsl("balcony rectangle(width=3, depth=1)\nenclosure half_enclosed\n")
         self.assertEqual(ir["columns"], {"count": 0, "width": 0.25, "style": "square"})
 
     def test_enclosed_walls(self) -> None:
         ir = parse_bdsl(
-            "balcony hexagon(width=2.6, depth=1.0)\n"
+            "balcony rectangle(width=2.6, depth=1.0)\n"
             "enclosure enclosed\n"
             "walls:\n"
             "  infill wall\n"
@@ -134,11 +130,11 @@ class ParseEnclosureTests(unittest.TestCase):
             (examples / "example_balcony_half_enclosed.bdsl").read_text(encoding="utf-8")
         )
         self.assertEqual(half["enclosure"], "half_enclosed")
-        oriel = parse_bdsl(
-            (examples / "example_balcony_enclosed_hexagon.bdsl").read_text(encoding="utf-8")
+        boxed = parse_bdsl(
+            (examples / "example_balcony_enclosed.bdsl").read_text(encoding="utf-8")
         )
-        self.assertEqual(oriel["enclosure"], "enclosed")
-        self.assertEqual(oriel["floor"]["shape"], "hexagon")
+        self.assertEqual(boxed["enclosure"], "enclosed")
+        self.assertEqual(boxed["floor"]["shape"], "rectangle")
 
 
 if __name__ == "__main__":

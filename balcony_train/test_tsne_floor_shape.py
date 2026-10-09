@@ -42,8 +42,8 @@ class TsneFloorShapeTests(unittest.TestCase):
                 [(path.name, src, kind, floor) for path, src, kind, floor in rows],
                 [
                     ("cmp_a.png", "real", "open_work", "circle"),
-                    ("flux2_metal_000.png", "synth", "open_work", "hexagon"),
-                    ("cmp_b.png", "real", "solid", "trapezoid"),
+                    ("cmp_b.png", "real", "solid", "rectangle"),
+                    ("flux2_metal_000.png", "synth", "open_work", "rectangle"),
                 ],
             )
 

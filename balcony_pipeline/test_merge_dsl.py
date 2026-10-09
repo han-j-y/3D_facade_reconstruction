@@ -231,7 +231,7 @@ class PhotoNormTests(unittest.TestCase):
         }
         trap_ir = {
             "railing": {"kind": "open_work", "material": "metal"},
-            "floor": {"shape": "trapezoid"},
+            "floor": {"shape": "triangle"},
         }
         units = [
             {
@@ -259,7 +259,7 @@ class PhotoNormTests(unittest.TestCase):
             dsl,
             balcony_types=[
                 {"name": "balc_open_work_metal_circle", "structure_ir": circle_ir},
-                {"name": "balc_open_work_metal_trapezoid", "structure_ir": trap_ir},
+                {"name": "balc_open_work_metal_triangle", "structure_ir": trap_ir},
             ],
             units=units,
             per_unit_floor=True,
@@ -268,7 +268,7 @@ class PhotoNormTests(unittest.TestCase):
             out["layout"]["balconies"][0]["type"], "balc_open_work_metal_circle"
         )
         self.assertEqual(
-            out["layout"]["balconies"][1]["type"], "balc_open_work_metal_trapezoid"
+            out["layout"]["balconies"][1]["type"], "balc_open_work_metal_triangle"
         )
 
 

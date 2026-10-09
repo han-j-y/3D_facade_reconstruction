@@ -49,17 +49,18 @@ class RailingOnlyProfileTests(unittest.TestCase):
     def test_type_token_can_include_floor_shape(self) -> None:
         ir = {
             "railing": {"kind": "open_work", "material": "metal"},
-            "floor": {"shape": "hexagon"},
+            "floor": {"shape": "triangle"},
         }
         self.assertEqual(balcony_type_token(ir), "open_work_metal")
         self.assertEqual(
             balcony_type_token(ir, include_floor=True),
-            "open_work_metal_hexagon",
+            "open_work_metal_triangle",
         )
         self.assertEqual(floor_shape_from_ir({"floor": {"shape": "nope"}}), "rectangle")
+        self.assertEqual(floor_shape_from_ir({"floor": {"shape": "hexagon"}}), "rectangle")
         self.assertEqual(
             balcony_type_token({**ir, "enclosure": "half_enclosed"}, include_floor=True),
-            "open_work_metal_hexagon_half_enclosed",
+            "open_work_metal_triangle_half_enclosed",
         )
         self.assertEqual(balcony_type_token({**ir, "enclosure": "open"}), "open_work_metal")
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from enclosed import drop_open_under_enclosed
 from heuristic_ir import balcony_type_token
 
 from partners import mean_window_center_norm, partner_windows_for_unit
@@ -87,6 +88,9 @@ def merge_balcony_into_windows_dsl(
         image_size = meta.get("image_size")
 
     mode = _normalize_center_mode(center_mode)
+    enclosed_units = [u for u in units if u.get("source") == "enclosed_volume"]
+    # Partner-window centers drift into the gallery; with enclosed volumes use bay X.
+    open_mode = "bay" if enclosed_units and mode == "window" else mode
     instances = windows_dsl.get("instances") or []
     _, bay_x = _bands_from_windows_dsl(windows_dsl)
     iw = 1.0
@@ -99,8 +103,15 @@ def merge_balcony_into_windows_dsl(
     balc_place = []
     seen: set[tuple] = set()
     for u in units:
-        if per_unit_railing or per_unit_floor:
-            ir = u.get("structure_ir") or {}
+        ir = u.get("structure_ir") or {}
+        volume = u.get("source") == "enclosed_volume"
+        if (not volume) and enclosed_units:
+            kept, dropped = drop_open_under_enclosed([u], enclosed_units)
+            if dropped:
+                continue
+        if volume:
+            name = "balc_enclosed"
+        elif per_unit_railing or per_unit_floor:
             name = f"balc_{balcony_type_token(ir, include_floor=per_unit_floor)}"
         else:
             name = f"balc_type_{int(u['type_id']):02d}"
@@ -111,10 +122,13 @@ def merge_balcony_into_windows_dsl(
         be = int(u["bay_end"])
         span_bays = _bay_ids(u)
         center_bays = _center_bay_ids(u)
+        place_mode = mode if volume else open_mode
 
-        if mode == "photo":
+        if volume:
+            key = (floor_i, tuple(span_bays), name)
+        elif place_mode == "photo":
             key = (floor_i, int(round(cx_norm * 1000)), name)
-        elif mode == "bay":
+        elif place_mode == "bay":
             key = (floor_i, tuple(center_bays), name)
         else:
             partners = partner_windows_for_unit(
@@ -141,13 +155,18 @@ def merge_balcony_into_windows_dsl(
             "bays_center": center_bays,
             "bay": int(u.get("bay", u["bay_start"])),
             "type": name,
-            "width_norm": round(w_norm, 6),
             "box_xyxy": [int(v) for v in box],
         }
+        if not volume:
+            rec["width_norm"] = round(w_norm, 6)
 
-        if mode == "photo":
+        if volume:
+            bay_cx = _mean_bay_center_norm(span_bays, bay_x, iw)
+            if bay_cx is not None:
+                rec["bay_cx_norm"] = round(bay_cx, 6)
+        elif place_mode == "photo":
             rec["cx_norm"] = round(cx_norm, 6)
-        elif mode == "bay":
+        elif place_mode == "bay":
             bay_cx = _mean_bay_center_norm(center_bays, bay_x, iw)
             if bay_cx is not None:
                 rec["bay_cx_norm"] = round(bay_cx, 6)
@@ -166,7 +185,7 @@ def merge_balcony_into_windows_dsl(
     dsl["balcony_types"] = balcony_types
     meta["n_balcony_units"] = len(units)
     meta["n_balcony_types"] = len(balcony_types)
-    meta["balcony_center_mode"] = mode
+    meta["balcony_center_mode"] = open_mode if enclosed_units else mode
     notes = str(meta.get("notes") or "")
     if per_unit_railing and per_unit_floor:
         mode_label = "per-unit railing and floor IR"
@@ -176,13 +195,16 @@ def merge_balcony_into_windows_dsl(
         mode_label = "per-unit railing IR"
     else:
         mode_label = "heuristic IR vote"
-    if mode == "photo":
+    note_mode = open_mode if enclosed_units else mode
+    if note_mode == "photo":
         placement_note = "slab width/center from photo boxes (width_norm/cx_norm)."
-    elif mode == "bay":
+    elif note_mode == "bay":
         placement_note = (
             "slab width from photo (width_norm); horizontal center = mean X of "
             "bays_center (bay_cx_norm)."
         )
+        if enclosed_units and mode == "window":
+            placement_note += " Open slabs use bay center when enclosed volumes are present."
     else:
         placement_note = (
             "slab width from photo (width_norm); horizontal center = mean X of "

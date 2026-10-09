@@ -34,15 +34,15 @@ class LabelFromPrefixTests(unittest.TestCase):
         )
         self.assertEqual(
             match_prefix("flux2_hexagon_solid_002.png"),
-            ("flux2_hexagon_solid_", "solid", None, "hexagon", "open"),
+            ("flux2_hexagon_solid_", "solid", None, "rectangle", "open"),
         )
         self.assertEqual(
             match_prefix("flux2_trapezoid_surface_001.png"),
-            ("flux2_trapezoid_surface_", "surface_panel", None, "trapezoid", "open"),
+            ("flux2_trapezoid_surface_", "surface_panel", None, "rectangle", "open"),
         )
         self.assertEqual(
             match_prefix("flux2_trapezoid_masonry_002_2_from hexagon.png"),
-            ("flux2_trapezoid_masonry_", "open_work", "masonry", "trapezoid", "open"),
+            ("flux2_trapezoid_masonry_", "open_work", "masonry", "rectangle", "open"),
         )
         self.assertEqual(
             match_prefix("flux2_half_enclosed_000.png"),
@@ -92,7 +92,7 @@ class LabelFromPrefixTests(unittest.TestCase):
             self.assertIsNone(labels["flux2_metal_000"]["floor_shape"])
             self.assertEqual(labels["flux2_hexagon_masonry_000"]["kind"], "open_work")
             self.assertEqual(labels["flux2_hexagon_masonry_000"]["material"], "masonry")
-            self.assertEqual(labels["flux2_hexagon_masonry_000"]["floor_shape"], "hexagon")
+            self.assertEqual(labels["flux2_hexagon_masonry_000"]["floor_shape"], "rectangle")
             self.assertTrue(
                 (crops / "open_work" / "flux2_hexagon_masonry_000.png").is_file()
             )

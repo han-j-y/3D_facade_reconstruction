@@ -123,6 +123,36 @@ class FacadeSpecPlacementTests(unittest.TestCase):
         self.assertIn("balc_type_00", facade["balconies"])
         self.assertEqual(facade["meta"].get("columns_xy")[0], [0, 100])
 
+    def test_enclosed_omits_width_norm_keeps_column_span(self) -> None:
+        dsl = self._dsl()
+        dsl["balcony_types"] = [
+            {
+                "name": "balc_enclosed",
+                "structure_ir": {
+                    "type": "balcony",
+                    "structure": "projecting",
+                    "enclosure": "enclosed",
+                    "floor": {"shape": "rectangle", "params": {"depth": 1.5}},
+                    "output": {"slab_thickness": 0.20},
+                },
+            }
+        ]
+        dsl["layout"]["balconies"] = [
+            {
+                "floor": 1,
+                "bay_start": 0,
+                "bay_end": 1,
+                "bays": [0, 1],
+                "type": "balc_enclosed",
+            }
+        ]
+        facade = normalize_facade_spec(dsl)
+        rec = facade["balcony_placement"][0]
+        self.assertEqual(rec["col0"], 0)
+        self.assertEqual(rec["col1"], 1)
+        self.assertNotIn("width_norm", rec)
+        self.assertEqual(facade["balconies"]["balc_enclosed"]["enclosure"], "enclosed")
+
     def test_world_placement_from_fit(self) -> None:
         facade = normalize_facade_spec(self._dsl())
         cell = get_cell(facade, 0, 0, mirror_x=True)

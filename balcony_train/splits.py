@@ -14,6 +14,7 @@ from balcony_train.labels import (
     FLOOR_IGNORE_INDEX,
     FLOOR_SHAPES,
     KIND_IGNORE_INDEX,
+    LEGACY_FLOOR_SHAPES,
     MATERIAL_IGNORE_INDEX,
     MATERIALS,
     MultitaskSample,
@@ -217,6 +218,7 @@ def samples_from_split_record(
         else:
             mat_idx = MATERIAL_IGNORE_INDEX
         floor_raw = row.get("floor_shape")
+        floor_raw = LEGACY_FLOOR_SHAPES.get(floor_raw, floor_raw)
         if floor_raw in FLOOR_SHAPES:
             floor_idx = FLOOR_SHAPES.index(str(floor_raw))
         else:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import sys
 import unittest
 from pathlib import Path
@@ -12,11 +11,8 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from balcony_plan import (  # noqa: E402
-    HEXAGON_CUT_ANGLE_DEG,
-    HEXAGON_CUT_RUN_M,
     MULLION_WIDTH_M,
     SURFACE_PANEL_M,
-    TRAPEZOID_WALL_ANGLE_DEG,
     _panel_divisions,
     outer_edges,
     slab_outline,
@@ -82,44 +78,23 @@ class SurfacePanelLayoutTests(unittest.TestCase):
         self.assertTrue(any(n.startswith("panel_f_") for n in names))
 
 
-class TrapezoidOutlineTests(unittest.TestCase):
-    def test_sides_meet_wall_at_75_degrees(self) -> None:
-        outline = slab_outline("trapezoid", x0=0.0, x1=4.0, y_wall=0.0, depth=1.5)
-        self.assertEqual(len(outline), 4)
-        x0, y0 = outline[0]
-        x1, y1 = outline[1]
-        angle = math.degrees(math.atan2(y1 - y0, x1 - x0))
-        self.assertAlmostEqual(angle, TRAPEZOID_WALL_ANGLE_DEG, places=5)
-        wall = outline[3][0] - outline[0][0]
-        front = outline[2][0] - outline[1][0]
-        self.assertLess(front, wall)
-        self.assertAlmostEqual(outline[1][0] - outline[0][0], outline[3][0] - outline[2][0])
-
-    def test_outer_edges_skip_the_wall(self) -> None:
-        outline = slab_outline("trapezoid", x0=0.0, x1=4.0, y_wall=0.0, depth=1.5)
+class OutlineTests(unittest.TestCase):
+    def test_rectangle_outer_edges_skip_the_wall(self) -> None:
+        outline = slab_outline("rectangle", x0=0.0, x1=4.0, y_wall=0.0, depth=1.5)
+        self.assertEqual(outline, [(0.0, 0.0), (0.0, 1.5), (4.0, 1.5), (4.0, 0.0)])
         edges = outer_edges(outline, 0.0)
         self.assertEqual(len(edges), 3)
         for p0, p1 in edges:
             self.assertFalse(abs(p0[1]) < 1e-6 and abs(p1[1]) < 1e-6)
 
+    def test_retired_shapes_draw_a_rectangle(self) -> None:
+        rect = slab_outline("rectangle", x0=0.0, x1=3.0, y_wall=0.0, depth=1.5)
+        for name in ("hexagon", "trapezoid"):
+            self.assertEqual(slab_outline(name, x0=0.0, x1=3.0, y_wall=0.0, depth=1.5), rect)
 
-class HexagonOutlineTests(unittest.TestCase):
-    def test_front_corners_cut_1m_at_30_degrees(self) -> None:
-        outline = slab_outline("hexagon", x0=0.0, x1=3.0, y_wall=0.0, depth=1.5)
-        self.assertEqual(len(outline), 6)
-        self.assertEqual(outline[0], (0.0, 0.0))
-        self.assertEqual(outline[5], (3.0, 0.0))
-        run = HEXAGON_CUT_RUN_M
-        rise = run * math.tan(math.radians(HEXAGON_CUT_ANGLE_DEG))
-        self.assertAlmostEqual(outline[2][0], run)
-        self.assertAlmostEqual(outline[3][0], 3.0 - run)
-        self.assertAlmostEqual(outline[2][1], 1.5)
-        self.assertAlmostEqual(outline[1][1], 1.5 - rise)
-        dx, dy = outline[1][0] - outline[2][0], outline[1][1] - outline[2][1]
-        angle = math.degrees(math.atan2(abs(dy), abs(dx)))
-        self.assertAlmostEqual(angle, HEXAGON_CUT_ANGLE_DEG, places=5)
-        edges = outer_edges(outline, 0.0)
-        self.assertEqual(len(edges), 5)
+    def test_triangle_apex_at_front_center(self) -> None:
+        outline = slab_outline("triangle", x0=0.0, x1=4.0, y_wall=0.0, depth=1.5)
+        self.assertEqual(outline, [(0.0, 0.0), (2.0, 1.5), (4.0, 0.0)])
 
 
 if __name__ == "__main__":
