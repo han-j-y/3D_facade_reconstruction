@@ -16,6 +16,7 @@ from enclosed import (  # noqa: E402
     drop_open_under_enclosed,
     enclosed_ir,
     ensure_da3_depth,
+    median_floor_height,
     overlapping_floors,
     place_enclosed_volumes,
     slice_volume,
@@ -53,9 +54,19 @@ def _dsl() -> dict:
 
 
 class EnclosedPlaceTests(unittest.TestCase):
+    def test_median_floor_height_from_grid(self) -> None:
+        self.assertEqual(median_floor_height(_dsl()), 100.0)
+        self.assertIsNone(median_floor_height({"instances": [], "layout": {}}))
+
+    def test_median_floor_height_even_count(self) -> None:
+        dsl = _dsl()
+        dsl["meta"]["floors_y"] = [[0, 80], [80, 200]]
+        dsl["layout"]["floors"] = [{"id": 0}, {"id": 1}]
+        self.assertEqual(median_floor_height(dsl), 100.0)
+
     def test_three_storey_volume_slices_three_floors(self) -> None:
         floor_y, bay_x = _grid()
-        rows = slice_volume([110, 20, 190, 280], floor_y, bay_x)
+        rows = slice_volume([110, 5, 190, 280], floor_y, bay_x)
         self.assertEqual([r["floor"] for r in rows], [0, 1, 2])
         self.assertEqual(rows[0]["bay_start"], 1)
         self.assertEqual(rows[0]["bay_end"], 1)
@@ -139,7 +150,7 @@ class EnclosedPlaceTests(unittest.TestCase):
         self.assertEqual([u["unit_id"] for u in kept], [1, 2, 3])
 
     def test_place_attaches_enclosed_ir(self) -> None:
-        units = place_enclosed_volumes([[110, 20, 190, 280]], _dsl())
+        units = place_enclosed_volumes([[110, 5, 190, 280]], _dsl())
         self.assertEqual(len(units), 3)
         self.assertEqual(units[0]["source"], "enclosed_volume")
         self.assertEqual(units[0]["structure_ir"]["enclosure"], "enclosed")
@@ -227,7 +238,7 @@ class EnclosedPlaceTests(unittest.TestCase):
         self.assertEqual(types, ["balc_enclosed"])
 
     def test_merge_omits_photo_width_for_enclosed(self) -> None:
-        units = place_enclosed_volumes([[110, 20, 190, 280]], _dsl())
+        units = place_enclosed_volumes([[110, 5, 190, 280]], _dsl())
         out = merge_balcony_into_windows_dsl(
             _dsl(),
             balcony_types=[{"name": "balc_enclosed", "structure_ir": enclosed_ir()}],
@@ -241,9 +252,19 @@ class EnclosedPlaceTests(unittest.TestCase):
             self.assertEqual(rec["bay_start"], 1)
             self.assertEqual(rec["bay_end"], 1)
 
-    def test_overlapping_floors_fallback_to_best(self) -> None:
+    def test_overlapping_floors_below_half_storey_is_empty(self) -> None:
         floor_y, _bay_x = _grid()
-        self.assertEqual(overlapping_floors([10, 10, 20, 20], floor_y), [0])
+        self.assertEqual(overlapping_floors([10, 10, 20, 20], floor_y), [])
+        # 49% of floor 1 (100..200) does not count. 50% does.
+        self.assertEqual(overlapping_floors([10, 151, 20, 200], floor_y), [])
+        self.assertEqual(overlapping_floors([10, 150, 20, 200], floor_y), [1])
+
+    def test_upper_floor_needs_ninety_percent_when_box_continues_down(self) -> None:
+        floor_y, _bay_x = _grid()
+        # 87% of the upper storey, and the box continues into the storey below.
+        self.assertEqual(overlapping_floors([10, 13, 20, 180], floor_y), [1])
+        # 90% of the upper storey counts, with the lower storey.
+        self.assertEqual(overlapping_floors([10, 10, 20, 180], floor_y), [0, 1])
 
     def test_ensure_da3_depth_reuses_existing(self) -> None:
         with TemporaryDirectory() as tmp:

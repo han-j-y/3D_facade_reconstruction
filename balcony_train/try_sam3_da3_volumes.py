@@ -2,7 +2,9 @@
 
 Does not replace the window pipeline. SAM3 finds candidate rectangles
 (often one storey). Local wall-vs-box depth keeps projecting volumes, then
-boxes in the same column are grown / merged vertically.
+same-column boxes are merged across about one storey of gap. Stage 4 may
+extend a box downward while that strip stays closer than the wall. The top
+edge stays put.
 
 The four photos and red-box targets are the attached depth-map markup:
 
@@ -55,6 +57,7 @@ from balcony_train.try_sam3_prompt import merge_boxes  # noqa: E402
 
 DEFAULT_DEPTH_DIR = ROOT / "runs" / "da3_enclosure"
 DEFAULT_OUT_DIR = ROOT / "runs" / "sam3_da3_volumes"
+DEFAULT_DSL_DIR = ROOT / "runs" / "batch"
 STEMS = ("cmp_b0007", "cmp_b0008", "cmp_b0010", "cmp_b0223")
 
 # Normalized xyxy matching the red markup on the DA3 color maps.
@@ -83,14 +86,20 @@ SAM3_PROMPTS = (
     "oriel window",
     "bay window",
 )
+EXCLUDE_PROMPTS = ("fire escape",)
+EXCLUDE_COVER = 0.40
 
-MIN_REL = 0.007
+MIN_REL = 0.015
 GROW_REL = 0.006
 MIN_SEED_HEIGHT_FRAC = 0.055
+# Pipeline floor height: drop Stage-1 crops at or below this fraction of one storey.
+SEED_MIN_FLOOR_FRAC = 0.85
 MIN_WIDTH_FRAC = 0.05
 MAX_SEED_WIDTH_FRAC = 0.55
 MAX_SEED_HEIGHT_FRAC = 0.62
 MIN_COLUMN_FRAC = 0.10
+# Clear space Stage 3 may bridge between same-column seeds, about one storey.
+MERGE_Y_GAP_FRAC = 0.22
 MATCH_IOU = 0.30
 
 
@@ -171,11 +180,20 @@ def gt_px(stem: str, width: int, height: int) -> list[dict[str, Any]]:
     return out
 
 
-def robust_median(depth: np.ndarray, box: list[int] | tuple[int, int, int, int]) -> float | None:
+def robust_median(
+    depth: np.ndarray,
+    box: list[int] | tuple[int, int, int, int],
+    ignore: np.ndarray | None = None,
+) -> float | None:
     x0, y0, x1, y1 = (int(v) for v in box)
     patch = np.asarray(depth, dtype=np.float32)[y0:y1, x0:x1]
-    vals = patch[np.isfinite(patch) & (patch > 0)]
+    valid = np.isfinite(patch) & (patch > 0)
+    if ignore is not None:
+        valid &= ~np.asarray(ignore, dtype=bool)[y0:y1, x0:x1]
+    vals = patch[valid]
     if vals.size < 8:
+        if ignore is not None:
+            return None
         return roi_median(depth, (x0, y0, x1, y1))
     lo, hi = np.percentile(vals, (20.0, 85.0))
     mid = vals[(vals >= lo) & (vals <= hi)]
@@ -239,17 +257,71 @@ def local_wall_median(
     return float(np.median(mid))
 
 
+def box_cover_frac(
+    inner: list[int] | tuple[int, int, int, int],
+    outer: list[int] | tuple[int, int, int, int],
+) -> float:
+    """Intersection area / area(inner)."""
+    ax0, ay0, ax1, ay1 = (int(v) for v in inner)
+    bx0, by0, bx1, by1 = (int(v) for v in outer)
+    iw = min(ax1, bx1) - max(ax0, bx0)
+    ih = min(ay1, by1) - max(ay0, by0)
+    inter = max(0, iw) * max(0, ih)
+    area = max(0, ax1 - ax0) * max(0, ay1 - ay0)
+    return float(inter) / float(area) if area > 0 else 0.0
+
+
+def obstacle_ignore(
+    depth: np.ndarray,
+    box: list[int] | tuple[int, int, int, int],
+    *,
+    veg: np.ndarray | None,
+    wall: float | None,
+) -> np.ndarray | None:
+    """Foliage plus pixels much closer than the local wall (poles, lamps)."""
+    ignore = None
+    if veg is not None:
+        ignore = np.asarray(veg, dtype=bool)
+    if wall is not None and wall > 0:
+        close = clutter_mask(depth, wall)
+        ignore = close if ignore is None else (ignore | close)
+    return ignore
+
+
 def box_rel_delta(
     depth: np.ndarray,
     box: list[int] | tuple[int, int, int, int],
     *,
     veg: np.ndarray | None = None,
 ) -> float | None:
-    d_box = robust_median(depth, box)
     d_wall = local_wall_median(depth, box, veg=veg)
-    if d_box is None or d_wall is None or d_wall <= 0:
+    if d_wall is None or d_wall <= 0:
+        return None
+    ignore = obstacle_ignore(depth, box, veg=veg, wall=d_wall)
+    d_box = robust_median(depth, box, ignore=ignore)
+    if d_box is None:
         return None
     return (d_wall - d_box) / d_wall
+
+
+def front_fill_frac(
+    depth: np.ndarray,
+    box: list[int] | tuple[int, int, int, int],
+    *,
+    veg: np.ndarray | None = None,
+    min_rel: float = MIN_REL,
+) -> float | None:
+    """Fraction of box pixels at least ``min_rel`` closer than the local wall."""
+    d_wall = local_wall_median(depth, box, veg=veg)
+    if d_wall is None or d_wall <= 0:
+        return None
+    x0, y0, x1, y1 = (int(v) for v in box)
+    patch = np.asarray(depth, dtype=np.float32)[y0:y1, x0:x1]
+    valid = np.isfinite(patch) & (patch > 0)
+    if int(valid.sum()) < 8:
+        return None
+    rel = (d_wall - patch) / d_wall
+    return float(np.mean(rel[valid] >= float(min_rel)))
 
 
 def veg_frac_in_box(veg: np.ndarray | None, box: list[int] | tuple[int, int, int, int]) -> float:
@@ -371,6 +443,7 @@ def _axis_grow(
     vertical: bool,
     max_extra: int,
     max_size: int,
+    down_only: bool = False,
 ) -> list[int]:
     h, w = depth.shape[:2]
     x0, y0, x1, y1 = [int(v) for v in box]
@@ -421,12 +494,13 @@ def _axis_grow(
         down_cap = min(h, int(0.78 * h), y1_orig + max_extra)
         if y1_orig > int(0.60 * h):
             down_cap = y1_orig
-        up_lo = max(0, y0_orig - max_extra)
-        while y0 > up_lo and (y1 - y0) < max_size:
-            nxt = try_grow(y0, up_lo, h, True)
-            if nxt is None:
-                break
-            y0 = nxt
+        if not down_only:
+            up_lo = max(0, y0_orig - max_extra)
+            while y0 > up_lo and (y1 - y0) < max_size:
+                nxt = try_grow(y0, up_lo, h, True)
+                if nxt is None:
+                    break
+                y0 = nxt
         while y1 < down_cap and (y1 - y0) < max_size:
             nxt = try_grow(y1, 0, down_cap, False)
             if nxt is None:
@@ -457,8 +531,12 @@ def grow_vertical(
     step: int,
     max_height_frac: float = 0.85,
     seed_med: float | None = None,
+    down_only: bool = False,
 ) -> list[int]:
-    """Extend a seed up/down while the new strip stays closer than the seed's wall."""
+    """Extend a seed while the new strip stays closer than the seed's wall.
+
+    ``down_only`` keeps the top edge fixed. Stage 4 uses that.
+    """
     h, w = depth.shape[:2]
     x0, y0, x1, y1 = [int(v) for v in box]
     x0, y0, x1, y1 = clamp_box_xyxy((x0, y0, x1, y1), width=w, height=h)
@@ -479,6 +557,7 @@ def grow_vertical(
         vertical=True,
         max_extra=int(0.22 * h),
         max_size=int(max_height_frac * h),
+        down_only=down_only,
     )
 
 
@@ -492,7 +571,7 @@ def grow_horizontal(
     step: int,
     seed_med: float | None = None,
 ) -> list[int]:
-    """Widen a projecting column into the rest of the same bay."""
+    """Widen a projecting volume while new side strips stay closer than the wall."""
     h, w = depth.shape[:2]
     x0, y0, x1, y1 = [int(v) for v in box]
     x0, y0, x1, y1 = clamp_box_xyxy((x0, y0, x1, y1), width=w, height=h)
@@ -563,6 +642,50 @@ def trim_to_projecting(
     return list(clamp_box_xyxy((x0, y0, x1, y1), width=w, height=h))
 
 
+def similar_box_width(
+    a: list[int] | tuple[int, int, int, int],
+    b: list[int] | tuple[int, int, int, int],
+    *,
+    min_ratio: float = 0.80,
+) -> bool:
+    """True when widths differ by at most ±20% (min/max >= 0.80)."""
+    wa = max(1, int(a[2]) - int(a[0]))
+    wb = max(1, int(b[2]) - int(b[0]))
+    return float(min(wa, wb)) / float(max(wa, wb)) >= min_ratio
+
+
+def drop_narrower_than_below(
+    records: list[dict[str, Any]],
+    *,
+    min_width_ratio: float = 0.80,
+    min_x_overlap: float = 0.40,
+) -> list[dict[str, Any]]:
+    """Drop a box more than 20% narrower than an enclosed volume below it.
+
+    Same-column leftovers that failed the ±20% vertical merge stay as their
+    own box; a skinny AC / fragment above a wider enclosed should not.
+    """
+    if len(records) < 2:
+        return [dict(r) for r in records]
+    drop: set[int] = set()
+    for i, upper in enumerate(records):
+        ua = upper["box_xyxy"]
+        wa = max(1, int(ua[2]) - int(ua[0]))
+        for j, lower in enumerate(records):
+            if i == j:
+                continue
+            lb = lower["box_xyxy"]
+            if int(ua[1]) >= int(lb[1]):
+                continue
+            if not same_column(ua, lb, min_each=min_x_overlap):
+                continue
+            wb = max(1, int(lb[2]) - int(lb[0]))
+            if wa / float(wb) < min_width_ratio:
+                drop.add(i)
+                break
+    return [dict(r) for k, r in enumerate(records) if k not in drop]
+
+
 def merge_vertical_columns(
     records: list[dict[str, Any]],
     *,
@@ -572,8 +695,8 @@ def merge_vertical_columns(
 ) -> list[dict[str, Any]]:
     """Union boxes that sit in the same facade column.
 
-    An upper-storey volume is not glued onto a ground-floor portal/shop even
-    when they share an x-column.
+    Widths must stay within ±20%. A tall ground-floor portal and a shop floor
+    still stay separate from the volume above them.
     """
     if not records:
         return []
@@ -588,21 +711,15 @@ def merge_vertical_columns(
             nxt: list[dict[str, Any]] = []
             for rec in remaining:
                 a, b = cur["box_xyxy"], rec["box_xyxy"]
-                cy_a = 0.5 * (int(a[1]) + int(a[3])) / max(1, ih)
-                cy_b = 0.5 * (int(b[1]) + int(b[3])) / max(1, ih)
                 ground_mix = (spans_ground(a, ih) and starts_high(b, ih)) or (
                     spans_ground(b, ih) and starts_high(a, ih)
-                )
-                portal_mix = (int(a[3]) > 0.75 * ih and int(b[1]) < 0.20 * ih) or (
-                    int(b[3]) > 0.75 * ih and int(a[1]) < 0.20 * ih
                 )
                 shop_mix = is_shop_floor(a, ih) != is_shop_floor(b, ih)
                 if (
                     same_column(a, b, min_each=min_x_overlap)
+                    and similar_box_width(a, b)
                     and y_gap(a, b) <= max_gap
-                    and abs(cy_a - cy_b) <= 0.40
                     and not ground_mix
-                    and not portal_mix
                     and not shop_mix
                 ):
                     cur["box_xyxy"] = union_box(cur["box_xyxy"], rec["box_xyxy"])
@@ -727,10 +844,16 @@ def seed_ok(
     *,
     iw: int,
     ih: int,
+    min_height_px: float | None = None,
 ) -> bool:
     x0, y0, x1, y1 = box
     bw, bh = x1 - x0, y1 - y0
-    if bw < MIN_WIDTH_FRAC * iw or bh < MIN_SEED_HEIGHT_FRAC * ih:
+    if min_height_px is not None:
+        if bh <= float(min_height_px):
+            return False
+    elif bh < MIN_SEED_HEIGHT_FRAC * ih:
+        return False
+    if bw < MIN_WIDTH_FRAC * iw:
         return False
     if bw > MAX_SEED_WIDTH_FRAC * iw:
         return False
@@ -786,9 +909,144 @@ def draw_eval_overlay(
     return overlay
 
 
+def is_exclude_prompt(prompt: str | None) -> bool:
+    return str(prompt or "") in EXCLUDE_PROMPTS
+
+
+def _missing_exclude(records: list[dict[str, Any]]) -> bool:
+    return not any(is_exclude_prompt(r.get("prompt")) for r in records)
+
+
+def split_seed_records(
+    records: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    seeds: list[dict[str, Any]] = []
+    exclude: list[dict[str, Any]] = []
+    for rec in records:
+        if is_exclude_prompt(rec.get("prompt")):
+            exclude.append(rec)
+        else:
+            seeds.append(rec)
+    return seeds, exclude
+
+
+def covered_by_exclude(
+    box: list[int],
+    exclude_boxes: list[list[int]],
+    *,
+    min_frac: float = EXCLUDE_COVER,
+) -> bool:
+    return any(box_cover_frac(box, ex) >= min_frac for ex in exclude_boxes)
+
+
 def filter_stems(paths: list[Path], stems: tuple[str, ...] | list[str]) -> list[Path]:
     want = set(stems)
     return [p for p in paths if p.stem in want]
+
+
+def _load_facade_dsl(stem: str, dsl_dir: Path | None) -> dict[str, Any] | None:
+    if dsl_dir is None:
+        return None
+    path = Path(dsl_dir) / stem / "facade_dsl.json"
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _window_grid_api():
+    pipe = str(ROOT / "balcony_pipeline")
+    if pipe not in sys.path:
+        sys.path.insert(0, pipe)
+    from enclosed import MIN_COLUMN_COVER, MIN_FLOOR_COVER, median_floor_height
+    from snap import _overlap_1d
+
+    return median_floor_height, MIN_FLOOR_COVER, MIN_COLUMN_COVER, _overlap_1d
+
+
+def resolve_floor_h(stem: str, dsl_dir: Path | None) -> float | None:
+    """Median window-grid storey height from ``{dsl_dir}/{stem}/facade_dsl.json``."""
+    dsl = _load_facade_dsl(stem, dsl_dir)
+    if dsl is None:
+        return None
+    median_floor_height, _, _, _ = _window_grid_api()
+    return median_floor_height(dsl)
+
+
+def resolve_window_bands(
+    stem: str, dsl_dir: Path | None
+) -> tuple[dict[int, tuple[int, int]], dict[int, tuple[int, int]]] | None:
+    """Floor and bay pixel bands from the window facade DSL, or None."""
+    dsl = _load_facade_dsl(stem, dsl_dir)
+    if dsl is None:
+        return None
+    pipe = str(ROOT / "balcony_pipeline")
+    if pipe not in sys.path:
+        sys.path.insert(0, pipe)
+    from snap import _bands_from_windows_dsl
+
+    floor_y, bay_x = _bands_from_windows_dsl(dsl)
+    if not floor_y or not bay_x:
+        return None
+    return floor_y, bay_x
+
+
+def on_window_floor_bay(
+    box: list[int] | tuple[int, int, int, int],
+    floor_y: dict[int, tuple[int, int]] | None,
+    bay_x: dict[int, tuple[int, int]] | None,
+) -> bool:
+    """True when the box covers a window storey and a window bay.
+
+    Same floor rule as enclosed placement: 90% of an upper storey the box
+    continues below, 50% of any other storey. A shop or edge sliver that
+    misses the grid can still be dropped.
+    """
+    if not floor_y or not bay_x:
+        return False
+    _window_grid_api()
+    from enclosed import overlapping_floors
+
+    if not overlapping_floors(list(box), floor_y):
+        return False
+    _, _min_floor, min_bay, overlap_1d = _window_grid_api()
+    x0, x1 = float(box[0]), float(box[2])
+    for bx0, bx1 in bay_x.values():
+        cover = overlap_1d(x0, x1, float(bx0), float(bx1)) / max(1.0, float(bx1) - float(bx0))
+        if cover >= min_bay:
+            return True
+    return False
+
+
+def _collect_prompt_boxes(
+    image: Image.Image,
+    *,
+    processor,
+    sam,
+    device: torch.device,
+    prompts: tuple[str, ...],
+    threshold: float,
+) -> list[dict[str, Any]]:
+    pooled: list[dict[str, Any]] = []
+    for prompt in prompts:
+        recs = detect_balcony_records(
+            image,
+            processor=processor,
+            sam=sam,
+            device=device,
+            prompt=prompt,
+            threshold=threshold,
+            min_side=12,
+            max_side_frac=0.95,
+        )
+        for rec in recs:
+            rec = dict(rec)
+            rec["prompt"] = prompt
+            rec["box_xyxy"] = list(
+                clamp_box_xyxy(rec["box_xyxy"], width=image.width, height=image.height)
+            )
+            pooled.append(rec)
+        print(f"  [{prompt}]  n={len(recs)}", flush=True)
+    return pooled
 
 
 def run_sam3(
@@ -802,36 +1060,44 @@ def run_sam3(
     if cache_path.is_file():
         cached = json.loads(cache_path.read_text(encoding="utf-8"))
         print(f"SAM3 cache {cache_path}", flush=True)
-    missing = [p for p in paths if p.stem not in cached]
-    if missing:
+    need_full = [p for p in paths if p.stem not in cached]
+    need_ex = [
+        p
+        for p in paths
+        if p.stem in cached and _missing_exclude(cached[p.stem])
+    ]
+    if need_full or need_ex:
         from transformers import Sam3Model, Sam3Processor
 
-        print(f"loading SAM3…  ({len(missing)} image(s))", flush=True)
+        print(
+            f"loading SAM3…  full={len(need_full)} exclude={len(need_ex)}",
+            flush=True,
+        )
         processor = Sam3Processor.from_pretrained("facebook/sam3")
         sam = Sam3Model.from_pretrained("facebook/sam3").to(device).eval()
-        for path in missing:
+        for path in need_full:
+            print(path.name, flush=True)
             image = Image.open(path).convert("RGB")
-            pooled: list[dict[str, Any]] = []
-            for prompt in SAM3_PROMPTS:
-                recs = detect_balcony_records(
-                    image,
-                    processor=processor,
-                    sam=sam,
-                    device=device,
-                    prompt=prompt,
-                    threshold=threshold,
-                    min_side=12,
-                    max_side_frac=0.95,
-                )
-                for rec in recs:
-                    rec = dict(rec)
-                    rec["prompt"] = prompt
-                    rec["box_xyxy"] = list(
-                        clamp_box_xyxy(rec["box_xyxy"], width=image.width, height=image.height)
-                    )
-                    pooled.append(rec)
-                print(f"{path.name}  [{prompt}]  n={len(recs)}", flush=True)
-            cached[path.stem] = pooled
+            cached[path.stem] = _collect_prompt_boxes(
+                image,
+                processor=processor,
+                sam=sam,
+                device=device,
+                prompts=SAM3_PROMPTS + EXCLUDE_PROMPTS,
+                threshold=threshold,
+            )
+        for path in need_ex:
+            print(f"{path.name}  exclude only", flush=True)
+            image = Image.open(path).convert("RGB")
+            extra = _collect_prompt_boxes(
+                image,
+                processor=processor,
+                sam=sam,
+                device=device,
+                prompts=EXCLUDE_PROMPTS,
+                threshold=threshold,
+            )
+            cached[path.stem] = list(cached[path.stem]) + extra
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(cached, indent=2) + "\n", encoding="utf-8")
         del sam, processor
@@ -842,9 +1108,9 @@ def run_sam3(
 
 STAGE_LABELS: tuple[tuple[str, str], ...] = (
     ("1_sam3", "1 SAM3 1-storey seeds"),
-    ("2_depth", "2 depth vs wall >= 0.7%"),
-    ("3_merge", "3 merge same column / bay"),
-    ("4_grow", "4 grow, drop <1-col / <1-storey"),
+    ("2_depth", "2 depth vs wall >= 1.5% (no obstacles)"),
+    ("3_merge", "3 merge same column / bay, drop narrow vs below"),
+    ("4_grow", "4 grow down if 0.6% closer, drop <1-col"),
     ("5_clip", "5 clip shop, drop portal/small"),
 )
 
@@ -906,22 +1172,41 @@ def volume_stages(
     *,
     min_rel: float = MIN_REL,
     grow_rel: float = GROW_REL,
+    floor_h: float | None = None,
+    floor_y: dict[int, tuple[int, int]] | None = None,
+    bay_x: dict[int, tuple[int, int]] | None = None,
 ) -> list[tuple[str, str, list[dict[str, Any]]]]:
     """Return the five pipeline snapshots: (id, title, boxes)."""
     iw, ih = image.size
+    min_height_px = None
+    stage1_title = STAGE_LABELS[0][1]
+    if floor_h is not None and float(floor_h) > 0:
+        min_height_px = SEED_MIN_FLOOR_FRAC * float(floor_h)
+        stage1_title = (
+            f"1 SAM3 seeds h>{min_height_px:.0f}px (0.85 floor)"
+        )
+    stage5_title = STAGE_LABELS[4][1]
+    if floor_y and bay_x:
+        stage5_title = "5 clip shop, keep floor×bay, drop portal/small"
     rgb = np.asarray(image, dtype=np.uint8)
     veg = foliage_mask(rgb)
     global_wall = local_wall_median(
         depth, [int(0.2 * iw), int(0.2 * ih), int(0.8 * iw), int(0.8 * ih)], veg=veg
     )
     clutter = clutter_mask(depth, global_wall) if global_wall else None
-    step = max(8, ih // 40)
+
+    seed_recs, exclude_recs = split_seed_records(seeds)
+    exclude_boxes = [
+        list(clamp_box_xyxy(r["box_xyxy"], width=iw, height=ih)) for r in exclude_recs
+    ]
 
     sam3_seeds: list[dict[str, Any]] = []
     kept_seeds: list[dict[str, Any]] = []
-    for rec in seeds:
+    for rec in seed_recs:
         box = list(clamp_box_xyxy(rec["box_xyxy"], width=iw, height=ih))
-        if not seed_ok(box, iw=iw, ih=ih):
+        if not seed_ok(box, iw=iw, ih=ih, min_height_px=min_height_px):
+            continue
+        if covered_by_exclude(box, exclude_boxes):
             continue
         item = {
             "box_xyxy": box,
@@ -940,57 +1225,31 @@ def volume_stages(
         kept["rel_delta"] = rel
         kept_seeds.append(kept)
 
+    # Width is judged on the boxes Stage 2 draws. A seed hidden inside a
+    # larger box must not bridge two outlines that differ by more than 20%.
+    stage2 = merge_boxes(kept_seeds, 0.70)
     columns = merge_vertical_columns(
-        kept_seeds, ih=ih, min_x_overlap=0.40, max_y_gap_frac=0.10
+        stage2, ih=ih, min_x_overlap=0.40, max_y_gap_frac=MERGE_Y_GAP_FRAC
     )
     columns = merge_adjacent_bays(columns, iw=iw)
-    # Size gate waits until after grow: SAM3 pancakes can be <1 column / <1 storey.
-
-    grown: list[dict[str, Any]] = []
+    columns = drop_narrower_than_below(columns)
+    # Stage 4 extends downward only, where the strip is still closer than the
+    # wall. It does not move the top, trim, or merge the boxes again.
+    step = max(8, ih // 40)
+    extended: list[dict[str, Any]] = []
     for rec in columns:
-        box0 = list(rec["box_xyxy"])
-        rel0 = rec.get("rel_delta")
-        seed_med = robust_median(depth, box0)
-        box = grow_vertical(
+        item = dict(rec)
+        item["box_xyxy"] = grow_vertical(
             depth,
-            box0,
+            list(rec["box_xyxy"]),
             veg=veg,
             clutter=clutter,
             min_rel=grow_rel,
             step=step,
-            seed_med=seed_med,
+            down_only=True,
         )
-        if (box[2] - box[0]) < 0.28 * iw:
-            box = grow_horizontal(
-                depth,
-                box,
-                veg=veg,
-                clutter=clutter,
-                min_rel=grow_rel,
-                step=max(6, iw // 50),
-                seed_med=seed_med,
-            )
-            box[0] = max(box[0], int(0.015 * iw))
-            box[2] = min(box[2], int(0.90 * iw))
-        box = trim_to_projecting(
-            depth,
-            box,
-            veg=veg,
-            clutter=clutter,
-            min_rel=grow_rel,
-            step=step,
-            seed_med=seed_med,
-        )
-        rel = box_rel_delta(depth, box, veg=veg)
-        if rel is None or rel < min_rel:
-            box, rel = box0, rel0
-        rec = dict(rec)
-        rec["box_xyxy"] = box
-        rec["rel_delta"] = rel
-        grown.append(rec)
-    grown = merge_vertical_columns(grown, ih=ih, min_x_overlap=0.40, max_y_gap_frac=0.10)
-    grown = merge_adjacent_bays(grown, iw=iw)
-    grown = keep_column_storey(grown, iw=iw, ih=ih)
+        extended.append(item)
+    grown = keep_column_storey(extended, iw=iw, ih=ih)
 
     clipped: list[dict[str, Any]] = []
     for rec in grown:
@@ -998,36 +1257,43 @@ def volume_stages(
         rec = dict(rec)
         rec["box_xyxy"] = box
         clipped.append(rec)
-    final: list[dict[str, Any]] = []
+    on_grid: list[dict[str, Any]] = []
+    loose: list[dict[str, Any]] = []
     for rec in clipped:
         box = list(clamp_box_xyxy(rec["box_xyxy"], width=iw, height=ih))
-        if column_storey_reason(box, iw=iw, ih=ih) or storey_width_reason(box, iw=iw, ih=ih):
-            continue
-        if box[0] > 0.82 * iw:
-            continue
-        if (
-            box[3] > 0.92 * ih
-            and box[1] > 0.40 * ih
-            and (box[2] - box[0]) < 0.28 * iw
-        ):
-            continue
-        if clutter_frac(clutter, box) > 0.35:
-            continue
+        keep_grid = on_window_floor_bay(box, floor_y, bay_x)
+        if not keep_grid:
+            if column_storey_reason(box, iw=iw, ih=ih) or storey_width_reason(box, iw=iw, ih=ih):
+                continue
+            if box[0] > 0.82 * iw:
+                continue
+            if (
+                box[3] > 0.92 * ih
+                and box[1] > 0.40 * ih
+                and (box[2] - box[0]) < 0.28 * iw
+            ):
+                continue
+            if clutter_frac(clutter, box) > 0.35:
+                continue
         rel = box_rel_delta(depth, box, veg=veg)
-        if rel is None or rel < min_rel or rel > 0.22:
+        if not keep_grid and (rel is None or rel < min_rel or rel > 0.22):
             continue
         rec = dict(rec)
         rec["box_xyxy"] = box
-        rec["rel_delta"] = rel
-        final.append(rec)
-    final = merge_boxes(nms_columns(final, iw=iw, ih=ih), 0.55)
+        if rel is not None:
+            rec["rel_delta"] = rel
+        if keep_grid:
+            on_grid.append(rec)
+        else:
+            loose.append(rec)
+    final = merge_boxes(on_grid, 0.55) + merge_boxes(nms_columns(loose, iw=iw, ih=ih), 0.55)
 
     return [
-        (STAGE_LABELS[0][0], STAGE_LABELS[0][1], merge_boxes(sam3_seeds, 0.70)),
-        (STAGE_LABELS[1][0], STAGE_LABELS[1][1], merge_boxes(kept_seeds, 0.70)),
+        (STAGE_LABELS[0][0], stage1_title, merge_boxes(sam3_seeds, 0.70)),
+        (STAGE_LABELS[1][0], STAGE_LABELS[1][1], stage2),
         (STAGE_LABELS[2][0], STAGE_LABELS[2][1], columns),
         (STAGE_LABELS[3][0], STAGE_LABELS[3][1], grown),
-        (STAGE_LABELS[4][0], STAGE_LABELS[4][1], final),
+        (STAGE_LABELS[4][0], stage5_title, final),
     ]
 
 
@@ -1038,9 +1304,19 @@ def detect_volumes(
     *,
     min_rel: float = MIN_REL,
     grow_rel: float = GROW_REL,
+    floor_h: float | None = None,
+    floor_y: dict[int, tuple[int, int]] | None = None,
+    bay_x: dict[int, tuple[int, int]] | None = None,
 ) -> list[dict[str, Any]]:
     return volume_stages(
-        image, depth, seeds, min_rel=min_rel, grow_rel=grow_rel
+        image,
+        depth,
+        seeds,
+        min_rel=min_rel,
+        grow_rel=grow_rel,
+        floor_h=floor_h,
+        floor_y=floor_y,
+        bay_x=bay_x,
     )[-1][2]
 
 
@@ -1055,6 +1331,12 @@ def main() -> None:
     ap.add_argument("--grow-rel", type=float, default=GROW_REL)
     ap.add_argument("--refresh-sam3", action="store_true")
     ap.add_argument("--stages", action="store_true", help="Save a 5-step overlay board")
+    ap.add_argument(
+        "--dsl-dir",
+        type=Path,
+        default=DEFAULT_DSL_DIR,
+        help="Pipeline runs dir with {stem}/facade_dsl.json (same floor_h as run_balcony)",
+    )
     ap.add_argument(
         "--stems",
         nargs="*",
@@ -1097,6 +1379,7 @@ def main() -> None:
         "min_rel": args.min_rel,
         "grow_rel": args.grow_rel,
         "prompts": list(SAM3_PROMPTS),
+        "exclude_prompts": list(EXCLUDE_PROMPTS),
         "images": {},
     }
     hits = 0
@@ -1108,12 +1391,28 @@ def main() -> None:
         if not depth_path.is_file():
             raise SystemExit(f"missing {depth_path}")
         depth = resize_depth(np.load(depth_path), image.width, image.height)
+        floor_h = resolve_floor_h(path.stem, args.dsl_dir)
+        bands = resolve_window_bands(path.stem, args.dsl_dir)
+        floor_y, bay_x = bands if bands is not None else (None, None)
+        if floor_h is not None:
+            print(
+                f"{path.name}  floor_h={floor_h:.0f}px  "
+                f"stage1 drop <= {SEED_MIN_FLOOR_FRAC * floor_h:.0f}px",
+                flush=True,
+            )
+        else:
+            print(f"{path.name}  floor_h missing; stage1 uses {MIN_SEED_HEIGHT_FRAC:.1%} image", flush=True)
+        if bands is None:
+            print(f"{path.name}  window floor×bay missing; stage5 drops as usual", flush=True)
         stages = volume_stages(
             image,
             depth,
             seeds.get(path.stem, []),
             min_rel=args.min_rel,
             grow_rel=args.grow_rel,
+            floor_h=floor_h,
+            floor_y=floor_y,
+            bay_x=bay_x,
         )
         pred = stages[-1][2]
         gt = gt_px(path.stem, image.width, image.height)

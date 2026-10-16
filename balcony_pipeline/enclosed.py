@@ -17,7 +17,10 @@ from snap import _bands_from_windows_dsl, _overlap_1d
 
 ROOT = Path(__file__).resolve().parent.parent
 
-MIN_FLOOR_COVER = 0.35
+MIN_FLOOR_COVER = 0.50
+# A box that continues into the storey below must cover this much of the
+# upper storey. A lower edge still uses MIN_FLOOR_COVER.
+MIN_UPPER_FLOOR_COVER = 0.90
 MIN_COLUMN_COVER = 0.40
 # Drop an open railing if this fraction of its box sits on an enclosed volume.
 OPEN_ON_ENCLOSED_FRAC = 0.25
@@ -82,6 +85,20 @@ def ensure_da3_depth(
     return depth_path
 
 
+def median_floor_height(windows_dsl: dict[str, Any]) -> float | None:
+    """Median storey height in pixels from the window grid, or None if empty."""
+    floor_y, _ = _bands_from_windows_dsl(windows_dsl)
+    heights = [float(fy1 - fy0) for fy0, fy1 in floor_y.values() if fy1 > fy0]
+    if not heights:
+        return None
+    heights.sort()
+    n = len(heights)
+    mid = n // 2
+    if n % 2:
+        return heights[mid]
+    return 0.5 * (heights[mid - 1] + heights[mid])
+
+
 def _box_xyxy(rec: dict[str, Any] | list[int] | tuple[int, ...]) -> list[int]:
     if isinstance(rec, dict):
         box = rec.get("box_xyxy") or rec.get("box") or [0, 0, 1, 1]
@@ -95,23 +112,33 @@ def overlapping_floors(
     floor_y: dict[int, tuple[int, int]],
     *,
     min_cover: float = MIN_FLOOR_COVER,
+    min_upper_cover: float = MIN_UPPER_FLOOR_COVER,
 ) -> list[int]:
-    """Floor ids whose band is covered by at least ``min_cover`` of the storey height."""
+    """Floor ids the box covers.
+
+    The highest floor counts only when the box also continues below it and
+    covers at least ``min_upper_cover`` of that storey. Every other floor
+    needs ``min_cover``. A floor under its fraction is not an enclosure.
+    """
     _x0, y0, _x1, y1 = (float(v) for v in box[:4])
-    hits: list[tuple[float, int]] = []
+    touched: list[tuple[int, float, float, float]] = []
     for fid, (fy0, fy1) in floor_y.items():
-        cover = _overlap_1d(y0, y1, float(fy0), float(fy1)) / max(1.0, float(fy1) - float(fy0))
-        if cover >= min_cover:
-            hits.append((cover, int(fid)))
-    if hits:
-        return [fid for _c, fid in sorted(hits, key=lambda t: t[1])]
-    if not floor_y:
+        top, bot = float(fy0), float(fy1)
+        overlap = _overlap_1d(y0, y1, top, bot)
+        if overlap <= 0:
+            continue
+        cover = overlap / max(1.0, bot - top)
+        touched.append((int(fid), top, bot, cover))
+    if not touched:
         return []
-    best = max(
-        floor_y,
-        key=lambda f: _overlap_1d(y0, y1, float(floor_y[f][0]), float(floor_y[f][1])),
-    )
-    return [int(best)]
+    top_fid, _top, top_bot, _cover = min(touched, key=lambda item: item[1])
+    upper_is_spill = y1 > top_bot
+    hits: list[tuple[float, int]] = []
+    for fid, _fy0, _fy1, cover in touched:
+        need = min_upper_cover if fid == top_fid and upper_is_spill else min_cover
+        if cover >= need:
+            hits.append((cover, fid))
+    return [fid for _c, fid in sorted(hits, key=lambda item: item[1])]
 
 
 def snap_columns(

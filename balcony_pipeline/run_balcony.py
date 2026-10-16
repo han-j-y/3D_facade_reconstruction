@@ -39,6 +39,7 @@ from enclosed import (  # noqa: E402
     drop_open_under_enclosed,
     enclosed_ir,
     ensure_da3_depth,
+    median_floor_height,
     place_enclosed_volumes,
 )
 from cluster import cluster_balcony_boxes  # noqa: E402
@@ -61,7 +62,7 @@ from heuristic_ir import (  # noqa: E402
 )
 from merge_dsl import merge_balcony_into_windows_dsl  # noqa: E402
 from recovery_profile import DEFAULT_PROFILE, PROFILES, resolve_profile  # noqa: E402
-from snap import snap_units  # noqa: E402
+from snap import _bands_from_windows_dsl, snap_units  # noqa: E402
 from vote import vote_cluster_ir  # noqa: E402
 
 from balcony_train.model import try_load_predictor  # noqa: E402
@@ -238,6 +239,9 @@ def detect_enclosed_volume_boxes(
     depth_dir: Path,
     cache_path: Path,
     sam3_threshold: float = 0.15,
+    floor_h: float | None = None,
+    floor_y: dict | None = None,
+    bay_x: dict | None = None,
 ) -> list[dict]:
     """Run the SAM3+DA3 volume detector. Infers DA3 depth if the npy is missing."""
     stem = image_path.stem
@@ -245,7 +249,11 @@ def detect_enclosed_volume_boxes(
     if depth_path is None:
         return []
     from balcony_train.try_da3_enclosure import resize_depth
-    from balcony_train.try_sam3_da3_volumes import detect_volumes, run_sam3
+    from balcony_train.try_sam3_da3_volumes import (
+        detect_volumes,
+        run_sam3,
+        split_seed_records,
+    )
 
     depth = resize_depth(np.load(depth_path), image.width, image.height)
     if torch.cuda.is_available():
@@ -256,11 +264,56 @@ def detect_enclosed_volume_boxes(
         cache_path=Path(cache_path),
         threshold=sam3_threshold,
     )
-    seeds = seeds_map.get(stem, [])
-    if not seeds:
+    raw = seeds_map.get(stem, [])
+    enclosed, excluded = split_seed_records(raw)
+    if not enclosed:
         print("warn: no SAM3 enclosed seeds; skip enclosed volumes")
         return []
-    return detect_volumes(image, depth, seeds)
+    if excluded:
+        print(f"  fire-escape exclude boxes={len(excluded)}")
+    return detect_volumes(
+        image, depth, raw, floor_h=floor_h, floor_y=floor_y, bay_x=bay_x
+    )
+
+
+def snap_open_units(
+    raw_boxes: list[list[int]],
+    facade: Image.Image,
+    windows_dsl: dict,
+    *,
+    row_tol: float = 0.055,
+    col_tol: float = 0.04,
+) -> tuple[list[dict], list[list[int]], list[dict]]:
+    """Filter, merge and snap open-balcony boxes onto the window grid.
+
+    Returns (snapped units, filtered boxes, filter log).
+    """
+    if not raw_boxes:
+        return [], [], []
+    filtered_boxes, drop_log = filter_balcony_boxes(
+        raw_boxes,
+        facade,
+        windows_dsl.get("instances") or [],
+    )
+    if not filtered_boxes:
+        return [], filtered_boxes, drop_log
+    iw, ih = facade.size
+    cx = np.array([0.5 * (b[0] + b[2]) / iw for b in filtered_boxes], dtype=np.float64)
+    cy = np.array([0.5 * (b[1] + b[3]) / ih for b in filtered_boxes], dtype=np.float64)
+    merged_boxes, members, _bay_raw, _floor_raw = rp.merge_mod.merge_adjacent_boxes(
+        filtered_boxes,
+        cx,
+        cy,
+        row_tol=row_tol,
+        adj_gap=1.0,
+        merge_bays=False,
+        col_tol=col_tol,
+        mode="balcony",
+    )
+    snapped = snap_units(merged_boxes, windows_dsl)
+    for u, mem in zip(snapped, members):
+        u["member_raw_idxs"] = mem
+    return snapped, filtered_boxes, drop_log
 
 
 def infer_unit_ir(
@@ -437,11 +490,13 @@ def run(args: argparse.Namespace) -> Path | None:
     )
     snapped: list[dict] = []
     if raw_boxes:
-        print("=== 1a Filter false balconies (window band + rooftop) ===")
-        filtered_boxes, drop_log = filter_balcony_boxes(
+        print("=== 1a-2 Filter, unitize, snap open balconies to window grid ===")
+        snapped, filtered_boxes, drop_log = snap_open_units(
             raw_boxes,
             facade,
-            windows_dsl.get("instances") or [],
+            windows_dsl,
+            row_tol=args.row_tol,
+            col_tol=args.col_tol,
         )
         n_drop = sum(1 for e in drop_log if not e["keep"])
         print(f"  {len(raw_boxes)} raw -> {len(filtered_boxes)} kept  (dropped {n_drop})")
@@ -462,27 +517,8 @@ def run(args: argparse.Namespace) -> Path | None:
             out_dir / f"s1b_filtered_balconies_{stem}.png",
             force=True,
         )
-        raw_boxes = filtered_boxes
-    if raw_boxes:
-        print("=== 1b Unitize (balcony merge: Pass-1 IoU/containment only) ===")
-        iw, ih = facade.size
-        cx = np.array([0.5 * (b[0] + b[2]) / iw for b in raw_boxes], dtype=np.float64)
-        cy = np.array([0.5 * (b[1] + b[3]) / ih for b in raw_boxes], dtype=np.float64)
-        merged_boxes, members, _bay_raw, _floor_raw = rp.merge_mod.merge_adjacent_boxes(
-            raw_boxes,
-            cx,
-            cy,
-            row_tol=args.row_tol,
-            adj_gap=1.0,
-            merge_bays=False,
-            col_tol=args.col_tol,
-            mode="balcony",
-        )
-        print(f"  {len(raw_boxes)} raw -> {len(merged_boxes)} units (mode=balcony)")
-        print("=== 2 Associate to window floors/bays ===")
-        snapped = snap_units(merged_boxes, windows_dsl)
-        for u, mem in zip(snapped, members):
-            u["member_raw_idxs"] = mem
+        print(f"  {len(filtered_boxes)} filtered -> {len(snapped)} units (mode=balcony)")
+    if snapped:
         save(
             draw_snap(
                 facade,
@@ -497,6 +533,15 @@ def run(args: argparse.Namespace) -> Path | None:
     enclosed_units: list[dict] = []
     if not bool(getattr(args, "no_enclosed", False)):
         print("=== 1c Enclosed volumes (SAM3+DA3) ===")
+        from balcony_train.try_sam3_da3_volumes import SEED_MIN_FLOOR_FRAC
+
+        floor_h = median_floor_height(windows_dsl)
+        floor_y, bay_x = _bands_from_windows_dsl(windows_dsl)
+        if floor_h is not None:
+            print(
+                f"  floor_h={floor_h:.0f}px  "
+                f"stage1 drop height <= {SEED_MIN_FLOOR_FRAC * floor_h:.0f}px"
+            )
         vol_boxes = detect_enclosed_volume_boxes(
             facade,
             image_path,
@@ -509,6 +554,9 @@ def run(args: argparse.Namespace) -> Path | None:
                     ROOT / "runs" / "sam3_da3_volumes" / "sam3_seeds.json",
                 )
             ),
+            floor_h=floor_h,
+            floor_y=floor_y,
+            bay_x=bay_x,
         )
         save(
             draw_boxes(

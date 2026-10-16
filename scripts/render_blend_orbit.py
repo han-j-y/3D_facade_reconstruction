@@ -87,6 +87,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0.0,
         help="vertical camera drift as a fraction of façade height (one sine cycle; 0.03 is subtle)",
     )
+    ap.add_argument(
+        "--arc",
+        type=float,
+        default=0.0,
+        help="degrees; >0 sweeps from -DEG to +DEG across the clip (three-quarter to three-quarter)",
+    )
+    ap.add_argument(
+        "--clay",
+        action="store_true",
+        help="white walls, pale glass, tan door — same clay read as the reference turntable",
+    )
     ap.add_argument("--preview", action="store_true", help="render frame 1 PNG only")
     ap.add_argument(
         "--blender",
@@ -159,6 +170,37 @@ def _ensure_ground(zmin: float, span: float):
     return ground
 
 
+def _apply_clay() -> None:
+    """Recolor façade materials to the reference clay: white mass, pale glass, tan door."""
+    import bpy
+
+    white = (0.96, 0.96, 0.97)
+    glass = (0.62, 0.74, 0.86)
+    door = (0.62, 0.48, 0.36)
+    for mat in bpy.data.materials:
+        name = mat.name.lower()
+        if "ground" in name:
+            continue
+        tree = getattr(mat, "node_tree", None)
+        if tree is None:
+            continue
+        principled = next((n for n in tree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+        if principled is None:
+            continue
+        if "glass" in name:
+            color, rough, trans = glass, 0.2, 0.0
+        elif "door" in name and "frame" not in name:
+            color, rough, trans = door, 0.62, 0.0
+        else:
+            color, rough, trans = white, 0.82, 0.0
+        principled.inputs["Base Color"].default_value = (*color, 1.0)
+        if "Roughness" in principled.inputs:
+            principled.inputs["Roughness"].default_value = rough
+        key = "Transmission Weight" if "Transmission Weight" in principled.inputs else "Transmission"
+        if key in principled.inputs:
+            principled.inputs[key].default_value = trans
+
+
 def _set_world_sky():
     import bpy
 
@@ -166,8 +208,8 @@ def _set_world_sky():
     if scene.world is None:
         scene.world = bpy.data.worlds.new("World")
     world = scene.world
-    color = (0.38, 0.44, 0.54, 1.0)
-    strength = 0.85
+    color = (0.36, 0.43, 0.54, 1.0)
+    strength = 0.75
     try:
         world.use_nodes = True
     except Exception:
@@ -184,6 +226,13 @@ def _set_world_sky():
         world.color = color[:3]
 
 
+def _aim_at(obj, target) -> None:
+    import mathutils
+
+    direction = mathutils.Vector(target) - obj.location
+    obj.rotation_euler = direction.to_track_quat("-Z", "Y").to_euler()
+
+
 def _setup_sun(cx: float, cz: float, radius: float, h: float):
     import bpy
 
@@ -194,18 +243,19 @@ def _setup_sun(cx: float, cz: float, radius: float, h: float):
         sun = bpy.data.objects.new("Sun", data)
         scene.collection.objects.link(sun)
     sun.data.type = "SUN"
-    sun.data.energy = 3.2
+    sun.data.energy = 3.0
     if hasattr(sun.data, "angle"):
         sun.data.angle = 0.02
-    sun.location = (cx + h * 0.55, radius * 0.55, cz + h * 0.55)
-    sun.rotation_euler = (0.85, 0.15, 0.85)
+    # Camera sits on +Y, so the sun stays on that side and lights the façade front.
+    sun.location = (cx - h * 0.45, radius * 0.4, cz + h * 1.1)
+    _aim_at(sun, (cx, 0.0, cz * 0.4))
     if scene.objects.get("OrbitFill") is None:
         fill_data = bpy.data.lights.new("OrbitFill", type="SUN")
         fill = bpy.data.objects.new("OrbitFill", fill_data)
         scene.collection.objects.link(fill)
         fill.location = (cx - h * 0.4, -radius * 0.45, cz + h * 0.2)
         fill.rotation_euler = (1.05, -0.25, -0.7)
-        fill.data.energy = 1.1
+        fill.data.energy = 0.35
         if hasattr(fill.data, "angle"):
             fill.data.angle = 0.4
 
@@ -246,6 +296,7 @@ def _setup_camera_orbit(
     fps: int,
     start_angle_deg: float,
     swing_deg: float = 0.0,
+    arc_deg: float = 0.0,
     bob_m: float = 0.0,
 ):
     import bpy
@@ -281,7 +332,7 @@ def _setup_camera_orbit(
         look = bpy.data.objects.new("LookAt", None)
         scene.collection.objects.link(look)
     look.empty_display_type = "SPHERE"
-    look.location = (cx, 0.0, cz * 0.48)
+    look.location = (cx, 0.0, cz if arc_deg > 0 else cz * 0.48)
 
     start = math.radians(float(start_angle_deg))
     cam.parent = pivot
@@ -311,7 +362,14 @@ def _setup_camera_orbit(
         pivot.animation_data_clear()
     pivot.rotation_euler = (0.0, 0.0, 0.0)
     pivot.keyframe_insert("rotation_euler", frame=1)
-    if swing_deg > 0:
+    if arc_deg > 0:
+        arc = math.radians(float(arc_deg))
+        pivot.rotation_euler = (0.0, 0.0, -arc)
+        pivot.keyframe_insert("rotation_euler", frame=1)
+        pivot.rotation_euler = (0.0, 0.0, arc)
+        pivot.keyframe_insert("rotation_euler", frame=n_frames)
+        _linearize_fcurves(pivot)
+    elif swing_deg > 0:
         # Negative Z turns the camera toward +X, the left of a viewer facing the façade.
         s = math.radians(float(swing_deg))
         turn = 1 + max(1, round((n_frames - 1) / 3))
@@ -394,6 +452,15 @@ def blender_main(args: argparse.Namespace) -> None:
 
     _set_world_sky()
     _ensure_ground(zmin, span)
+    if args.clay:
+        _apply_clay()
+        view = getattr(scene, "view_settings", None)
+        if view is not None:
+            try:
+                view.view_transform = "Standard"
+                view.exposure = 0.0
+            except Exception:
+                pass
 
     # Distance so the façade width + height fit the portrait frustum with margin.
     aspect = rx / max(ry, 1)
@@ -406,9 +473,12 @@ def blender_main(args: argparse.Namespace) -> None:
         needed_v = (h * 0.72) / max(1e-4, math.tan(fov * 0.5))
         radius = max(needed, needed_v) * 1.08
     else:
-        radius = (span * 0.5) / max(1e-4, math.tan(fov * 0.5)) * 1.2
+        vfov = 2.0 * math.atan(math.tan(fov * 0.5) / max(aspect, 1e-4))
+        needed = (w * 0.55) / max(1e-4, math.tan(fov * 0.5))
+        needed_v = (h * 0.58) / max(1e-4, math.tan(vfov * 0.5))
+        radius = max(needed, needed_v) * 1.12
     radius = max(12.0, radius / max(0.1, float(args.zoom)))
-    cam_z = max(3.0, h * 0.52)
+    cam_z = cz if args.arc > 0 else max(3.0, h * 0.52)
 
     _setup_sun(cx, cz, radius, h)
     _setup_engine(scene)
@@ -420,8 +490,9 @@ def blender_main(args: argparse.Namespace) -> None:
         lens_mm=lens,
         n_frames=args.frames,
         fps=args.fps,
-        start_angle_deg=args.start_angle,
-        swing_deg=args.swing,
+        start_angle_deg=0.0 if args.arc > 0 else args.start_angle,
+        swing_deg=0.0 if args.arc > 0 else args.swing,
+        arc_deg=args.arc,
         bob_m=max(0.0, float(args.bob)) * h,
     )
 
@@ -554,7 +625,9 @@ def host_main(args: argparse.Namespace) -> None:
     passthrough += ["--frames", str(args.frames), "--fps", str(args.fps), "--res", args.res]
     passthrough += ["--lens", str(args.lens), "--start-angle", str(args.start_angle)]
     passthrough += ["--zoom", str(args.zoom), "--swing", str(args.swing)]
-    passthrough += ["--bob", str(args.bob)]
+    passthrough += ["--arc", str(args.arc), "--bob", str(args.bob)]
+    if args.clay:
+        passthrough.append("--clay")
     if args.preview:
         passthrough.append("--preview")
     cmd.extend(passthrough)
