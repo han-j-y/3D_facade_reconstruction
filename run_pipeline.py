@@ -363,6 +363,16 @@ def parse_args() -> argparse.Namespace:
             "balcony mesh horizontal center: paired window (default), bay bands, or photo box"
         ),
     )
+    ap.add_argument(
+        "--enclosed-method",
+        choices=("cell_clf", "sam3"),
+        default="cell_clf",
+        help=(
+            "enclosed detection inside --with-balconies. "
+            "cell_clf (default): four cell rules, gate >= 0.10. "
+            "sam3: previous SAM3+DA3 volumes"
+        ),
+    )
     return ap.parse_args()
 
 
@@ -1739,6 +1749,7 @@ def run_one(
                 no_railing_ckpt=args.no_railing_ckpt,
                 balcony_center=args.balcony_center,
                 no_enclosed=False,
+                enclosed_method=args.enclosed_method,
                 depth_dir=ROOT / "runs" / "da3_enclosure",
                 enclosed_sam3_cache=ROOT / "runs" / "sam3_da3_volumes" / "sam3_seeds.json",
             )

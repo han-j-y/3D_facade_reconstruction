@@ -16,9 +16,15 @@ The rectangle decoder (t=0.3, no gate) is kept. Then, in order:
    probability, OP1 membership, and SAM3 cover are not required. Newly added
    cells do not grow another floor.
 
+``--gate 0.10`` then blanks a photo whose gate-model max is below 0.10.
+Photos at or above 0.10 keep the four-rule cells. 0.10 is below the four
+no-enclosure photos left as false positives (gate 0.23 and above) and below
+the lowest exact enclosure (0.14). ``--gate 0`` is the four rules alone.
+
 Example::
 
     C:\\Users\\hiroo\\anaconda3\\envs\\glodon\\python.exe balcony_train/clf_three_rules.py
+    C:\\Users\\hiroo\\anaconda3\\envs\\glodon\\python.exe balcony_train/clf_three_rules.py --gate 0.10
 """
 
 from __future__ import annotations
@@ -53,6 +59,7 @@ from balcony_train.enclosed_symmetry import SYM_GATE  # noqa: E402
 from balcony_train.evaluate_enclosed_grid import format_report, render_compare, summarize  # noqa: E402
 
 DEFAULT_OUT = ROOT / "runs" / "cell_clf" / "compare_clf_rules"
+DEFAULT_GATE_OUT = ROOT / "runs" / "cell_clf" / "compare_clf_rules_gate"
 MIN_L = 0.015
 MIN_UPPER = 0.55
 MIN_COVER = 0.40
@@ -173,8 +180,16 @@ def main() -> None:
     ap.add_argument("--in-dir", type=Path, default=DEFAULT_EVAL_PHOTO_DIR)
     ap.add_argument("--dsl-dir", type=Path, default=DEFAULT_DSL_DIR)
     ap.add_argument("--t", type=float, default=0.3)
-    ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT)
+    ap.add_argument(
+        "--gate",
+        type=float,
+        default=0.0,
+        help="blank a photo when its gate max is below this; 0 keeps every photo",
+    )
+    ap.add_argument("--out-dir", type=Path, default=None)
     args = ap.parse_args()
+    if args.out_dir is None:
+        args.out_dir = DEFAULT_GATE_OUT if args.gate > 0 else DEFAULT_OUT
 
     train = Data(args.train_cells, args.train_labels)
     test = Data(args.eval_cells, args.eval_labels)
@@ -183,19 +198,29 @@ def main() -> None:
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
     preds: dict[str, set] = {}
+    rules_preds: dict[str, set] = {}
     pure: dict[str, set] = {}
     rows = []
     tiles: dict[str, list[Image.Image]] = {c: [] for c in CATEGORIES}
     report: list[str] = []
+    title = (
+        f"4 rules + gate>={args.gate:g}  t={args.t}"
+        if args.gate > 0
+        else f"pure classifier + 4 rules  t={args.t}"
+    )
     for s in test.stems:
         ii = test.idx[s]
         gt = set(test.gt[s])
         clf = rect_decode(test, s, p_cell, args.t, mir)
         pure[s] = clf
         floor_y, bay_x = load_grid(args.dsl_dir / s / "facade_dsl.json")
-        pred, dropped_top, dropped_low, added, added_up = apply_rules(
+        rules, dropped_top, dropped_low, added, added_up = apply_rules(
             test, s, clf, p_cell, floor_y
         )
+        gmax = float(p_gate[ii].max())
+        gated_off = args.gate > 0 and gmax < args.gate
+        pred = set() if gated_off else rules
+        rules_preds[s] = rules
         preds[s] = pred
         row = {
             "stem": s,
@@ -210,13 +235,13 @@ def main() -> None:
         }
         rows.append(row)
         cat = category(gt, pred)
-        gmax = float(p_gate[ii].max())
         lines = [
-            f"{s}  [{cat}]  label={len(gt)}  gate={gmax:.2f}",
-            f"pure classifier + 4 rules  t={args.t}",
+            f"{s}  [{cat}]  label={len(gt)}  gate={gmax:.2f}" + ("  GATE OFF" if gated_off else ""),
+            title,
             f"result exact={int(pred == gt)}  IoU={iou(pred, gt):.2f}  cells={len(pred)}",
             f"drop top {_cells(dropped_top)}   drop p<0.05 {_cells(dropped_low)}",
-            f"add OP1 {_cells(added)}   add up {_cells(added_up)}",
+            f"add OP1 {_cells(added)}   add up {_cells(added_up)}"
+            + (f"   blanked {_cells(rules)}" if gated_off else ""),
         ]
         photo = Image.open(find_photo(args.in_dir, s)).convert("RGB")
         img = render_compare(photo, floor_y, bay_x, gt, pred)
@@ -225,7 +250,8 @@ def main() -> None:
         panel.save(args.out_dir / f"{cat}__{s}.jpg", quality=92)
         tiles[cat].append(panel)
         report.append(
-            f"{s}  {cat:<9}  exact={int(pred == gt)}  iou={iou(pred, gt):.2f}  "
+            f"{s}  {cat:<9}  gate={gmax:.2f}  gated={int(gated_off)}  "
+            f"exact={int(pred == gt)}  iou={iou(pred, gt):.2f}  "
             f"clf_exact={int(clf == gt)}  drop_top={len(dropped_top)}  "
             f"drop_low={len(dropped_low)}  added={len(added)} ({_cells(added)})  "
             f"up={len(added_up)} ({_cells(added_up)})"
@@ -236,10 +262,15 @@ def main() -> None:
             board(tiles[cat]).save(args.out_dir / f"_board_{cat}.jpg", quality=85)
     counts = "  ".join(f"{c}={len(tiles[c])}" for c in CATEGORIES)
     text = format_report(summarize(rows), rows)
+    score_lines = [
+        line("pure classifier (no gate)", score_sets(test, pure)),
+        line("pure + 4 rules", score_sets(test, rules_preds)),
+    ]
+    if args.gate > 0:
+        score_lines.append(line(f"4 rules + gate>={args.gate:g}", score_sets(test, preds)))
     header = "\n".join(
         [
-            line("pure classifier (no gate)", score_sets(test, pure)),
-            line("pure + 4 rules", score_sets(test, preds)),
+            *score_lines,
             counts,
             "",
             text,

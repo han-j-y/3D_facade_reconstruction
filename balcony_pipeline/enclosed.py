@@ -270,6 +270,44 @@ def drop_open_under_enclosed(
     return kept, dropped
 
 
+def place_enclosed_cells(
+    cells: list[tuple[int, int]] | set[tuple[int, int]],
+    windows_dsl: dict[str, Any],
+    *,
+    unit_id0: int = 0,
+) -> list[dict[str, Any]]:
+    """One enclosed unit per floor×bay cell, on that cell's grid box."""
+    floor_y, bay_x = _bands_from_windows_dsl(windows_dsl)
+    if not floor_y or not bay_x:
+        return []
+    units: list[dict[str, Any]] = []
+    uid = int(unit_id0)
+    for vi, (floor, bay) in enumerate(sorted((int(f), int(b)) for f, b in cells)):
+        if floor not in floor_y or bay not in bay_x:
+            continue
+        y0, y1 = floor_y[floor]
+        x0, x1 = bay_x[bay]
+        box = [int(x0), int(y0), int(x1), int(y1)]
+        units.append(
+            {
+                "floor": floor,
+                "box_xyxy": box,
+                "source": "enclosed_volume",
+                "bay_start": bay,
+                "bay_end": bay,
+                "bays": [bay],
+                "bays_center": [bay],
+                "bay": bay,
+                "unit_id": uid,
+                "volume_id": vi,
+                "volume_box_xyxy": list(box),
+                "structure_ir": enclosed_ir(),
+            }
+        )
+        uid += 1
+    return units
+
+
 def place_enclosed_volumes(
     volumes: list[dict[str, Any] | list[int]],
     windows_dsl: dict[str, Any],

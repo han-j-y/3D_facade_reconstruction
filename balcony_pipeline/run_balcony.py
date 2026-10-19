@@ -4,10 +4,11 @@ Does not edit run.py / run_pipeline.py. Reuses SAM3 detect, box merge, DINOv2
 cluster, medoid, and majority-vote *pattern* with a balcony fingerprint.
 
 Requires an existing window facade_dsl.json (floor×bay from the window track).
-Enclosed volumes (SAM3+DA3) are sliced onto that grid, snapped to column
-width, and merged as ``balc_enclosed``. Open railings on the same cell are
-dropped; an open balcony on the floor above keeps its slab (aligned to the
-enclosed footprint by the compiler).
+Enclosed cells default to the classifier (four rules, gate >= 0.10) and are
+merged as ``balc_enclosed``. ``--enclosed-method sam3`` restores the previous
+SAM3+DA3 volumes. Open railings on the same cell are dropped; an open balcony
+on the floor above keeps its slab (aligned to the enclosed footprint by the
+compiler).
 
   python balcony_pipeline/run_balcony.py --image PHOTO.png --windows-dsl facade_dsl.json --out-dir runs/balcony_demo
 """
@@ -40,6 +41,7 @@ from enclosed import (  # noqa: E402
     enclosed_ir,
     ensure_da3_depth,
     median_floor_height,
+    place_enclosed_cells,
     place_enclosed_volumes,
 )
 from cluster import cluster_balcony_boxes  # noqa: E402
@@ -160,9 +162,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     ap.add_argument(
+        "--enclosed-method",
+        choices=("cell_clf", "sam3"),
+        default="cell_clf",
+        help=(
+            "enclosed detection. cell_clf (default): four cell rules, then blank "
+            "the photo when the gate max is below 0.10. sam3: previous SAM3+DA3 volumes"
+        ),
+    )
+    ap.add_argument(
         "--no-enclosed",
         action="store_true",
-        help="skip SAM3+DA3 enclosed volumes (open-railing track only)",
+        help="skip enclosed detection (open-railing track only)",
     )
     ap.add_argument(
         "--depth-dir",
@@ -572,57 +583,80 @@ def run(args: argparse.Namespace) -> Path | None:
 
     enclosed_units: list[dict] = []
     if not bool(getattr(args, "no_enclosed", False)):
-        print("=== 1c Enclosed volumes (SAM3+DA3) ===")
-        from balcony_train.try_sam3_da3_volumes import SEED_MIN_FLOOR_FRAC
-
-        floor_h = median_floor_height(windows_dsl)
-        floor_y, bay_x = _bands_from_windows_dsl(windows_dsl)
-        if floor_h is not None:
-            print(
-                f"  floor_h={floor_h:.0f}px  "
-                f"stage1 drop height <= {SEED_MIN_FLOOR_FRAC * floor_h:.0f}px"
+        method = getattr(args, "enclosed_method", "cell_clf")
+        depth_dir = Path(getattr(args, "depth_dir", ROOT / "runs" / "da3_enclosure"))
+        cache_path = Path(
+            getattr(
+                args,
+                "enclosed_sam3_cache",
+                ROOT / "runs" / "sam3_da3_volumes" / "sam3_seeds.json",
             )
-        vol_boxes = detect_enclosed_volume_boxes(
-            facade,
-            image_path,
-            device=device,
-            depth_dir=Path(getattr(args, "depth_dir", ROOT / "runs" / "da3_enclosure")),
-            cache_path=Path(
-                getattr(
-                    args,
-                    "enclosed_sam3_cache",
-                    ROOT / "runs" / "sam3_da3_volumes" / "sam3_seeds.json",
-                )
-            ),
-            floor_h=floor_h,
-            floor_y=floor_y,
-            bay_x=bay_x,
         )
+        if method == "sam3":
+            print("=== 1c Enclosed volumes (SAM3+DA3) ===")
+            from balcony_train.try_sam3_da3_volumes import SEED_MIN_FLOOR_FRAC
+
+            floor_h = median_floor_height(windows_dsl)
+            floor_y, bay_x = _bands_from_windows_dsl(windows_dsl)
+            if floor_h is not None:
+                print(
+                    f"  floor_h={floor_h:.0f}px  "
+                    f"stage1 drop height <= {SEED_MIN_FLOOR_FRAC * floor_h:.0f}px"
+                )
+            vol_boxes = detect_enclosed_volume_boxes(
+                facade,
+                image_path,
+                device=device,
+                depth_dir=depth_dir,
+                cache_path=cache_path,
+                floor_h=floor_h,
+                floor_y=floor_y,
+                bay_x=bay_x,
+            )
+            draw_n = len(vol_boxes)
+            draw_title = f"1c. Enclosed volumes  n={draw_n}"
+            enclosed_units = place_enclosed_volumes(
+                vol_boxes, windows_dsl, unit_id0=len(snapped)
+            )
+            drawn = [r["box_xyxy"] for r in vol_boxes]
+        else:
+            print("=== 1c Enclosed cells (4 rules, gate >= 0.10) ===")
+            from balcony_train.enclosed_detect import detect_enclosed_cells
+
+            cells = detect_enclosed_cells(
+                facade,
+                image_path,
+                windows_dsl,
+                device=device,
+                depth_dir=depth_dir,
+                cache_path=cache_path,
+            )
+            enclosed_units = place_enclosed_cells(
+                cells, windows_dsl, unit_id0=len(snapped)
+            )
+            drawn = [u["box_xyxy"] for u in enclosed_units]
+            draw_n = len(enclosed_units)
+            draw_title = f"1c. Enclosed cells  n={draw_n}"
         save(
             draw_boxes(
                 facade,
-                [r["box_xyxy"] for r in vol_boxes],
-                title=f"1c. Enclosed volumes  n={len(vol_boxes)}",
+                drawn,
+                title=draw_title,
                 color=(220, 160, 40),
             ),
             out_dir / f"s1c_enclosed_volumes_{stem}.png",
             force=True,
-        )
-        enclosed_units = place_enclosed_volumes(
-            vol_boxes, windows_dsl, unit_id0=len(snapped)
         )
         if enclosed_units:
             save(
                 draw_snap(
                     facade,
                     enclosed_units,
-                    f"2b. Enclosed snap  n={len(enclosed_units)}  (column width)",
+                    f"2b. Enclosed snap  n={len(enclosed_units)}",
                 ),
                 out_dir / f"s2b_enclosed_snap_{stem}.png",
             )
-            print(
-                f"  {len(vol_boxes)} volume(s) -> {len(enclosed_units)} floor placements"
-            )
+            print(f"  {draw_n} -> {len(enclosed_units)} floor placements")
         if snapped and enclosed_units:
             snapped, dropped_open = drop_open_under_enclosed(snapped, enclosed_units)
             for u in dropped_open:

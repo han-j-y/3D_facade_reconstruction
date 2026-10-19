@@ -18,6 +18,7 @@ from enclosed import (  # noqa: E402
     ensure_da3_depth,
     median_floor_height,
     overlapping_floors,
+    place_enclosed_cells,
     place_enclosed_volumes,
     slice_volume,
     snap_columns,
@@ -148,6 +149,14 @@ class EnclosedPlaceTests(unittest.TestCase):
         )
         self.assertEqual([u["unit_id"] for u in dropped], [0])
         self.assertEqual([u["unit_id"] for u in kept], [1, 2, 3])
+
+    def test_place_cells_keeps_each_cell(self) -> None:
+        units = place_enclosed_cells({(1, 0), (1, 2), (2, 0)}, _dsl())
+        self.assertEqual([(u["floor"], u["bay"]) for u in units], [(1, 0), (1, 2), (2, 0)])
+        self.assertEqual(units[0]["box_xyxy"], [0, 100, 100, 200])
+        self.assertEqual(units[0]["source"], "enclosed_volume")
+        self.assertEqual(units[0]["structure_ir"]["enclosure"], "enclosed")
+        self.assertEqual(place_enclosed_cells([], _dsl()), [])
 
     def test_place_attaches_enclosed_ir(self) -> None:
         units = place_enclosed_volumes([[110, 5, 190, 280]], _dsl())

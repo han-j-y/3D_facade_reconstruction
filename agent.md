@@ -10,7 +10,7 @@ Python: `C:\Users\hiroo\anaconda3\envs\glodon\python.exe` only.
 | Set | Photos | With enclosure | Labels | Photos dir |
 |---|---|---|---|---|
 | Train (cmp_b) | 375 | 29 | `runs/enclosed_grid/labels_train.jsonl` | `data/base_jpg/` |
-| Eval (cmp_x) | 61 | 25 | `runs/enclosed_grid/labels_eval.jsonl` | `runs/balcony_clf/crops_ext_eval/Before Crop/` |
+| Eval (cmp_x) | 61 | 26 | `runs/enclosed_grid/labels_eval.jsonl` | `runs/balcony_clf/crops_ext_eval/Before Crop/` |
 
 - Train photos are the jpgs of `data/base` (the same-stem `.png` files there are CMP
   label maps, never run them). Window grids: `runs/batch/<stem>/facade_dsl.json`
@@ -26,7 +26,9 @@ Python: `C:\Users\hiroo\anaconda3\envs\glodon\python.exe` only.
 
 - exact (bay_floor): predicted cell set equals the label set. Strict; one wrong cell fails.
 - detect: an enclosure photo hits at least one labeled cell; a no-enclosure photo predicts nothing.
-- Reported per group: enclosure (25), none (36), total (61); plus cell tp / fp / fn.
+- Reported per group: enclosure (26), none (35), total (61); plus cell tp / fp / fn.
+  `0185` was a no-enclosure photo and is now `f0b1`, `f1b1`, `f2b1`, `f3b1`.
+  Rows in the table below that still say 25 and 36 were scored before that label edit.
 
 ## Methods and results (eval set, after the photo swap)
 
@@ -36,11 +38,12 @@ Python: `C:\Users\hiroo\anaconda3\envs\glodon\python.exe` only.
 | OP1 + Stage 6 symmetry repair (gate 0.75) | 36/61 | 7/25 / 15 | 29/36 |
 | OP2 depth-first rule (`depth_cells.py`) | 22/61 | 1/25 / 17 | 21/36 |
 | OP3 cell classifier (gate 0.4) | 40/61 | 6/25 / 9 | 34/36 |
-| OP3 classifier only, no gate | 35/61 | 10/25 / 23 | 25/36 |
-| **OP3 gate ≥ 0.2 → OP1 cells (current best)** | **41/61** | **7/25 / 13** | **34/36** |
+| OP3 classifier only, no gate | 35/61 | 10/26 / 24 | 25/35 |
+| OP3 gate ≥ 0.2 → OP1 cells | 41/61 | 7/25 / 13 | 34/36 |
 | OP3 rectangle + touching OP1 cells (gate ≥ 0.2) | 39/61 | 8/25 / 16 | 31/36 |
 | Pure classifier + touching OP1 (no gate) | 34/61 | 9/25 / 23 | 25/36 |
-| Pure classifier + three cell rules | 39/61 | 14/25 / 23 | 25/36 |
+| Pure classifier + four cell rules | 41/61 | 16/26 / 24 | 25/35 |
+| **Four cell rules + gate ≥ 0.10** | **47/61** | **16/26 / 21** | **31/35** |
 
 ### OP1: SAM3 → depth
 
@@ -69,12 +72,14 @@ Fails because depth also picks up building massing (risalits), walls, eaves and 
   floor range shared by all chosen bays; mirror bays are paired when window symmetry ≥ 0.75.
 - Parameters (a=1.0, t=0.3, gate=0.4) were chosen by grouped 5-fold CV on cmp_b only.
 
-### Current best: gate → OP1
+### Tried: gate → OP1
 
 The OP3 gate removes photos without an enclosure, and OP1 places the cells. The
 threshold 0.2 was chosen on cmp_b out-of-fold scores (3 seeds); every value in
 0.1–0.3 gives 41/61 on eval. It works because the gate's misses are mostly photos
 OP1 misses anyway, and OP1's false positives on no-enclosure photos have gate < 0.1.
+Superseded by four cell rules + gate ≥ 0.10 (47/61). `--enclosed-method sam3` is
+this older SAM3+DA3 volume path, not the 0.2 gate.
 
 ### Tried: OP3 rectangle, then add touching OP1 cells
 
@@ -86,7 +91,7 @@ OP1 misses anyway, and OP1's false positives on no-enclosure photos have gate < 
 
 Eval once: total exact 39/61, enclosure exact 8/25 (detect 16), none 31/36, cells tp/fp/fn 85/27/48. Groups: exact 8, wrong 8, missed 9, none_ok 31, false_pos 5. Images: `runs/cell_clf/compare_touch/` (`summary.txt`, `_board_*.jpg`).
 
-Adding fixed `0020` (four side cells) and `0179` (one upper floor). The `0006` gallery stayed out because it only touches the oriels on a diagonal. `0143` was exact from the classifier alone and became wrong after three OP1 cells were added. Below the current best (41/61).
+Adding fixed `0020` (four side cells) and `0179` (one upper floor). The `0006` gallery stayed out because it only touches the oriels on a diagonal. `0143` was exact from the classifier alone and became wrong after three OP1 cells were added. Below gate → OP1 (41/61).
 
 A raw union was rejected: it would copy OP1 cells that are a different volume. Dropping a top floor whose box covers under 85% of the storey height was discussed and not implemented. OP1 already drops a spilling top storey at 90% cover (`MIN_UPPER_FLOOR_COVER` in `balcony_pipeline/enclosed.py`); Stage-1 seed height uses 85% of one floor (`SEED_MIN_FLOOR_FRAC`).
 
@@ -94,28 +99,52 @@ A raw union was rejected: it would copy OP1 cells that are a different volume. D
 
 `balcony_train/op3_touch_op1.py --gate 0`. Same three conditions, but every photo keeps the classifier rectangle (t=0.3); the gate is not applied. Same trainer as `draw_clf_compare.py`. Images: `runs/cell_clf/compare_clf_op1/`.
 
-Images for the classifier alone are `runs/cell_clf/compare_clf/` (`summary.txt`, `_board_*.jpg`): 35/61, enclosure exact 10/25 (detect 23), none 25/36, cells 93/35/40. Groups: exact 10, wrong 15, missed 0, none_ok 25, false_pos 11. `0119` is exact once bay 0 is gone, and `0123`'s label is now two cells (`f1b4`, `f2b4`) so the rectangle matches. Adding the touching OP1 cells then scores 34/61 (enclosure exact 9/25, detect 23, none 25/36, cells tp/fp/fn 100/51/33). Groups: exact 9, wrong 16, missed 0, none_ok 25, false_pos 11.
+Images for the classifier alone are `runs/cell_clf/compare_clf/` (`summary.txt`, `_board_*.jpg`): 35/61, enclosure exact 10/25 (detect 23), none 25/36, cells 93/35/40, scored before `0185` was labeled as an enclosure. Groups: exact 10, wrong 15, missed 0, none_ok 25, false_pos 11. `0119` is exact once bay 0 is gone, and `0123`'s label is now two cells (`f1b4`, `f2b4`) so the rectangle matches. On the current labels the same rectangle, printed at the top of `runs/cell_clf/compare_clf_rules/summary.txt`, is 35/61, enclosure exact 10/26 (detect 24), none 25/35, cells 97/31/40. Adding the touching OP1 cells then scores 34/61 (enclosure exact 9/25, detect 23, none 25/36, cells tp/fp/fn 100/51/33) on the earlier labels. Groups: exact 9, wrong 16, missed 0, none_ok 25, false_pos 11.
 
 Gains: `0020` (four side cells) and `0179` (one upper floor) become exact. `0006` stays out; the gallery only touches the oriels on a diagonal. Losses: `0119`, `0123`, and `0143` were exact from the classifier and become wrong after the added cells. No-enclosure photos are unchanged (nothing was added). Below both the pure classifier on this data (35/61) and gate → OP1 (41/61).
 
-### Tried: pure classifier plus three cell rules
+### Tried: pure classifier plus four cell rules
 
-`balcony_train/clf_three_rules.py`. Same rectangle (t=0.3, no gate), then:
+`balcony_train/clf_three_rules.py`. Same rectangle (t=0.3, no gate). Applied in this order:
 
-1. Add an OP1 cell when L ≥ 1.5%, upper ≥ 0.55, SAM3 enclosure cover ≥ 0.40, and the classifier probability is at least 0.10.
-2. Drop the top floor of the rectangle when that band is under 85% of the photo's median floor height.
-3. Unless window symmetry ≥ 0.75, drop a cell on that top floor whose probability is under 0.05. Other cells on the floor stay.
+1. Drop the top floor of the rectangle when that band is under 85% of the photo's median floor height.
+2. Unless window symmetry ≥ 0.75, drop a cell on that top floor whose probability is under 0.05. Other cells on the floor stay.
+3. Add an OP1 cell when L ≥ 1.5%, upper ≥ 0.55, SAM3 enclosure cover ≥ 0.40, and the classifier probability is at least 0.10.
+4. Add the cell one floor above a kept cell in the same bay when its depth L is within 0.02 of the cell directly below, upper ≥ 0.75, and that floor band is at least 85% of the median floor height. Classifier probability, OP1 membership, and SAM3 cover are not required. The new cell does not grow another floor.
 
-Eval once, after `0125` gained `f3b0` in the label: total exact 39/61, enclosure exact 14/25 (detect 23), none 25/36, cells tp/fp/fn 97/33/36. Groups: exact 14, wrong 11, missed 0, none_ok 25, false_pos 11. Images: `runs/cell_clf/compare_clf_rules/`.
+Eval once, after `0125` gained `f3b0`, `0020` lost `f1b4`, and `0185` became an enclosure: total exact 41/61, enclosure exact 16/26 (detect 24), none 25/35, cells tp/fp/fn 104/33/33. Groups: exact 16, wrong 10, missed 0, none_ok 25, false_pos 10. Images: `runs/cell_clf/compare_clf_rules/`.
 
-The previous 10 exact enclosure photos stay exact. `0005` becomes exact by dropping its short top floor (2 cells). `0179` becomes exact by adding `f0b0`. `0020` becomes exact by adding `f0b0`, `f0b4`, and `f1b0`. `0006` gains nothing. The probability floor keeps out `0125` `f2b5` (p=0.04). No none-photo that was correct became a false positive.
+Exact enclosure photos: `0005`, `0020`, `0032`, `0090`, `0097`, `0118`, `0119`, `0123`, `0125`, `0137`, `0143`, `0144`, `0149`, `0179`, `0185`, `0212`. The earlier 10 exact photos stay exact. `0005` drops its short top floor. `0020` adds `f0b0`, `f0b4`, `f1b0`. `0179` adds `f0b0`. `0090` adds `f0b6` (stored probability 0.0986; L 0.074 vs 0.065 below). `0185` adds `f0b1` (probability 0.04; L 0.050 vs 0.042 below). `0125` `f0b0` stays out because its depth is 0.041 away from the floor below. `0006` is still not exact: the prediction is `f4b0`, `f4b4` and the gallery `f5b1`, `f5b2`, `f5b3` is missing.
+
+Rule 4 also adds `0074` `f3b5` and `0129` `f2b4` (both in the label; neither photo becomes exact) and three cells that are not in the label: `0121` `f0b2`, `0073` `f1b0`, `0134` `f1b0`. No none-photo that was correct became a false positive.
+
+### Tried: four cell rules, then gate ≥ 0.10
+
+`balcony_train/clf_three_rules.py --gate 0.10`. Same four rules. A photo whose gate-model max is below 0.10 predicts nothing; every other photo keeps the four-rule cells. The threshold leaves the four no-enclosure photos at gate 0.23 and above as false positives, and it is below the lowest exact enclosure (`0119` at 0.14, then `0032` at 0.15). Images: `runs/cell_clf/compare_clf_rules_gate/`.
+
+Eval once:
+
+```text
+enclosure n=26  detect=21/26  detect_acc=0.808  bay_floor=16/26  bay_floor_acc=0.615
+none n=35  detect=31/35  detect_acc=0.886  bay_floor=31/35  bay_floor_acc=0.886
+total n=61  detect=52/61  detect_acc=0.852  bay_floor=47/61  bay_floor_acc=0.770
+cells tp=97 fp=11 fn=40  recall=0.708  precision=0.898
+```
+
+Groups: exact 16, wrong 6, missed 4, none_ok 31, false_pos 4. The 16 exact enclosure photos are unchanged. Six no-enclosure photos become correct: `0009`, `0046`, `0077`, `0134`, `0186`, `0191`. The four false positives left on purpose (gate 0.23 and above) are `0073`, `0120`, `0173`, `0180`. Four enclosure photos that were wrong become missed: `0028` (already IoU 0), `0074`, `0081`, `0121`. Detect falls by the three that had overlapped the label.
+
+### Pipeline default
+
+`balcony_train/enclosed_detect.py`, called from `balcony_pipeline/run_balcony.py` and from `run_pipeline.py --with-balconies`. Default `--enclosed-method cell_clf`. `--enclosed-method sam3` restores the previous SAM3+DA3 volumes (`detect_enclosed_volume_boxes`).
+
+cell_clf builds the same per-cell features as training (depth, SAM3, OP1 stage cells, DINOv2), decodes with the four rules, then blanks the photo when the gate max is below 0.10. Each kept cell becomes one `balc_enclosed` unit via `place_enclosed_cells` in `balcony_pipeline/enclosed.py`. The classifier is the `cell_clf_search` base model, fit on cmp_b and cached at `runs/cell_clf/model_rules_gate.joblib`. Decoding the eval feature matrix with that cache matches `runs/cell_clf/compare_clf_rules_gate/preds.json` on all 61 photos.
 
 ## What was learned
 
 - Exact match is hard for every method: errors are mostly one floor or one bay off.
   SAM3 rarely boxes a whole oriel. Depth cannot separate oriels from massing. The
   grid boundaries and the labels are ambiguous. There are few enclosure examples
-  (29 train, 25 eval), and the class balance differs (8% train vs 41% eval).
+  (29 train, 26 eval), and the class balance differs (8% train vs 43% eval).
 - On cmp_b, train CV scores (balanced 0.52–0.55) could not rank variants. Class
   weighting, flip augmentation and IoU-based selection did not beat the simple
   classifier. The learning curve is still rising (cell IoU 0.588 → 0.631 → 0.651
@@ -132,7 +161,7 @@ The previous 10 exact enclosure photos stay exact. `0005` becomes exact by dropp
 1. Detect enclosures that are missed entirely. OP1 misses `cmp_x0028`, `0032`, `0074`,
    `0078`, `0097`, `0116`, `0121`, `0129`, `0137`, `0147`.
 2. Fix wrong rectangles.
-3. Suppress detections on no-enclosure photos (largely solved by the gate).
+3. Suppress detections on no-enclosure photos. Gate ≥ 0.10 leaves four false positives on purpose: `0073`, `0120`, `0173`, `0180`.
 
 Tune rules on cmp_b, then check the eval set once.
 
@@ -175,17 +204,18 @@ C looks like a labeling-policy question (turret tops, balcony bases) more than a
 | `cell_clf_train.py` | OP3: train on cmp_b, eval once; model `runs/cell_clf/model_base.joblib` |
 | `cell_clf_search.py` | Variant search (weighting, flip, OP1 fallback; `--metric exact/iou`), nested CV, learning curve |
 | `cell_dino_flip.py` | Flipped DINOv2 embeddings for flip augmentation |
-| `gate_op1.py` | Current best: gate threshold chosen on cmp_b, eval once |
+| `gate_op1.py` | Gate threshold chosen on cmp_b, then OP1 cells; eval once |
 | `op3_touch_op1.py` | OP3 rectangle plus touching OP1 cells. Default gate ≥ 0.2 → `runs/cell_clf/compare_touch/`. `--gate 0` is the pure classifier → `runs/cell_clf/compare_clf_op1/` |
+| `clf_three_rules.py` | Pure classifier plus the four cell rules → `runs/cell_clf/compare_clf_rules/`. `--gate 0.10` blanks photos under that gate → `runs/cell_clf/compare_clf_rules_gate/` |
+| `enclosed_detect.py` | Pipeline detector: same four rules and gate ≥ 0.10. Model cache `runs/cell_clf/model_rules_gate.joblib` |
 | `draw_clf_compare.py` | Pure-classifier compare images with probabilities, grouped boards → `runs/cell_clf/compare_clf/` |
 | `draw_cell_clf_compare.py` | Grouped compare boards from a results json |
 | `draw_depth_cells.py`, `draw_sam3_raw.py` | Depth / raw SAM3 panels (`runs/cell_clf/wrong_board/{depth,sam3_raw}/` for the 17 wrong photos) |
 
 ## Open items
 
-- Touching-OP1 add is below gate → OP1. With the gate it is 39/61; on the pure classifier (no gate) it is 34/61 and breaks classifier-exact photos (`0119`, `0123`, `0143`). If retried, do not add cells on a photo the classifier already matched, and decide the top-floor cut (85% vs the existing 90%) on cmp_b.
-- Test rules 1–3 (then 4–5) on cmp_b, then evaluate gate → OP1 / classifier once.
+- Pipeline default is four cell rules + gate ≥ 0.10: 47/61 total, enclosure exact 16/26, detect 21/26, none 31/35. False positives left: `0073`, `0120`, `0173`, `0180`. The gate blanks `0074`, `0081`, and `0121`. `0006` is still short the gallery floor. Rule 4's extra cells on `0121`, `0073`, and `0134` are not in the labels. Switch back with `--enclosed-method sam3`.
+- Touching-OP1 add is below both gate → OP1 (41/61) and the pipeline default (47/61). With the gate it is 39/61; on the pure classifier (no gate) it is 34/61 and breaks classifier-exact photos (`0119`, `0123`, `0143`). If retried, do not add cells on a photo the classifier already matched, and decide the top-floor cut (85% vs the existing 90%) on cmp_b.
+- Rules 1–3 in the "not yet tested" list (per-bay floor range, horizontal extend, border-bay drop) are still untried. Test them on cmp_b, then check eval once.
 - Rerun `cell_clf_search.py` on the swapped eval set if the search table is needed again.
-- Integrate the chosen method into the pipeline (for example `--method cell_clf`):
-  features → saved model → gate → OP1 / decoding.
 - Add labels for photos with enclosures; avoid buildings that appear in the eval set.
