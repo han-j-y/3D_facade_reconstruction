@@ -242,17 +242,50 @@ def detect_enclosed_volume_boxes(
     floor_h: float | None = None,
     floor_y: dict | None = None,
     bay_x: dict | None = None,
+    windows: list | None = None,
+    symmetry: bool = False,
 ) -> list[dict]:
     """Run the SAM3+DA3 volume detector. Infers DA3 depth if the npy is missing."""
+    stages = enclosed_volume_stages(
+        image,
+        image_path,
+        device=device,
+        depth_dir=depth_dir,
+        cache_path=cache_path,
+        sam3_threshold=sam3_threshold,
+        floor_h=floor_h,
+        floor_y=floor_y,
+        bay_x=bay_x,
+        windows=windows,
+        symmetry=symmetry,
+    )
+    return stages[-1][2] if stages else []
+
+
+def enclosed_volume_stages(
+    image: Image.Image,
+    image_path: Path,
+    *,
+    device: torch.device,
+    depth_dir: Path,
+    cache_path: Path,
+    sam3_threshold: float = 0.15,
+    floor_h: float | None = None,
+    floor_y: dict | None = None,
+    bay_x: dict | None = None,
+    windows: list | None = None,
+    symmetry: bool = False,
+) -> list[tuple[str, str, list[dict]]]:
+    """Every detector stage as (id, title, boxes). Empty when nothing to run."""
     stem = image_path.stem
     depth_path = ensure_da3_depth(image_path, depth_dir, device=str(device))
     if depth_path is None:
         return []
     from balcony_train.try_da3_enclosure import resize_depth
     from balcony_train.try_sam3_da3_volumes import (
-        detect_volumes,
         run_sam3,
         split_seed_records,
+        volume_stages,
     )
 
     depth = resize_depth(np.load(depth_path), image.width, image.height)
@@ -271,8 +304,15 @@ def detect_enclosed_volume_boxes(
         return []
     if excluded:
         print(f"  fire-escape exclude boxes={len(excluded)}")
-    return detect_volumes(
-        image, depth, raw, floor_h=floor_h, floor_y=floor_y, bay_x=bay_x
+    return volume_stages(
+        image,
+        depth,
+        raw,
+        floor_h=floor_h,
+        floor_y=floor_y,
+        bay_x=bay_x,
+        windows=windows,
+        symmetry=symmetry,
     )
 
 

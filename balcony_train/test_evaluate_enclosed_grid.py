@@ -61,6 +61,7 @@ class EnclosedGridEvalTests(unittest.TestCase):
         text = format_report(summary, rows)
         self.assertIn("enclosure n=2  detect=2/2  detect_acc=1.000  bay_floor=1/2  bay_floor_acc=0.500", text)
         self.assertIn("none n=1  detect=1/1  detect_acc=1.000  bay_floor=1/1  bay_floor_acc=1.000", text)
+        self.assertIn("total n=3  detect=3/3  detect_acc=1.000  bay_floor=2/3  bay_floor_acc=0.667", text)
         self.assertIn("cmp_1", text)
         self.assertNotIn("cmp_0", text)
 

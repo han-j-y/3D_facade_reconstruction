@@ -16,6 +16,10 @@ Example::
 
     C:\\Users\\hiroo\\anaconda3\\envs\\glodon\\python.exe balcony_train/evaluate_enclosed_grid.py --device cuda
     C:\\Users\\hiroo\\anaconda3\\envs\\glodon\\python.exe balcony_train/evaluate_enclosed_grid.py --device cuda --stems cmp_x0005 cmp_x0134
+    C:\\Users\\hiroo\\anaconda3\\envs\\glodon\\python.exe balcony_train/evaluate_enclosed_grid.py --device cuda --symmetry
+
+``--symmetry`` scores Stage 5 and Stage 6 from one detection pass and writes
+Stage 6 images to ``--compare-dir-sym``.
 """
 
 from __future__ import annotations
@@ -48,6 +52,7 @@ from balcony_train.enclosed_grid_store import (  # noqa: E402
 DEFAULT_DEPTH_DIR = ROOT / "runs" / "da3_enclosure"
 DEFAULT_SAM3_CACHE = ROOT / "runs" / "sam3_da3_volumes" / "sam3_seeds.json"
 DEFAULT_COMPARE_DIR = ROOT / "runs" / "enclosed_grid" / "compare"
+DEFAULT_COMPARE_DIR_SYM = ROOT / "runs" / "enclosed_grid" / "compare_sym"
 
 
 def cells_from_boxes(
@@ -104,6 +109,7 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "n": len(rows),
         "enclosure": _group_counts(with_enc),
         "none": _group_counts(none),
+        "total": _group_counts(rows),
         "tp": sum(int(r["tp"]) for r in rows),
         "fp": sum(int(r["fp"]) for r in rows),
         "fn": sum(int(r["fn"]) for r in rows),
@@ -127,6 +133,7 @@ def format_report(summary: dict[str, Any], rows: list[dict[str, Any]]) -> str:
     lines = [
         _rate_line("enclosure", summary["enclosure"]),
         _rate_line("none", summary["none"]),
+        _rate_line("total", summary["total"]),
         (
             f"cells tp={tp} fp={fp} fn={fn}  "
             f"recall={tp / max(tp + fn, 1):.3f}  "
@@ -228,14 +235,17 @@ def predict_cells(
     device: str,
     depth_dir: Path,
     sam3_cache: Path,
-) -> set[Cell]:
+    windows: list[list[int]] | None = None,
+    symmetry: bool = False,
+) -> dict[str, Any]:
+    """Cells from Stage 5 (``base``) and, with ``symmetry``, Stage 6 (``sym``)."""
     import torch
     from PIL import Image
 
-    from balcony_pipeline.run_balcony import detect_enclosed_volume_boxes
+    from balcony_pipeline.run_balcony import enclosed_volume_stages
 
     image = Image.open(photo).convert("RGB")
-    boxes = detect_enclosed_volume_boxes(
+    stages = enclosed_volume_stages(
         image,
         photo,
         device=torch.device(device),
@@ -244,8 +254,17 @@ def predict_cells(
         floor_h=_floor_h(floor_y),
         floor_y=floor_y,
         bay_x=bay_x,
+        windows=windows,
+        symmetry=symmetry,
     )
-    return cells_from_boxes(boxes, floor_y, bay_x)
+    by_id = {sid: (title, boxes) for sid, title, boxes in stages}
+    base = by_id.get("5_clip", ("", []))[1]
+    out: dict[str, Any] = {"base": cells_from_boxes(base, floor_y, bay_x)}
+    if symmetry:
+        title, boxes = by_id.get("6_sym", ("6 sym off (no boxes)", base))
+        out["sym"] = cells_from_boxes(boxes, floor_y, bay_x)
+        out["sym_title"] = title
+    return out
 
 
 def select_labels(
@@ -281,7 +300,14 @@ def evaluate_labels(
     depth_dir: Path,
     sam3_cache: Path,
     compare_dir: Path | None = None,
+    symmetry: bool = False,
+    compare_dir_sym: Path | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
+    """Score each photo. With ``symmetry`` each row also holds ``row['sym']``."""
+    import json
+
+    from balcony_train.enclosed_symmetry import window_boxes_from_dsl
+
     rows: list[dict[str, Any]] = []
     skipped: list[str] = []
     for stem in sorted(labels):
@@ -294,6 +320,9 @@ def evaluate_labels(
         if not floor_y or not bay_x:
             skipped.append(stem)
             continue
+        windows = None
+        if symmetry:
+            windows = window_boxes_from_dsl(json.loads(dsl.read_text(encoding="utf-8")))
         pred = predict_cells(
             photo,
             floor_y=floor_y,
@@ -301,8 +330,10 @@ def evaluate_labels(
             device=device,
             depth_dir=depth_dir,
             sam3_cache=sam3_cache,
+            windows=windows,
+            symmetry=symmetry,
         )
-        row = score_photo(labels[stem], pred)
+        row = score_photo(labels[stem], pred["base"])
         row["stem"] = stem
         rows.append(row)
         if compare_dir is not None:
@@ -312,11 +343,60 @@ def evaluate_labels(
                 floor_y,
                 bay_x,
                 row["gt"],
-                pred,
+                pred["base"],
             )
             row["compare"] = str(out)
-        print(f"{stem}  detect={int(row['detected'])}  bay_floor={int(row['exact'])}", flush=True)
+        line = f"{stem}  detect={int(row['detected'])}  bay_floor={int(row['exact'])}"
+        if symmetry:
+            sym = score_photo(labels[stem], pred["sym"])
+            sym["stem"] = stem
+            sym["title"] = pred["sym_title"]
+            row["sym"] = sym
+            if compare_dir_sym is not None:
+                sym["compare"] = str(
+                    save_compare(
+                        Path(compare_dir_sym) / f"{stem}.jpg",
+                        photo,
+                        floor_y,
+                        bay_x,
+                        sym["gt"],
+                        pred["sym"],
+                    )
+                )
+            line += (
+                f"  | sym detect={int(sym['detected'])}  bay_floor={int(sym['exact'])}"
+                f"  [{sym['title']}]"
+            )
+        print(line, flush=True)
     return rows, skipped
+
+
+def format_symmetry_diff(rows: list[dict[str, Any]]) -> str:
+    """Before/after rates and the photos whose cells changed."""
+    sym_rows = [r["sym"] for r in rows if "sym" in r]
+    before, after = summarize(rows), summarize(sym_rows)
+    lines = ["=== symmetry: before (stage 5) -> after (stage 6) ==="]
+    for group in ("enclosure", "none", "total"):
+        b, a = before[group], after[group]
+        lines.append(
+            f"{group} n={b['n']}  detect {b['detect']} -> {a['detect']}  "
+            f"bay_floor {b['bay_floor']} -> {a['bay_floor']}"
+        )
+    for key in ("tp", "fp", "fn"):
+        lines.append(f"cells {key} {before[key]} -> {after[key]}")
+    changed = [r for r in rows if "sym" in r and r["pred"] != r["sym"]["pred"]]
+    if changed:
+        lines.append("changed stem  exact before->after  +cells  -cells")
+        for r in changed:
+            b_cells, a_cells = set(r["pred"]), set(r["sym"]["pred"])
+            lines.append(
+                f"  {r['stem']}  {int(r['exact'])}->{int(r['sym']['exact'])}  "
+                f"+{_fmt_cells(sorted(a_cells - b_cells))}  "
+                f"-{_fmt_cells(sorted(b_cells - a_cells))}  [{r['sym']['title']}]"
+            )
+    else:
+        lines.append("no photo changed")
+    return "\n".join(lines)
 
 
 def parse_args() -> argparse.Namespace:
@@ -342,6 +422,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Only these labeled photos. Commas or spaces. Default: every saved label.",
     )
+    ap.add_argument(
+        "--symmetry",
+        action="store_true",
+        help="Also score Stage 6 (mirror about the window-grid axis) and print before -> after.",
+    )
+    ap.add_argument(
+        "--compare-dir-sym",
+        type=Path,
+        default=DEFAULT_COMPARE_DIR_SYM,
+        help="Compare images for Stage 6 when --symmetry. Empty path skips images.",
+    )
     return ap.parse_args()
 
 
@@ -361,6 +452,9 @@ def main() -> None:
     compare_dir = args.compare_dir
     if compare_dir is not None and str(compare_dir) == "":
         compare_dir = None
+    compare_dir_sym = args.compare_dir_sym
+    if not args.symmetry or (compare_dir_sym is not None and str(compare_dir_sym) == ""):
+        compare_dir_sym = None
     rows, skipped = evaluate_labels(
         labels,
         photo_dir=args.in_dir,
@@ -369,6 +463,8 @@ def main() -> None:
         depth_dir=args.depth_dir,
         sam3_cache=args.sam3_cache,
         compare_dir=compare_dir,
+        symmetry=args.symmetry,
+        compare_dir_sym=compare_dir_sym,
     )
     if skipped:
         print("skipped (no photo or window grid): " + ", ".join(skipped))
@@ -376,8 +472,15 @@ def main() -> None:
         print("nothing to score")
         return
     print(format_report(summarize(rows), rows))
+    if args.symmetry:
+        sym_rows = [r["sym"] for r in rows]
+        print("=== with symmetry (stage 6) ===")
+        print(format_report(summarize(sym_rows), sym_rows))
+        print(format_symmetry_diff(rows))
     if compare_dir is not None:
         print(f"compare -> {Path(compare_dir).resolve()}")
+    if compare_dir_sym is not None:
+        print(f"compare sym -> {Path(compare_dir_sym).resolve()}")
 
 
 if __name__ == "__main__":

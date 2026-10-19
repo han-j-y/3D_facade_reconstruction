@@ -990,6 +990,16 @@ def resolve_window_bands(
     return floor_y, bay_x
 
 
+def resolve_window_boxes(stem: str, dsl_dir: Path | None) -> list[list[int]]:
+    """Window instance boxes from the window DSL (empty when missing)."""
+    dsl = _load_facade_dsl(stem, dsl_dir)
+    if dsl is None:
+        return []
+    from balcony_train.enclosed_symmetry import window_boxes_from_dsl
+
+    return window_boxes_from_dsl(dsl)
+
+
 def on_window_floor_bay(
     box: list[int] | tuple[int, int, int, int],
     floor_y: dict[int, tuple[int, int]] | None,
@@ -1175,8 +1185,14 @@ def volume_stages(
     floor_h: float | None = None,
     floor_y: dict[int, tuple[int, int]] | None = None,
     bay_x: dict[int, tuple[int, int]] | None = None,
+    windows: list[list[int]] | None = None,
+    symmetry: bool = False,
 ) -> list[tuple[str, str, list[dict[str, Any]]]]:
-    """Return the five pipeline snapshots: (id, title, boxes)."""
+    """Return the pipeline snapshots: (id, title, boxes).
+
+    Five stages by default. ``symmetry`` appends Stage 6, the left-right
+    repair in ``enclosed_symmetry`` (axis from the window grid).
+    """
     iw, ih = image.size
     min_height_px = None
     stage1_title = STAGE_LABELS[0][1]
@@ -1288,13 +1304,34 @@ def volume_stages(
             loose.append(rec)
     final = merge_boxes(on_grid, 0.55) + merge_boxes(nms_columns(loose, iw=iw, ih=ih), 0.55)
 
-    return [
+    stages = [
         (STAGE_LABELS[0][0], stage1_title, merge_boxes(sam3_seeds, 0.70)),
         (STAGE_LABELS[1][0], STAGE_LABELS[1][1], stage2),
         (STAGE_LABELS[2][0], STAGE_LABELS[2][1], columns),
         (STAGE_LABELS[3][0], STAGE_LABELS[3][1], grown),
         (STAGE_LABELS[4][0], stage5_title, final),
     ]
+    if symmetry:
+        from balcony_train.enclosed_symmetry import (
+            grid_axis_x,
+            stage_title,
+            symmetry_repair,
+            window_symmetry,
+        )
+
+        cx = grid_axis_x(bay_x or {})
+        sym_boxes, sym_log = symmetry_repair(
+            final,
+            cx=cx,
+            window_sym=window_symmetry(windows or [], cx) if cx is not None else 0.0,
+            iw=iw,
+            ih=ih,
+            rel_fn=lambda b: box_rel_delta(depth, b, veg=veg),
+            on_grid=lambda b: on_window_floor_bay(b, floor_y, bay_x),
+            min_rel=min_rel,
+        )
+        stages.append(("6_sym", stage_title(sym_log), sym_boxes))
+    return stages
 
 
 def detect_volumes(
@@ -1307,6 +1344,8 @@ def detect_volumes(
     floor_h: float | None = None,
     floor_y: dict[int, tuple[int, int]] | None = None,
     bay_x: dict[int, tuple[int, int]] | None = None,
+    windows: list[list[int]] | None = None,
+    symmetry: bool = False,
 ) -> list[dict[str, Any]]:
     return volume_stages(
         image,
@@ -1317,6 +1356,8 @@ def detect_volumes(
         floor_h=floor_h,
         floor_y=floor_y,
         bay_x=bay_x,
+        windows=windows,
+        symmetry=symmetry,
     )[-1][2]
 
 
@@ -1331,6 +1372,11 @@ def main() -> None:
     ap.add_argument("--grow-rel", type=float, default=GROW_REL)
     ap.add_argument("--refresh-sam3", action="store_true")
     ap.add_argument("--stages", action="store_true", help="Save a 5-step overlay board")
+    ap.add_argument(
+        "--symmetry",
+        action="store_true",
+        help="Add Stage 6: mirror about the window-grid axis (add / align / drop)",
+    )
     ap.add_argument(
         "--dsl-dir",
         type=Path,
@@ -1413,6 +1459,8 @@ def main() -> None:
             floor_h=floor_h,
             floor_y=floor_y,
             bay_x=bay_x,
+            windows=resolve_window_boxes(path.stem, args.dsl_dir),
+            symmetry=args.symmetry,
         )
         pred = stages[-1][2]
         gt = gt_px(path.stem, image.width, image.height)

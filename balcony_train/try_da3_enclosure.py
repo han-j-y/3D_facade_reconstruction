@@ -126,14 +126,20 @@ def is_closer(
     return (wall - candidate) / wall >= min_rel
 
 
-def colorize_depth(depth: np.ndarray) -> np.ndarray:
-    """Near (small) → warm, far → blue. uint8 HxWx3."""
+def colorize_depth(depth: np.ndarray, mask: np.ndarray | None = None) -> np.ndarray:
+    """Near (small) → warm, far → blue. uint8 HxWx3.
+
+    ``mask`` limits the 2–98% range (True = use). Detection never reads this.
+    """
     d = np.asarray(depth, dtype=np.float32)
     finite = np.isfinite(d) & (d > 0)
     out = np.zeros(d.shape + (3,), dtype=np.uint8)
     if not np.any(finite):
         return out
-    lo, hi = np.percentile(d[finite], (2.0, 98.0))
+    span = finite if mask is None else (finite & np.asarray(mask, dtype=bool))
+    if not np.any(span):
+        span = finite
+    lo, hi = np.percentile(d[span], (2.0, 98.0))
     if hi <= lo:
         hi = lo + 1e-6
     t = np.clip((d - lo) / (hi - lo), 0.0, 1.0)

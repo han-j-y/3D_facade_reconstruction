@@ -64,6 +64,19 @@ class TryDa3EnclosureTests(unittest.TestCase):
         big = resize_depth(small, 8, 6)
         self.assertEqual(big.shape, (6, 8))
 
+    def test_colorize_mask_stretches_inner_range(self) -> None:
+        depth = np.full((4, 6), 10.0, dtype=np.float32)
+        depth[:, :2] = 1.0
+        depth[1:3, 2:5] = np.linspace(9.0, 9.4, 6, dtype=np.float32).reshape(2, 3)
+        mask = np.zeros_like(depth, dtype=bool)
+        mask[1:3, 2:5] = True
+        whole = colorize_depth(depth)
+        inner = colorize_depth(depth, mask=mask)
+        self.assertGreater(
+            int(np.abs(inner[1:3, 2:5].astype(int) - inner[1, 2].astype(int)).sum()),
+            int(np.abs(whole[1:3, 2:5].astype(int) - whole[1, 2].astype(int)).sum()),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
