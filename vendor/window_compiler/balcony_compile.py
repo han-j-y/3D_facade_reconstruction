@@ -26,6 +26,8 @@ from balcony_plan import (  # noqa: E402
     centroid,
     even_along_polyline,
     extend_segment_ends,
+    curtain_glass_spans,
+    curtain_transom_z,
     glass_bays,
     grid_stations,
     inset_edge,
@@ -217,17 +219,32 @@ def _add_enclosed_shell(
             continue
 
         a, b = inset_edge(p0, p1, mid, GLASS_PANEL_M / 2.0)
-        for i, (s0, s1) in enumerate(
-            glass_bays(length, MULLION_SPACING_M, mull_w, start_post=True, end_post=True)
-        ):
+        spans = curtain_glass_spans(z_lo, z_hi, mull_w=mull_w)
+        for band, (gz0, gz1) in enumerate(spans):
+            for i, (s0, s1) in enumerate(
+                glass_bays(length, MULLION_SPACING_M, mull_w, start_post=True, end_post=True)
+            ):
+                _box_along_xy(
+                    name=f"{prefix}_glass_{e}_{band}_{i}",
+                    p0=(a[0] + ux * s0, a[1] + uy * s0),
+                    p1=(a[0] + ux * s1, a[1] + uy * s1),
+                    z_lo=gz0,
+                    z_hi=gz1,
+                    thickness=GLASS_PANEL_M,
+                    mat_key="glass",
+                    parent=parent,
+                )
+        transom = curtain_transom_z(z_lo, z_hi, mull_w=mull_w)
+        if transom is not None:
+            ta, tb = inset_edge(p0, p1, mid, mull_w / 2.0)
             _box_along_xy(
-                name=f"{prefix}_glass_{e}_{i}",
-                p0=(a[0] + ux * s0, a[1] + uy * s0),
-                p1=(a[0] + ux * s1, a[1] + uy * s1),
-                z_lo=z_lo,
-                z_hi=z_hi,
-                thickness=GLASS_PANEL_M,
-                mat_key="glass",
+                name=f"{prefix}_transom_{e}",
+                p0=ta,
+                p1=tb,
+                z_lo=transom - mull_w / 2.0,
+                z_hi=transom + mull_w / 2.0,
+                thickness=mull_w,
+                mat_key="slab",
                 parent=parent,
             )
         for i, s in enumerate(
@@ -243,6 +260,91 @@ def _add_enclosed_shell(
                 sx=mull_w,
                 sy=mull_w,
                 sz=height,
+                mat_key="slab",
+                parent=parent,
+            )
+
+
+def _add_curtain_circle_shell(
+    *,
+    prefix: str,
+    outline: list[tuple[float, float]],
+    y_wall: float,
+    bands: list[tuple[float, float]],
+    parent: bpy.types.Collection,
+) -> None:
+    """One glass pane per semicircle chord on each storey.
+
+    ``outline`` is the arc from wall-left to wall-right. ``bands`` are
+    ``(floor top, next slab or roof)``. Each band gets a horizontal mullion
+    2.1 m above the floor when the storey is tall enough. Vertical mullions
+    stop at the floor slabs.
+    """
+    if len(outline) < 2 or not bands:
+        return
+    mid = (0.5 * (outline[0][0] + outline[-1][0]), y_wall)
+    mull_w = MULLION_WIDTH_M
+    for band, (z_lo, z_hi) in enumerate(bands):
+        if z_hi - z_lo <= 1e-3:
+            continue
+        spans = curtain_glass_spans(z_lo, z_hi, mull_w=mull_w)
+        for i in range(len(outline) - 1):
+            p0, p1 = outline[i], outline[i + 1]
+            if math.hypot(p1[0] - p0[0], p1[1] - p0[1]) < 1e-3:
+                continue
+            a, b = inset_edge(p0, p1, mid, GLASS_PANEL_M / 2.0)
+            for span_i, (gz0, gz1) in enumerate(spans):
+                _box_along_xy(
+                    name=f"{prefix}_glass_{band}_{i}_{span_i}",
+                    p0=a,
+                    p1=b,
+                    z_lo=gz0,
+                    z_hi=gz1,
+                    thickness=GLASS_PANEL_M,
+                    mat_key="glass",
+                    parent=parent,
+                )
+        transom = curtain_transom_z(z_lo, z_hi, mull_w=mull_w)
+        if transom is not None:
+            for i in range(len(outline) - 1):
+                p0, p1 = outline[i], outline[i + 1]
+                if math.hypot(p1[0] - p0[0], p1[1] - p0[1]) < 1e-3:
+                    continue
+                ta, tb = inset_edge(p0, p1, mid, mull_w / 2.0)
+                _box_along_xy(
+                    name=f"{prefix}_transom_{band}_{i}",
+                    p0=ta,
+                    p1=tb,
+                    z_lo=transom - mull_w / 2.0,
+                    z_hi=transom + mull_w / 2.0,
+                    thickness=mull_w,
+                    mat_key="slab",
+                    parent=parent,
+                )
+        for i, p in enumerate(outline):
+            if i == 0:
+                nxt = outline[1]
+                tx, ty = nxt[0] - p[0], nxt[1] - p[1]
+            elif i == len(outline) - 1:
+                prv = outline[i - 1]
+                tx, ty = p[0] - prv[0], p[1] - prv[1]
+            else:
+                prv, nxt = outline[i - 1], outline[i + 1]
+                tx, ty = nxt[0] - prv[0], nxt[1] - prv[1]
+            norm = math.hypot(tx, ty)
+            if norm < 1e-6:
+                tx, ty = 1.0, 0.0
+            else:
+                tx, ty = tx / norm, ty / norm
+            mx, my = inset_point(p, mid, mull_w / 2.0)
+            half = mull_w / 2.0
+            _box_along_xy(
+                name=f"{prefix}_mull_{band}_{i}",
+                p0=(mx - tx * half, my - ty * half),
+                p1=(mx + tx * half, my + ty * half),
+                z_lo=z_lo,
+                z_hi=z_hi,
+                thickness=mull_w,
                 mat_key="slab",
                 parent=parent,
             )
@@ -767,7 +869,7 @@ def add_balcony_meshes(
 
     n = 0
     for frame in frames:
-        if frame is None:
+        if frame is None or frame.get("skip_body"):
             continue
         i = int(frame["index"])
         name = frame["name"]
@@ -940,6 +1042,17 @@ def add_balcony_meshes(
                 mat_key="slab",
                 parent=balc_coll,
             )
+            for n_floor, z_sill in enumerate(frame.get("floor_sills") or []):
+                if abs(float(z_sill) - sill_z) < 1e-3:
+                    continue
+                _prism_xy(
+                    name=f"{prefix}_slab_{n_floor}",
+                    verts_xy=outline,
+                    z0=float(z_sill),
+                    z1=float(z_sill) + thick,
+                    mat_key="slab",
+                    parent=balc_coll,
+                )
         else:
             sx_slab = (
                 (bx1 - bx0)
@@ -984,7 +1097,22 @@ def add_balcony_meshes(
                 parent=balc_coll,
             )
 
-        if enclosure == "enclosed":
+        if enclosure == "enclosed" and frame.get("curtain_drum"):
+            sills = sorted(float(z) for z in (frame.get("floor_sills") or [sill_z]))
+            bands: list[tuple[float, float]] = []
+            for n_floor, z_sill in enumerate(sills):
+                floor_top = z_sill + thick
+                ceiling = sills[n_floor + 1] if n_floor + 1 < len(sills) else z_top
+                if ceiling - floor_top > 0.05:
+                    bands.append((floor_top, ceiling))
+            _add_curtain_circle_shell(
+                prefix=prefix,
+                outline=outline,
+                y_wall=y_wall,
+                bands=bands,
+                parent=balc_coll,
+            )
+        elif enclosure == "enclosed":
             openings = front_openings.get(i) or []
             infill = str((ir.get("walls") or {}).get("infill") or "glass")
             if openings:

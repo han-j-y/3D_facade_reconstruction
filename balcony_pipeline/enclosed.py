@@ -270,6 +270,74 @@ def drop_open_under_enclosed(
     return kept, dropped
 
 
+def vote_enclosed_floor_shape(shapes: list[str | None]) -> tuple[str, dict[str, int]]:
+    """One plan: circle only wins a strict majority.
+
+    ``triangle`` and any other label count as ``rectangle``. A tie is
+    ``rectangle``. Open-balcony clusters use the same rule, separately from
+    the railing vote.
+    """
+    counts = {"rectangle": 0, "circle": 0}
+    for raw in shapes:
+        kind = "circle" if str(raw or "").strip().lower() == "circle" else "rectangle"
+        counts[kind] += 1
+    winner = "circle" if counts["circle"] > counts["rectangle"] else "rectangle"
+    return winner, counts
+
+
+def apply_floor_majority(
+    ir: dict[str, Any] | None,
+    shapes: list[str | None],
+) -> tuple[dict[str, Any] | None, str, dict[str, int]]:
+    """Copy ``ir`` and set its floor to the majority plan. The input is unchanged."""
+    shape, counts = vote_enclosed_floor_shape(shapes)
+    if not isinstance(ir, dict):
+        return ir, shape, counts
+    out = copy.deepcopy(ir)
+    floor = dict(out.get("floor") or {})
+    floor["shape"] = shape
+    out["floor"] = floor
+    return out, shape, counts
+
+
+def vote_enclosed_skin(skins: list[str | None]) -> tuple[str, dict[str, int]]:
+    """One shell for a photo: curtain wall only wins a strict majority.
+
+    ``None`` and any other label count as ``punched_window``. A tie is
+    ``punched_window``.
+    """
+    counts = {"punched_window": 0, "curtain_wall": 0}
+    for raw in skins:
+        kind = "curtain_wall" if str(raw or "").strip().lower() == "curtain_wall" else "punched_window"
+        counts[kind] += 1
+    winner = "curtain_wall" if counts["curtain_wall"] > counts["punched_window"] else "punched_window"
+    return winner, counts
+
+
+def assign_enclosed_plan(
+    units: list[dict[str, Any]],
+    shape: str,
+    skin: str = "punched_window",
+) -> dict[str, Any]:
+    """Write one floor plan and one shell onto every enclosed unit."""
+    plan = "circle" if str(shape).strip().lower() == "circle" else "rectangle"
+    curtain = str(skin).strip().lower() == "curtain_wall"
+    ir = enclosed_ir()
+    ir["floor"]["shape"] = plan
+    if curtain:
+        ir["walls"] = {"infill": "glass", "curtain_wall": True}
+    else:
+        ir["walls"] = {"infill": "wall"}
+    for unit in units:
+        unit["structure_ir"] = copy.deepcopy(ir)
+    return ir
+
+
+def assign_enclosed_floor(units: list[dict[str, Any]], shape: str) -> dict[str, Any]:
+    """Write the same floor plan onto every enclosed unit. Shell stays punched."""
+    return assign_enclosed_plan(units, shape, "punched_window")
+
+
 def place_enclosed_cells(
     cells: list[tuple[int, int]] | set[tuple[int, int]],
     windows_dsl: dict[str, Any],

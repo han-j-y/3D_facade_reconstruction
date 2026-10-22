@@ -14,12 +14,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from balcony_train.enclosed_grid_store import (  # noqa: E402
+    GridRecord,
     cell_at,
     facade_stems_from_crop_labels,
     list_grid_stems,
     load_labels,
+    load_records,
     normalize_cells,
+    record_for_save,
     write_labels,
+    write_records,
 )
 
 
@@ -106,6 +110,54 @@ class EnclosedGridStoreTests(unittest.TestCase):
     def test_normalize_rejects_a_bare_number(self) -> None:
         with self.assertRaises(ValueError):
             normalize_cells([1])
+
+    def test_normalize_accepts_a_set_of_cells(self) -> None:
+        self.assertEqual(normalize_cells({(2, 0), (1, 0), (1, 0)}), [(1, 0), (2, 0)])
+        saved = record_for_save({(1, 0), (2, 0)}, "circle", "curtain_wall", plan=True)
+        self.assertEqual(saved.cells, [(1, 0), (2, 0)])
+        self.assertEqual(saved.floor_shape, "circle")
+        self.assertEqual(saved.skin, "curtain_wall")
+
+    def test_plan_roundtrip_and_cells_only_view(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "labels.jsonl"
+            write_records(
+                path,
+                {
+                    "cmp_x0005": GridRecord([(1, 0), (2, 0)], "triangle", "punched_window"),
+                    "cmp_x0009": GridRecord([], "circle", "curtain_wall"),
+                },
+            )
+            text = path.read_text(encoding="utf-8")
+            self.assertIn('"floor_shape": "triangle"', text)
+            self.assertIn('"skin": "punched_window"', text)
+            rows = [json.loads(line) for line in text.splitlines()]
+            empty = next(row for row in rows if row["stem"] == "cmp_x0009")
+            self.assertEqual(set(empty), {"stem", "cells"})
+            loaded = load_records(path)
+            self.assertEqual(loaded["cmp_x0005"].floor_shape, "triangle")
+            self.assertEqual(loaded["cmp_x0005"].skin, "punched_window")
+            self.assertEqual(loaded["cmp_x0009"].cells, [])
+            self.assertIsNone(loaded["cmp_x0009"].floor_shape)
+            self.assertEqual(load_labels(path)["cmp_x0005"], [(1, 0), (2, 0)])
+
+    def test_save_requires_both_plan_fields_and_keeps_them_when_plan_is_off(self) -> None:
+        with self.assertRaises(ValueError):
+            record_for_save([(1, 0)], "circle", None, plan=True)
+        previous = GridRecord([(1, 0)], "circle", "curtain_wall")
+        kept = record_for_save([(1, 0), (2, 0)], None, None, plan=False, previous=previous)
+        self.assertEqual(kept.floor_shape, "circle")
+        self.assertEqual(kept.skin, "curtain_wall")
+        cleared = record_for_save([], "circle", "curtain_wall", plan=True)
+        self.assertEqual(cleared.cells, [])
+        self.assertIsNone(cleared.skin)
+
+    def test_cell_only_write_does_not_invent_a_plan(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "labels.jsonl"
+            write_labels(path, {"cmp_b0007": [(1, 0)]})
+            row = json.loads(path.read_text(encoding="utf-8").strip())
+            self.assertEqual(set(row), {"stem", "cells"})
 
 
 if __name__ == "__main__":

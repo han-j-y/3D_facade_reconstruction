@@ -7,8 +7,10 @@ save, or copy the images that would be evaluated (no GPU / checkpoint needed).
 ``--errors-to`` scores the checkpoint, then copies mistakes under a new
 ``YYYY-MM-DD_HHMMSS`` folder there, as ``kind/true-{label}__pred-{label}/``,
 ``material/true-{label}__pred-{label}/``,
-``floor/true-{label}__pred-{label}/``, and
-``enclosure/true-{label}__pred-{label}/``.
+``floor/true-{label}__pred-{label}/``,
+``enclosure/true-{label}__pred-{label}/``, and
+``skin/true-{label}__pred-{label}/``.
+``mistakes.txt`` in that folder lists every copy.
 """
 
 from __future__ import annotations
@@ -34,9 +36,11 @@ from balcony_train.labels import (  # noqa: E402
     CLASSES,
     ENCLOSURE_IGNORE_INDEX,
     ENCLOSURES,
+    ENCLOSURE_SKINS,
     FLOOR_IGNORE_INDEX,
     FLOOR_SHAPES,
     KIND_IGNORE_INDEX,
+    SKIN_IGNORE_INDEX,
     MATERIAL_IGNORE_INDEX,
     MATERIALS,
     MultitaskSample,
@@ -44,6 +48,7 @@ from balcony_train.labels import (  # noqa: E402
     enclosure_counts,
     floor_counts,
     material_counts,
+    skin_counts,
 )
 from balcony_train.model import load_classifier  # noqa: E402
 from balcony_train.paths import (  # noqa: E402
@@ -108,7 +113,7 @@ def write_eval_list(
 
 
 class ScoredCrop(NamedTuple):
-    """One eval crop with kind, material, floor, and enclosure predictions."""
+    """One eval crop with kind, material, floor, enclosure, and skin predictions."""
 
     path: Path
     kind_true: int
@@ -119,6 +124,8 @@ class ScoredCrop(NamedTuple):
     floor_pred: int = FLOOR_IGNORE_INDEX
     enc_true: int = ENCLOSURE_IGNORE_INDEX
     enc_pred: int = ENCLOSURE_IGNORE_INDEX
+    skin_true: int = SKIN_IGNORE_INDEX
+    skin_pred: int = SKIN_IGNORE_INDEX
 
 
 def misclass_folder_name(true_name: str, pred_name: str) -> str:
@@ -179,63 +186,88 @@ def copy_misclassified_images(
     *,
     stamp: str | None = None,
 ) -> int:
-    """Copy kind, material, and floor mistakes under a new timestamp folder.
+    """Copy kind, material, floor, enclosure, and skin mistakes.
 
     Layout::
 
         dest_dir/YYYY-MM-DD_HHMMSS/kind/true-{label}__pred-{label}/<image>
         dest_dir/YYYY-MM-DD_HHMMSS/material/true-{label}__pred-{label}/<image>
         dest_dir/YYYY-MM-DD_HHMMSS/floor/true-{label}__pred-{label}/<image>
+        dest_dir/YYYY-MM-DD_HHMMSS/enclosure/true-{label}__pred-{label}/<image>
+        dest_dir/YYYY-MM-DD_HHMMSS/skin/true-{label}__pred-{label}/<image>
 
+    ``mistakes.txt`` lists ``head true pred filename`` for every copy.
     ``stamp`` overrides the clock (tests). A second run in the same second
     gets a ``_2`` suffix. Material is skipped when the true kind is not
-    open_work (``mat_true == MATERIAL_IGNORE_INDEX``). Floor is skipped when
-    the crop has no floor label (``floor_true == FLOOR_IGNORE_INDEX``). An
-    image wrong on more than one head is copied into each tree. Returns the
-    number of file copies.
+    open_work (``mat_true == MATERIAL_IGNORE_INDEX``). Floor, enclosure, and
+    skin are skipped when that label is ignore. An image wrong on more than
+    one head is copied into each tree. Returns the number of file copies.
     """
     buckets: dict[Path, list[Path]] = defaultdict(list)
+    lines: list[str] = []
+
+    def take(head: str, true_name: str, pred_name: str, path: Path) -> None:
+        rel = Path(head) / misclass_folder_name(true_name, pred_name)
+        buckets[rel].append(path)
+        lines.append(f"{head}\t{true_name}\t{pred_name}\t{path.name}")
+
     for row in rows:
         if int(row.kind_true) != KIND_IGNORE_INDEX and int(row.kind_true) != int(row.kind_pred):
-            rel = Path("kind") / misclass_folder_name(
+            take(
+                "kind",
                 CLASSES[int(row.kind_true)],
                 CLASSES[int(row.kind_pred)],
+                Path(row.path),
             )
-            buckets[rel].append(Path(row.path))
         if int(row.mat_true) != MATERIAL_IGNORE_INDEX and int(row.mat_true) != int(
             row.mat_pred
         ):
-            rel = Path("material") / misclass_folder_name(
+            take(
+                "material",
                 MATERIALS[int(row.mat_true)],
                 MATERIALS[int(row.mat_pred)],
+                Path(row.path),
             )
-            buckets[rel].append(Path(row.path))
         if int(row.floor_true) != FLOOR_IGNORE_INDEX and int(row.floor_true) != int(
             row.floor_pred
         ):
-            rel = Path("floor") / misclass_folder_name(
+            take(
+                "floor",
                 FLOOR_SHAPES[int(row.floor_true)],
                 FLOOR_SHAPES[int(row.floor_pred)],
+                Path(row.path),
             )
-            buckets[rel].append(Path(row.path))
         if int(row.enc_true) != ENCLOSURE_IGNORE_INDEX and int(row.enc_true) != int(
             row.enc_pred
         ):
-            rel = Path("enclosure") / misclass_folder_name(
+            take(
+                "enclosure",
                 ENCLOSURES[int(row.enc_true)],
                 ENCLOSURES[int(row.enc_pred)],
+                Path(row.path),
             )
-            buckets[rel].append(Path(row.path))
+        if int(row.skin_true) != SKIN_IGNORE_INDEX and int(row.skin_true) != int(
+            row.skin_pred
+        ):
+            take(
+                "skin",
+                ENCLOSURE_SKINS[int(row.skin_true)],
+                ENCLOSURE_SKINS[int(row.skin_pred)],
+                Path(row.path),
+            )
 
     run_dir = error_run_dir(dest_dir, stamp)
+    run_dir.mkdir(parents=True, exist_ok=True)
     n = 0
     for rel in sorted(buckets):
         n += copy_eval_images(buckets[rel], run_dir / rel)
+    list_path = run_dir / "mistakes.txt"
+    list_path.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
     if not buckets:
-        run_dir.mkdir(parents=True, exist_ok=True)
         print(f"no misclassifications -> {run_dir.resolve()}", flush=True)
     else:
         print(f"misclassified copies={n} -> {run_dir.resolve()}", flush=True)
+        print(f"list -> {list_path.resolve()}", flush=True)
     return n
 
 
@@ -400,18 +432,21 @@ def main() -> None:
     mat_conf = torch.zeros((len(MATERIALS), len(MATERIALS)), dtype=torch.int64)
     floor_conf = torch.zeros((len(FLOOR_SHAPES), len(FLOOR_SHAPES)), dtype=torch.int64)
     enc_conf = torch.zeros((len(ENCLOSURES), len(ENCLOSURES)), dtype=torch.int64)
+    skin_conf = torch.zeros((len(ENCLOSURE_SKINS), len(ENCLOSURE_SKINS)), dtype=torch.int64)
     floor_trained = bool(getattr(model, "_floor_trained", False))
     enc_trained = bool(getattr(model, "_enclosure_trained", False))
+    skin_trained = bool(getattr(model, "_skin_trained", False))
     scored: list[ScoredCrop] = []
     cursor = 0
     model.eval()
     with torch.no_grad():
-        for images, kind_y, mat_y, floor_y, enc_y in loader:
-            kind_logits, mat_logits, floor_logits, enc_logits = model(images.to(device))
+        for images, kind_y, mat_y, floor_y, enc_y, skin_y in loader:
+            kind_logits, mat_logits, floor_logits, enc_logits, skin_logits = model(images.to(device))
             kind_pred = kind_logits.argmax(dim=1).cpu()
             mat_pred = mat_logits.argmax(dim=1).cpu()
             floor_pred = floor_logits.argmax(dim=1).cpu()
             enc_pred = enc_logits.argmax(dim=1).cpu()
+            skin_pred = skin_logits.argmax(dim=1).cpu()
             kt_list = kind_y.tolist()
             kp_list = kind_pred.tolist()
             mt_list = mat_y.tolist()
@@ -420,6 +455,8 @@ def main() -> None:
             fp_list = floor_pred.tolist()
             et_list = enc_y.tolist()
             ep_list = enc_pred.tolist()
+            st_list = skin_y.tolist()
+            sp_list = skin_pred.tolist()
             for i, (t, p) in enumerate(zip(kt_list, kp_list)):
                 if int(t) != KIND_IGNORE_INDEX:
                     kind_conf[t, p] += 1
@@ -438,6 +475,12 @@ def main() -> None:
                 else:
                     enc_true = ENCLOSURE_IGNORE_INDEX
                     enc_pred_i = ENCLOSURE_IGNORE_INDEX
+                if skin_trained:
+                    skin_true = int(st_list[i])
+                    skin_pred_i = int(sp_list[i])
+                else:
+                    skin_true = SKIN_IGNORE_INDEX
+                    skin_pred_i = SKIN_IGNORE_INDEX
                 scored.append(
                     ScoredCrop(
                         Path(samples[src_i][0]),
@@ -449,6 +492,8 @@ def main() -> None:
                         floor_pred_i,
                         enc_true,
                         enc_pred_i,
+                        skin_true,
+                        skin_pred_i,
                     )
                 )
             for t, p in zip(mt_list, mp_list):
@@ -460,6 +505,11 @@ def main() -> None:
                     if int(t) == FLOOR_IGNORE_INDEX:
                         continue
                     floor_conf[int(t), int(p)] += 1
+            if skin_trained:
+                for t, p in zip(skin_y.tolist(), skin_pred.tolist()):
+                    if int(t) == SKIN_IGNORE_INDEX:
+                        continue
+                    skin_conf[int(t), int(p)] += 1
             cursor += len(kt_list)
 
     kind_total = int(kind_conf.sum().item())
@@ -512,6 +562,20 @@ def main() -> None:
             print(f"  {name:16s} {row}")
     else:
         print("enclosure head not in checkpoint")
+
+    if skin_trained:
+        skin_total = int(skin_conf.sum().item())
+        skin_correct = int(skin_conf.diag().sum().item())
+        print(
+            f"skin n={skin_total}  counts={skin_counts(subset)}  "
+            f"skin_acc={skin_correct / max(skin_total, 1):.3f}"
+        )
+        print("skin rows=true cols=pred  " + "  ".join(ENCLOSURE_SKINS))
+        for i, name in enumerate(ENCLOSURE_SKINS):
+            row = " ".join(f"{int(v):4d}" for v in skin_conf[i].tolist())
+            print(f"  {name:16s} {row}")
+    else:
+        print("skin head not in checkpoint")
 
     if args.errors_to is not None:
         copy_misclassified_images(scored, Path(args.errors_to))

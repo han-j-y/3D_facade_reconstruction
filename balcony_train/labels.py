@@ -14,6 +14,8 @@ FLOOR_SHAPES: tuple[str, ...] = ("rectangle", "triangle", "circle")
 LEGACY_FLOOR_SHAPES: dict[str, str] = {"hexagon": "rectangle", "trapezoid": "rectangle"}
 # Matches BDSL ``enclosure``.
 ENCLOSURES: tuple[str, ...] = ("open", "half_enclosed", "enclosed")
+# Enclosed shell: solid wall with cut windows, or full-height glass bays.
+ENCLOSURE_SKINS: tuple[str, ...] = ("punched_window", "curtain_wall")
 # Dataset / loss mask: material head ignored when not open_work.
 MATERIAL_IGNORE_INDEX = -100
 # Floor head ignored when the crop has no floor_shape label.
@@ -22,12 +24,15 @@ FLOOR_IGNORE_INDEX = -100
 KIND_IGNORE_INDEX = -100
 # Enclosure head ignored when the crop has no enclosure label.
 ENCLOSURE_IGNORE_INDEX = -100
+# Skin head ignored unless the enclosed crop has a skin label.
+SKIN_IGNORE_INDEX = -100
 
 # Labeled crop image extensions (case-insensitive on Windows).
 LABELED_IMAGE_SUFFIXES: tuple[str, ...] = (".png", ".jpg", ".jpeg", ".webp")
 
-# (path, kind_idx, material_idx, floor_idx, enclosure_idx). Ignore indexes skip that head.
-MultitaskSample = tuple[Path, int, int, int, int]
+# (path, kind_idx, material_idx, floor_idx, enclosure_idx, skin_idx).
+# A 5-tuple is still readable: the skin index defaults to ignore.
+MultitaskSample = tuple[Path, int, int, int, int, int]
 
 
 def class_index(name: str) -> int:
@@ -59,6 +64,13 @@ def enclosure_index(name: str) -> int:
     return ENCLOSURES.index(e)
 
 
+def skin_index(name: str) -> int:
+    s = str(name).strip().lower()
+    if s not in ENCLOSURE_SKINS:
+        raise ValueError(f"unknown enclosure skin {name!r}; expected {ENCLOSURE_SKINS}")
+    return ENCLOSURE_SKINS.index(s)
+
+
 def sample_targets(row: tuple) -> tuple[int, int, int]:
     """Kind, material, floor indexes. Missing fields are ignore indexes."""
     kind_idx = int(row[1])
@@ -69,6 +81,10 @@ def sample_targets(row: tuple) -> tuple[int, int, int]:
 
 def enclosure_target(row: tuple) -> int:
     return int(row[4]) if len(row) >= 5 else ENCLOSURE_IGNORE_INDEX
+
+
+def skin_target(row: tuple) -> int:
+    return int(row[5]) if len(row) >= 6 else SKIN_IGNORE_INDEX
 
 
 def iter_labeled_samples(crops_dir: Path) -> list[tuple[Path, int]]:
@@ -129,7 +145,12 @@ def iter_multitask_samples(
             floor_idx = floor_index(str(floor))
         else:
             floor_idx = FLOOR_IGNORE_INDEX
-        rows.append((path, kind_idx, mat_idx, floor_idx, enc_idx))
+        skin = rec.get("skin")
+        if enclosure == "enclosed" and skin in ENCLOSURE_SKINS:
+            skin_idx = skin_index(str(skin))
+        else:
+            skin_idx = SKIN_IGNORE_INDEX
+        rows.append((path, kind_idx, mat_idx, floor_idx, enc_idx, skin_idx))
     return rows
 
 
@@ -161,6 +182,15 @@ def floor_counts(samples: list[MultitaskSample] | list[tuple]) -> dict[str, int]
         if floor_idx < 0:
             continue
         counts[FLOOR_SHAPES[floor_idx]] += 1
+    return counts
+
+
+def skin_counts(samples: list[MultitaskSample] | list[tuple]) -> dict[str, int]:
+    counts = {name: 0 for name in ENCLOSURE_SKINS}
+    for row in samples:
+        idx = skin_target(row)
+        if idx >= 0:
+            counts[ENCLOSURE_SKINS[idx]] += 1
     return counts
 
 

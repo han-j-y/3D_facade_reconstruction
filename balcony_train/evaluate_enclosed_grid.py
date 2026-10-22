@@ -25,6 +25,7 @@ Stage 6 images to ``--compare-dir-sym``.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -48,6 +49,7 @@ from balcony_train.enclosed_grid_store import (  # noqa: E402
     load_grid,
     load_labels,
 )
+from balcony_train.labels import ENCLOSURE_SKINS  # noqa: E402
 
 DEFAULT_DEPTH_DIR = ROOT / "runs" / "da3_enclosure"
 DEFAULT_SAM3_CACHE = ROOT / "runs" / "sam3_da3_volumes" / "sam3_seeds.json"
@@ -92,6 +94,81 @@ def score_photo(gt_cells: list[Cell] | set[Cell], pred_cells: set[Cell]) -> dict
         "fp": len(pred - gt),
         "fn": len(gt - overlap),
     }
+
+
+def scored_floor_shape(shape: str | None) -> str | None:
+    """Circle stays circle. Triangle counts as rectangle. Anything else is unset."""
+    raw = str(shape or "").strip().lower()
+    if raw == "circle":
+        return "circle"
+    if raw in ("rectangle", "triangle"):
+        return "rectangle"
+    return None
+
+
+def vote_plan(
+    image: Any,
+    cells: list[Cell] | set[Cell],
+    floor_y: dict[int, tuple[int, int]],
+    bay_x: dict[int, tuple[int, int]],
+    predict_full: Any,
+) -> tuple[str | None, str | None]:
+    """Majority floor shape and skin over the predicted cells.
+
+    No predicted cell means there is no plan. That is different from the
+    vote default (rectangle, punched window), which only applies once at
+    least one crop was classified.
+    """
+    from balcony_train.depth_cells import cell_box
+    from enclosed import vote_enclosed_floor_shape, vote_enclosed_skin
+
+    chosen = sorted({(int(floor), int(bay)) for floor, bay in cells})
+    shapes: list[str | None] = []
+    skins: list[str | None] = []
+    for cell in chosen:
+        if cell[0] not in floor_y or cell[1] not in bay_x:
+            continue
+        crop = image.crop(tuple(cell_box(cell, floor_y, bay_x)))
+        pred = predict_full(crop)
+        shapes.append(pred.get("floor_shape") if isinstance(pred, dict) else None)
+        skins.append(pred.get("skin") if isinstance(pred, dict) else None)
+    if not shapes:
+        return None, None
+    shape, _counts = vote_enclosed_floor_shape(shapes)
+    skin, _skin_counts = vote_enclosed_skin(skins)
+    return shape, skin
+
+
+def apply_plan_score(
+    row: dict[str, Any],
+    gt_shape: str | None,
+    gt_skin: str | None,
+    pred_shape: str | None,
+    pred_skin: str | None,
+) -> None:
+    """Attach shape and skin correctness. Photos without both labels are not scored."""
+    row["gt_shape"] = gt_shape
+    row["gt_skin"] = gt_skin
+    row["pred_shape"] = pred_shape
+    row["pred_skin"] = pred_skin
+    labeled = bool(row.get("has_enclosure") and gt_shape and gt_skin in ENCLOSURE_SKINS)
+    row["plan_labeled"] = labeled
+    if not labeled:
+        row["shape_ok"] = None
+        row["skin_ok"] = None
+        return
+    row["shape_ok"] = scored_floor_shape(pred_shape) == scored_floor_shape(gt_shape)
+    row["skin_ok"] = pred_skin == gt_skin
+
+
+def load_pred_cells(path: Path) -> dict[str, set[Cell]]:
+    """Stem → predicted cells. Accepts a flat json or ``{"eval": {"preds": ...}}``."""
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(raw, dict) and isinstance(raw.get("eval"), dict) and "preds" in raw["eval"]:
+        raw = raw["eval"]["preds"]
+    if not isinstance(raw, dict):
+        raise ValueError(f"predicted cells must be an object, got {type(raw).__name__}")
+    return {str(stem): {tuple(cell) for cell in cells} for stem, cells in raw.items()}
 
 
 def _group_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
@@ -140,12 +217,35 @@ def format_report(summary: dict[str, Any], rows: list[dict[str, Any]]) -> str:
             f"precision={tp / max(tp + fp, 1):.3f}"
         ),
     ]
+    plans = [r for r in rows if r.get("plan_labeled")]
+    # No predicted cell means floor and skin were never judged.
+    judged = [r for r in plans if r.get("pred")]
+    if judged:
+        n = len(judged)
+        shape_ok = sum(1 for r in judged if r["shape_ok"])
+        skin_ok = sum(1 for r in judged if r["skin_ok"])
+        held = len(plans) - n
+        held_note = f"  no_cells={held}" if held else ""
+        lines.append(
+            f"shape {shape_ok}/{n}  shape_acc={shape_ok / n:.3f}  "
+            f"skin {skin_ok}/{n}  skin_acc={skin_ok / n:.3f}{held_note}"
+        )
     misses = [r for r in rows if not r["exact"]]
     if misses:
         lines.append("mismatch stem  gt  pred")
         for row in misses:
             lines.append(
                 f"  {row['stem']}  gt={_fmt_cells(row['gt'])}  pred={_fmt_cells(row['pred'])}"
+            )
+    plan_misses = [
+        r for r in judged if not r["shape_ok"] or not r["skin_ok"]
+    ]
+    if plan_misses:
+        lines.append("plan stem  gt_shape  pred_shape  gt_skin  pred_skin")
+        for row in plan_misses:
+            lines.append(
+                f"  {row['stem']}  {row['gt_shape']}  {row['pred_shape']}  "
+                f"{row['gt_skin']}  {row['pred_skin']}"
             )
     return "\n".join(lines)
 

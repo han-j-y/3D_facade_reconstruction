@@ -77,6 +77,8 @@ opaque-run heuristic in `heuristic_ir.py` (kind only; material defaults to
 300×150 with front-full / side-trimmed rails, surface panel, solid parapet).
 All balcony slabs use **1.5 m** depth.
 
+Enclosed shells are a photo vote on top of that. `export_enclosed_crops.py` writes train volumes into `runs/balcony_clf/crops/unlabeled/`. `label_ui.py` sets floor shape and, for enclosed crops, skin (`P` punched_window, `G` curtain_wall). `--heads-only floor,skin` trains those linear heads on the frozen DINOv2. One skin per photo: curtain wall only on a strict majority, otherwise punched. Curtain wall sets `walls.curtain_wall` and the compiler drops windows in those bays. Punched sets `walls.infill = wall`, so the existing rule moves windows onto the front. An untrained skin head stays punched. Eval photos keep their own `floor_shape` and `skin` on `runs/enclosed_grid/labels_eval.jsonl` (one of each per enclosure photo) and are scored by `score_enclosed_plan.py` against the detector's cells. Those labels are not training data.
+
 ## How to run
 
 Window only (unchanged):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -14,7 +15,12 @@ from balcony_plan import (  # noqa: E402
     MULLION_WIDTH_M,
     SURFACE_PANEL_M,
     _panel_divisions,
+    curtain_circle_panes,
+    curtain_glass_spans,
+    curtain_transom_z,
     outer_edges,
+    pane_count,
+    semicircle_pane_count,
     slab_outline,
     surface_panel_parts,
 )
@@ -95,6 +101,44 @@ class OutlineTests(unittest.TestCase):
     def test_triangle_apex_at_front_center(self) -> None:
         outline = slab_outline("triangle", x0=0.0, x1=4.0, y_wall=0.0, depth=1.5)
         self.assertEqual(outline, [(0.0, 0.0), (2.0, 1.5), (4.0, 0.0)])
+
+
+class PaneCountTests(unittest.TestCase):
+    def test_prefers_about_one_meter(self) -> None:
+        self.assertEqual(pane_count(4.7), 5)
+        self.assertEqual(pane_count(2.0), 2)
+        self.assertEqual(pane_count(1.0), 1)
+
+    def test_picks_the_closer_width_outside_the_band(self) -> None:
+        # 1.5 m: one pane is 1.5 m, two panes are 0.75 m. 0.75 is closer to the band.
+        self.assertEqual(pane_count(1.5), 2)
+
+    def test_semicircle_chords_stay_in_band(self) -> None:
+        diameter = 3.0
+        self.assertEqual(semicircle_pane_count(diameter), 5)
+        pts = curtain_circle_panes(0.0, diameter, 0.0)
+        self.assertEqual(len(pts), 6)
+        self.assertAlmostEqual(pts[0][1], 0.0, places=5)
+        self.assertAlmostEqual(pts[-1][1], 0.0, places=5)
+        radius = diameter / 2.0
+        cx = diameter / 2.0
+        for x, y in pts:
+            self.assertAlmostEqual((x - cx) ** 2 + y ** 2, radius ** 2, places=4)
+        for a, b in zip(pts, pts[1:]):
+            chord = math.hypot(b[0] - a[0], b[1] - a[1])
+            self.assertGreaterEqual(chord, 0.8)
+            self.assertLessEqual(chord, 1.2)
+
+    def test_transom_sits_2100mm_above_the_floor(self) -> None:
+        self.assertAlmostEqual(curtain_transom_z(0.0, 3.0), 2.1)
+        low, high = curtain_glass_spans(0.0, 3.0)
+        self.assertAlmostEqual(low[1], 2.1 - MULLION_WIDTH_M / 2.0)
+        self.assertAlmostEqual(high[0], 2.1 + MULLION_WIDTH_M / 2.0)
+        self.assertAlmostEqual(high[1], 3.0)
+
+    def test_short_storey_has_no_transom(self) -> None:
+        self.assertIsNone(curtain_transom_z(0.0, 2.0))
+        self.assertEqual(curtain_glass_spans(0.0, 2.0), [(0.0, 2.0)])
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ Python: `C:\Users\hiroo\anaconda3\envs\glodon\python.exe` only.
 
 - exact (bay_floor): predicted cell set equals the label set. Strict; one wrong cell fails.
 - detect: an enclosure photo hits at least one labeled cell; a no-enclosure photo predicts nothing.
+- Enclosure photos in `labels_eval.jsonl` can also store one `floor_shape` and one `skin`. Empty cell lists stay unlabeled for both. The eval grid UI asks for them (R/T/C and P/G). Score with `score_enclosed_plan.py` on the official predicted cells: each cell is cropped, then the same majority vote as the pipeline. Triangle counts as rectangle. No predicted cells is wrong on both. `cmp_x` stays out of the training jsonl.
 - Reported per group: enclosure (26), none (35), total (61); plus cell tp / fp / fn.
   `0185` was a no-enclosure photo and is now `f0b1`, `f1b1`, `f2b1`, `f3b1`.
   Rows in the table below that still say 25 and 36 were scored before that label edit.
@@ -139,6 +140,16 @@ Groups: exact 16, wrong 6, missed 4, none_ok 31, false_pos 4. The 16 exact enclo
 
 cell_clf builds the same per-cell features as training (depth, SAM3, OP1 stage cells, DINOv2), decodes with the four rules, then blanks the photo when the gate max is below 0.10. Each kept cell becomes one `balc_enclosed` unit via `place_enclosed_cells` in `balcony_pipeline/enclosed.py`. The classifier is the `cell_clf_search` base model, fit on cmp_b and cached at `runs/cell_clf/model_rules_gate.joblib`. Decoding the eval feature matrix with that cache matches `runs/cell_clf/compare_clf_rules_gate/preds.json` on all 61 photos.
 
+Enclosed floor plan is a second step. The railing checkpoint's floor head labels each enclosed crop; `triangle` counts as `rectangle`. One shape is chosen for the whole photo by majority vote (`vote_enclosed_floor_shape`); a tie is `rectangle`. That plan is written onto every enclosed unit. Open balconies are not in this photo-level vote.
+
+Enclosed skin is the same vote on a separate head (`punched_window` / `curtain_wall`). A tie, or an untrained head, is `punched_window`. Curtain wall writes `walls.infill = glass` plus `curtain_wall: true` and the compiler drops windows in those bays. Punched writes `walls.infill = wall`, so windows move onto the front as before. Crops come from `balcony_train/export_enclosed_crops.py` (cmp_b only) and are labeled in `label_ui.py` (P / G). Train with `--heads-only floor,skin`.
+
+Railing crops stay `open`. `infer_unit_ir` does not read the railing classifier's enclosure head, so a handrail is never `half_enclosed` or `enclosed`. Enclosed units come only from the cell detector.
+
+Open-balcony floor shape is a separate majority inside each appearance cluster (`apply_floor_majority`), using the same rule: circle only on a strict majority, otherwise rectangle. The railing vote (kind and material) is unchanged, and the winning railing IR receives that floor. `--no-floor-shape-vote` and `--no-railing-vote` keep each unit's own floor. The cluster vote record stores `floor_shape` and `floor_counts`.
+
+A curtain-wall circle is one semicircular drum. Touching cells (same floor, neighboring bays, or the floor above in overlapping bays) fuse in `fuse_curtain_circles`: width is the union of the bays, depth is half that width, glass runs from the lowest sill to the top of the stack. Each storey gets a floor slab on that outline. A horizontal mullion sits 2100 mm above each slab top (`CURTAIN_TRANSOM_ABOVE_FLOOR_M`) and the glass splits there; a storey shorter than that gets no transom. A rectangle curtain wall already has a slab per floor and only gains the same transom. Punched enclosures are unchanged.
+
 ## What was learned
 
 - Exact match is hard for every method: errors are mostly one floor or one bay off.
@@ -208,8 +219,11 @@ C looks like a labeling-policy question (turret tops, balcony bases) more than a
 | `op3_touch_op1.py` | OP3 rectangle plus touching OP1 cells. Default gate ≥ 0.2 → `runs/cell_clf/compare_touch/`. `--gate 0` is the pure classifier → `runs/cell_clf/compare_clf_op1/` |
 | `clf_three_rules.py` | Pure classifier plus the four cell rules → `runs/cell_clf/compare_clf_rules/`. `--gate 0.10` blanks photos under that gate → `runs/cell_clf/compare_clf_rules_gate/` |
 | `enclosed_detect.py` | Pipeline detector: same four rules and gate ≥ 0.10. Model cache `runs/cell_clf/model_rules_gate.joblib` |
+| `enclosed_floor_ui.py` | Label rectangle/circle on enclosed cells cropped from `data/base`. One plan per photo → `runs/enclosed_floor/` |
+| `export_enclosed_crops.py` | Train enclosed volumes → `runs/balcony_clf/crops/unlabeled/<stem>_enclosed_<NN>.png` for floor and skin labels |
 | `draw_clf_compare.py` | Pure-classifier compare images with probabilities, grouped boards → `runs/cell_clf/compare_clf/` |
 | `draw_cell_clf_compare.py` | Grouped compare boards from a results json |
+| `score_enclosed_plan.py` | Eval floor shape and skin from `labels_eval.jsonl` and official predicted cells |
 | `draw_depth_cells.py`, `draw_sam3_raw.py` | Depth / raw SAM3 panels (`runs/cell_clf/wrong_board/{depth,sam3_raw}/` for the 17 wrong photos) |
 
 ## Open items

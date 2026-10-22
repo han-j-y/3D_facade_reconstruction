@@ -6,9 +6,10 @@ cluster, medoid, and majority-vote *pattern* with a balcony fingerprint.
 Requires an existing window facade_dsl.json (floor×bay from the window track).
 Enclosed cells default to the classifier (four rules, gate >= 0.10) and are
 merged as ``balc_enclosed``. ``--enclosed-method sam3`` restores the previous
-SAM3+DA3 volumes. Open railings on the same cell are dropped; an open balcony
-on the floor above keeps its slab (aligned to the enclosed footprint by the
-compiler).
+SAM3+DA3 volumes. A railing crop stays ``open``: the railing classifier does
+not assign ``half_enclosed`` or ``enclosed``. Open railings on the same cell
+are dropped; an open balcony on the floor above keeps its slab (aligned to
+the enclosed footprint by the compiler).
 
   python balcony_pipeline/run_balcony.py --image PHOTO.png --windows-dsl facade_dsl.json --out-dir runs/balcony_demo
 """
@@ -37,12 +38,15 @@ if str(HERE) not in sys.path:
 import run_pipeline as rp  # noqa: E402
 
 from enclosed import (  # noqa: E402
+    assign_enclosed_plan,
     drop_open_under_enclosed,
-    enclosed_ir,
     ensure_da3_depth,
     median_floor_height,
+    apply_floor_majority,
     place_enclosed_cells,
     place_enclosed_volumes,
+    vote_enclosed_floor_shape,
+    vote_enclosed_skin,
 )
 from cluster import cluster_balcony_boxes  # noqa: E402
 from draw import (  # noqa: E402
@@ -375,20 +379,24 @@ def infer_unit_ir(
     profile_name: str,
     predictor,
 ) -> dict:
+    """Railing IR for one open-balcony crop.
+
+    Kind, material, and floor shape still come from the railing classifier.
+    Enclosure does not: every railing crop stays ``open``. Enclosed cells are
+    only those from the cell detector.
+    """
     kind_override = None
     material_override = None
     floor_override = None
-    enclosure_override = None
     if predictor is not None:
         if hasattr(predictor, "predict_full"):
             pred = predictor.predict_full(crop)
             kind_override = pred.get("kind")
             material_override = pred.get("material")
             floor_override = pred.get("floor_shape")
-            enclosure_override = pred.get("enclosure")
         else:
             kind_override = predictor.predict(crop)
-    return infer_balcony_ir(
+    ir = infer_balcony_ir(
         crop,
         box=unit["box_xyxy"],
         image_size=image_size,
@@ -396,8 +404,9 @@ def infer_unit_ir(
         rail_kind_override=kind_override,
         rail_material_override=material_override,
         floor_shape_override=floor_override,
-        enclosure_override=enclosure_override,
     )
+    ir["enclosure"] = "open"
+    return ir
 
 
 def _with_unit_floor(voted_ir: dict | None, member_ir: dict) -> dict:
@@ -773,18 +782,38 @@ def run(args: argparse.Namespace) -> Path | None:
                 voted = vote_cluster_ir(
                     member_preds, prefer_unit_id=med_i, profile_name=profile_name
                 )
+                vote = voted["vote"]
+                if not per_unit_floor:
+                    voted_ir, floor_shape, floor_counts = apply_floor_majority(
+                        voted["structure_ir"],
+                        [
+                            floor_shape_from_ir(p["ir"])
+                            for p in member_preds
+                            if isinstance(p.get("ir"), dict)
+                        ],
+                    )
+                    voted["structure_ir"] = voted_ir
+                    vote["floor_shape"] = floor_shape
+                    vote["floor_counts"] = floor_counts
                 for u in member_units:
                     if per_unit_floor:
                         u["structure_ir"] = _with_unit_floor(
                             voted["structure_ir"], u["structure_ir_member"]
                         )
                     else:
-                        u["structure_ir"] = voted["structure_ir"]
-                vote = voted["vote"]
+                        u["structure_ir"] = copy.deepcopy(voted["structure_ir"])
+                floor_s = ""
+                if not per_unit_floor:
+                    counts = vote.get("floor_counts") or {}
+                    floor_s = (
+                        f"  floor={vote.get('floor_shape')} "
+                        f"circle={counts.get('circle', 0)} "
+                        f"rectangle={counts.get('rectangle', 0)}"
+                    )
                 print(
                     f"  type_{tid:02d}: vote "
                     f"{vote.get('winner_count', 0)}/{vote.get('n_valid', 0)} "
-                    f"unique={vote.get('n_unique', 0)}"
+                    f"unique={vote.get('n_unique', 0)}{floor_s}"
                 )
                 if not per_unit_floor:
                     types_out.append(
@@ -809,7 +838,7 @@ def run(args: argparse.Namespace) -> Path | None:
                         f"  unit_{int(u['unit_id']):03d}: "
                         f"floor={floor_shape_from_ir(ir)} enclosure={enclosure_from_ir(ir)}"
                     )
-            floor_note = " floor=per-unit" if per_unit_floor else ""
+            floor_note = " floor=per-unit" if per_unit_floor else " floor=majority"
             vote_note = (
                 f"profile={profile_name} vote={axes_on} rail={rail_src}{floor_note}"
             )
@@ -817,11 +846,27 @@ def run(args: argparse.Namespace) -> Path | None:
     if enclosed_units:
         enc_dir = crops_dir / "enclosed"
         enc_dir.mkdir(parents=True, exist_ok=True)
+        if predictor is None:
+            predictor = resolve_railing_predictor(args, device)
+        floor_votes: list[str | None] = []
+        skin_votes: list[str | None] = []
         for u in enclosed_units:
+            crop = facade.crop(tuple(u["box_xyxy"])).convert("RGB")
             crop_path = enc_dir / f"unit_{int(u['unit_id']):03d}.png"
-            _write_image(facade.crop(tuple(u["box_xyxy"])), crop_path)
+            _write_image(crop, crop_path)
             u["asset"] = str(crop_path.relative_to(out_dir))
             u["type_id"] = 1000
+            shape = None
+            skin = None
+            if predictor is not None and hasattr(predictor, "predict_full"):
+                pred = predictor.predict_full(crop)
+                shape = pred.get("floor_shape")
+                skin = pred.get("skin")
+            floor_votes.append(shape)
+            skin_votes.append(skin)
+        floor_shape, floor_counts = vote_enclosed_floor_shape(floor_votes)
+        skin_name, skin_counts = vote_enclosed_skin(skin_votes)
+        enclosed_plan = assign_enclosed_plan(enclosed_units, floor_shape, skin_name)
         canon = enc_dir / "exemplar.png"
         shutil.copy(out_dir / enclosed_units[0]["asset"], canon)
         types_out.append(
@@ -831,17 +876,31 @@ def run(args: argparse.Namespace) -> Path | None:
                 "n_instances": len(enclosed_units),
                 "exemplar_unit": int(enclosed_units[0]["unit_id"]),
                 "exemplar_asset": str(canon.relative_to(out_dir)),
-                "structure_ir": enclosed_ir(),
-                "structure_tokens": ["enclosure=enclosed"],
+                "structure_ir": enclosed_plan,
+                "structure_tokens": [
+                    "enclosure=enclosed",
+                    f"shape={floor_shape}",
+                    f"skin={skin_name}",
+                ],
                 "structure_vote": {
-                    "mode": "enclosed_volume",
+                    "mode": "enclosed_floor",
                     "n_members": len(enclosed_units),
                     "unit_ids": [int(u["unit_id"]) for u in enclosed_units],
+                    "floor_shape": floor_shape,
+                    "floor_counts": floor_counts,
+                    "skin": skin_name,
+                    "skin_counts": skin_counts,
                 },
             }
         )
         units.extend(enclosed_units)
-        print(f"=== 4b Enclosed IR  n={len(enclosed_units)} (column width, no railing) ===")
+        print(
+            f"=== 4b Enclosed floor {floor_shape}  "
+            f"circle={floor_counts['circle']} rectangle={floor_counts['rectangle']} "
+            f"skin={skin_name} curtain={skin_counts['curtain_wall']} "
+            f"punched={skin_counts['punched_window']} "
+            f"n={len(enclosed_units)} ==="
+        )
 
     if not units:
         print("warn: no balcony or enclosed detections; skip merge")

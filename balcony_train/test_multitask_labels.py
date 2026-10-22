@@ -48,7 +48,7 @@ class MultitaskLabelsTests(unittest.TestCase):
             )
             _png(crops / "open_work" / "c.png")
             rows = iter_multitask_samples(crops, jsonl)
-            by_stem = {p.stem: (k, m, f) for p, k, m, f, _e in rows}
+            by_stem = {p.stem: (k, m, f) for p, k, m, f, _e, _s in rows}
             self.assertEqual(by_stem["a"][0], 0)
             self.assertEqual(by_stem["a"][1], 0)  # default metal
             self.assertEqual(by_stem["a"][2], FLOOR_IGNORE_INDEX)
@@ -72,7 +72,7 @@ class MultitaskLabelsTests(unittest.TestCase):
                 encoding="utf-8",
             )
             rows = iter_multitask_samples(crops, jsonl)
-            by_stem = {p.stem: (k, m, f) for p, k, m, f, _e in rows}
+            by_stem = {p.stem: (k, m, f) for p, k, m, f, _e, _s in rows}
             self.assertEqual(by_stem["hex"][2], 0)
             self.assertEqual(by_stem["b"][2], FLOOR_IGNORE_INDEX)
             self.assertEqual(floor_counts(rows)["rectangle"], 1)
@@ -93,7 +93,7 @@ class MultitaskLabelsTests(unittest.TestCase):
             jsonl.write_text(
                 "".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8"
             )
-            rows = {p.stem: (k, e) for p, k, _m, _f, e in iter_multitask_samples(crops, jsonl)}
+            rows = {p.stem: (k, e) for p, k, _m, _f, e, _s in iter_multitask_samples(crops, jsonl)}
             self.assertEqual(set(rows), {"s", "glass"})
             self.assertEqual(rows["s"], (2, 1))
             self.assertEqual(rows["glass"], (KIND_IGNORE_INDEX, 2))

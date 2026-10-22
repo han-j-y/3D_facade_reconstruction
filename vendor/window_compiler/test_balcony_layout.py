@@ -15,6 +15,7 @@ from balcony_layout import (  # noqa: E402
     column_points,
     front_edge_x,
     front_window_targets,
+    windows_behind_glass,
 )
 from facade_spec import get_cell  # noqa: E402
 
@@ -154,10 +155,138 @@ class FrontWindowTests(unittest.TestCase):
         self.assertLess(fx1 - fx0, 1.0)
         self.assertEqual(front_window_targets(frames, [self._window(spec, 2, 1)]), {})
 
+    def test_curtain_wall_drops_the_overlapping_window(self) -> None:
+        lib = {
+            "glass": {
+                **_ir("enclosed"),
+                "walls": {"infill": "glass", "curtain_wall": True},
+            }
+        }
+        spec = _spec([_at(2, 1, "glass")], lib)
+        frames = balcony_frames(spec)
+        self.assertTrue(frames[0]["curtain_wall"])
+        wins = [self._window(spec, 2, 1), self._window(spec, 2, 0)]
+        self.assertEqual(front_window_targets(frames, wins), {})
+        self.assertEqual(windows_behind_glass(frames, wins), {0})
+
+    def test_punched_frame_is_not_curtain_wall(self) -> None:
+        spec = _spec([_at(2, 1, "enc")], self.lib)
+        frames = balcony_frames(spec)
+        self.assertFalse(frames[0]["curtain_wall"])
+        self.assertEqual(windows_behind_glass(frames, [self._window(spec, 2, 1)]), set())
+
     def test_other_floor_window_stays(self) -> None:
         spec = _spec([_at(2, 1, "enc")], self.lib)
         targets = front_window_targets(balcony_frames(spec), [self._window(spec, 1, 1)])
         self.assertEqual(targets, {})
+
+    def test_fused_circle_drops_windows_on_every_floor(self) -> None:
+        lib = {"c": _curtain_circle()}
+        spec = _spec([_at(3, 1, "c"), _at(2, 1, "c")], lib)
+        frames = balcony_frames(spec)
+        wins = [
+            self._window(spec, 3, 1),
+            self._window(spec, 2, 1),
+            self._window(spec, 2, 0),
+        ]
+        self.assertEqual(windows_behind_glass(frames, wins), {0, 1})
+
+
+def _curtain_circle() -> dict:
+    ir = _ir("enclosed", shape="circle", width=2.4)
+    ir["walls"] = {"infill": "glass", "curtain_wall": True}
+    return ir
+
+
+class CurtainCircleTests(unittest.TestCase):
+    def test_single_cell_is_a_semicircle(self) -> None:
+        spec = _spec([_at(2, 1, "c")], {"c": _curtain_circle()})
+        frame = balcony_frames(spec)[0]
+        width = frame["bx1"] - frame["bx0"]
+        self.assertTrue(frame["curtain_drum"])
+        self.assertFalse(frame.get("skip_body"))
+        self.assertAlmostEqual(frame["depth"], width / 2.0)
+        cx = 0.5 * (frame["bx0"] + frame["bx1"])
+        for x, y in frame["outline"]:
+            self.assertAlmostEqual((x - cx) ** 2 + y ** 2, frame["depth"] ** 2, places=3)
+        self.assertGreater(len(frame["outline"]), 2)
+
+    def test_stack_is_one_drum(self) -> None:
+        spec = _spec(
+            [_at(3, 1, "c"), _at(2, 1, "c"), _at(1, 1, "c")],
+            {"c": _curtain_circle()},
+        )
+        bottom, mid, top = balcony_frames(spec)
+        self.assertTrue(bottom["curtain_drum"])
+        self.assertFalse(bottom.get("skip_body"))
+        self.assertTrue(mid["skip_body"])
+        self.assertTrue(top["skip_body"])
+        self.assertEqual(bottom["roof"], "own")
+        self.assertAlmostEqual(bottom["top_z"], top["top_z"])
+        self.assertEqual(bottom["row_lo"], 1)
+        self.assertEqual(bottom["row_hi"], 3)
+        self.assertEqual(
+            bottom["floor_sills"],
+            sorted(fr["sill_z"] for fr in (bottom, mid, top)),
+        )
+        self.assertLess(bottom["floor_sills"][0], bottom["floor_sills"][1])
+        self.assertLess(bottom["floor_sills"][1], bottom["floor_sills"][2])
+        self.assertAlmostEqual(bottom["depth"], (bottom["bx1"] - bottom["bx0"]) / 2.0)
+        self.assertNotAlmostEqual(bottom["depth"], 1.5)
+
+    def test_adjacent_bays_merge(self) -> None:
+        spec = _spec([_at(2, 0, "c"), _at(2, 1, "c")], {"c": _curtain_circle()})
+        a, b = balcony_frames(spec)
+        host, other = (a, b) if a.get("curtain_drum") else (b, a)
+        self.assertTrue(host["curtain_drum"])
+        self.assertTrue(other["skip_body"])
+        self.assertEqual(host["col0"], 0)
+        self.assertEqual(host["col1"], 1)
+        self.assertEqual(len(host["floor_sills"]), 1)
+        self.assertGreater(host["bx1"] - host["bx0"], 4.0)
+        self.assertAlmostEqual(host["depth"], (host["bx1"] - host["bx0"]) / 2.0)
+
+    def test_diagonal_cells_stay_separate(self) -> None:
+        spec = _spec([_at(3, 0, "c"), _at(2, 1, "c")], {"c": _curtain_circle()})
+        a, b = balcony_frames(spec)
+        self.assertTrue(a["curtain_drum"])
+        self.assertTrue(b["curtain_drum"])
+        self.assertFalse(a.get("skip_body"))
+        self.assertFalse(b.get("skip_body"))
+
+    def test_punched_circle_stays_a_stack_of_floors(self) -> None:
+        spec = _spec(
+            [_at(3, 1, "c"), _at(2, 1, "c")],
+            {"c": _ir("enclosed", shape="circle", width=2.4)},
+        )
+        lower, upper = balcony_frames(spec)
+        self.assertFalse(lower.get("curtain_drum"))
+        self.assertFalse(upper.get("skip_body"))
+        self.assertAlmostEqual(lower["depth"], 1.5)
+        self.assertEqual(upper["roof"], "own")
+
+    def test_rectangle_curtain_does_not_become_a_drum(self) -> None:
+        lib = {
+            "g": {**_ir("enclosed"), "walls": {"infill": "glass", "curtain_wall": True}},
+        }
+        spec = _spec([_at(3, 1, "g"), _at(2, 1, "g")], lib)
+        lower, upper = balcony_frames(spec)
+        self.assertFalse(lower.get("curtain_drum"))
+        self.assertFalse(upper.get("skip_body"))
+        self.assertEqual(lower["roof"], "shared")
+        self.assertAlmostEqual(lower["depth"], 1.5)
+
+    def test_open_balcony_above_is_the_lid(self) -> None:
+        spec = _spec(
+            [_at(3, 1, "c"), _at(2, 1, "c"), _at(1, 1, "o")],
+            {"c": _curtain_circle(), "o": _ir("open")},
+        )
+        bottom, mid, top = balcony_frames(spec)
+        self.assertTrue(bottom["curtain_drum"])
+        self.assertTrue(mid["skip_body"])
+        self.assertFalse(top.get("skip_body"))
+        self.assertEqual(bottom["roof"], "shared")
+        self.assertAlmostEqual(bottom["top_z"], top["sill_z"])
 
 
 class ColumnTests(unittest.TestCase):

@@ -7,7 +7,7 @@ from typing import Any
 import bpy
 
 from balcony_compile import add_balcony_meshes
-from balcony_layout import balcony_frames, front_window_targets
+from balcony_layout import balcony_frames, front_window_targets, windows_behind_glass
 from balcony_layout import front_y as balcony_front_y
 from blender_scene import build_blender_scene
 from compiler import compile_spec
@@ -335,6 +335,11 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
         align_type_bottoms(planned_wins)
 
     frames = balcony_frames(spec) if spec.get("balcony_placement") else []
+    behind_glass = windows_behind_glass(frames, planned_wins)
+    if behind_glass:
+        drop_ids = {id(planned_wins[i]) for i in behind_glass}
+        planned = [p for p in planned if id(p) not in drop_ids]
+        planned_wins = [p for i, p in enumerate(planned_wins) if i not in behind_glass]
     for wi, (fi, (ox, oz, ww, hh)) in front_window_targets(frames, planned_wins).items():
         p = planned_wins[wi]
         p.update(ox=ox, oz=oz, ww=ww, hh=hh, on_balcony=fi)

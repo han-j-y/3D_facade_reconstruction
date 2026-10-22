@@ -12,14 +12,21 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
+from PIL import Image  # noqa: E402
+
 from enclosed import (  # noqa: E402
     drop_open_under_enclosed,
     enclosed_ir,
     ensure_da3_depth,
     median_floor_height,
     overlapping_floors,
+    apply_floor_majority,
+    assign_enclosed_floor,
+    assign_enclosed_plan,
     place_enclosed_cells,
     place_enclosed_volumes,
+    vote_enclosed_floor_shape,
+    vote_enclosed_skin,
     slice_volume,
     snap_columns,
 )
@@ -149,6 +156,58 @@ class EnclosedPlaceTests(unittest.TestCase):
         )
         self.assertEqual([u["unit_id"] for u in dropped], [0])
         self.assertEqual([u["unit_id"] for u in kept], [1, 2, 3])
+
+    def test_open_floor_majority_is_separate_from_the_railing(self) -> None:
+        ir = {
+            "railing": {"kind": "open_work", "material": "metal"},
+            "floor": {"shape": "circle", "params": {"width": 1.5, "depth": 1.5}},
+        }
+        out, shape, counts = apply_floor_majority(ir, ["circle", "rectangle"])
+        self.assertEqual(shape, "rectangle")
+        self.assertEqual(counts, {"rectangle": 1, "circle": 1})
+        self.assertEqual(out["floor"]["shape"], "rectangle")
+        self.assertEqual(out["railing"]["material"], "metal")
+        self.assertEqual(ir["floor"]["shape"], "circle")
+        out, shape, _counts = apply_floor_majority(ir, ["circle", "circle", "triangle"])
+        self.assertEqual(shape, "circle")
+        self.assertEqual(out["floor"]["shape"], "circle")
+
+    def test_enclosed_floor_vote_maps_triangle_and_ties_to_rectangle(self) -> None:
+        winner, counts = vote_enclosed_floor_shape(["circle", "triangle"])
+        self.assertEqual(winner, "rectangle")
+        self.assertEqual(counts, {"rectangle": 1, "circle": 1})
+        winner, counts = vote_enclosed_floor_shape(["circle", "circle", "triangle"])
+        self.assertEqual(winner, "circle")
+        self.assertEqual(counts["rectangle"], 1)
+        winner, _counts = vote_enclosed_floor_shape([None, "triangle", ""])
+        self.assertEqual(winner, "rectangle")
+
+    def test_assign_enclosed_floor_is_shared(self) -> None:
+        units = place_enclosed_cells({(1, 0), (2, 0)}, _dsl())
+        ir = assign_enclosed_floor(units, "circle")
+        self.assertEqual(ir["floor"]["shape"], "circle")
+        self.assertTrue(all(u["structure_ir"]["floor"]["shape"] == "circle" for u in units))
+        self.assertIsNot(units[0]["structure_ir"], units[1]["structure_ir"])
+        assign_enclosed_floor(units, "triangle")
+        self.assertTrue(all(u["structure_ir"]["floor"]["shape"] == "rectangle" for u in units))
+
+    def test_enclosed_skin_vote_and_walls(self) -> None:
+        winner, counts = vote_enclosed_skin(["curtain_wall", None])
+        self.assertEqual(winner, "punched_window")
+        self.assertEqual(counts, {"punched_window": 1, "curtain_wall": 1})
+        winner, counts = vote_enclosed_skin(["curtain_wall", "curtain_wall", "punched_window"])
+        self.assertEqual(winner, "curtain_wall")
+        self.assertEqual(counts["punched_window"], 1)
+        winner, _counts = vote_enclosed_skin([None, "", "nope"])
+        self.assertEqual(winner, "punched_window")
+        units = place_enclosed_cells({(1, 0), (1, 1)}, _dsl())
+        glass = assign_enclosed_plan(units, "circle", "curtain_wall")
+        self.assertEqual(glass["walls"], {"infill": "glass", "curtain_wall": True})
+        self.assertEqual(glass["floor"]["shape"], "circle")
+        self.assertIsNot(units[0]["structure_ir"], units[1]["structure_ir"])
+        punched = assign_enclosed_plan(units, "rectangle", "punched_window")
+        self.assertEqual(punched["walls"], {"infill": "wall"})
+        self.assertNotIn("curtain_wall", punched["walls"])
 
     def test_place_cells_keeps_each_cell(self) -> None:
         units = place_enclosed_cells({(1, 0), (1, 2), (2, 0)}, _dsl())
@@ -315,6 +374,30 @@ class EnclosedPlaceTests(unittest.TestCase):
             photo.write_bytes(b"x")
             with patch("enclosed.subprocess.run", side_effect=OSError("no gpu")):
                 self.assertIsNone(ensure_da3_depth(photo, root / "depth"))
+
+
+class RailingEnclosureTests(unittest.TestCase):
+    def test_railing_crop_ignores_enclosure_head(self) -> None:
+        from run_balcony import infer_unit_ir
+
+        class _Predictor:
+            def predict_full(self, _crop: Image.Image) -> dict:
+                return {
+                    "kind": "open_work",
+                    "material": "metal",
+                    "floor_shape": "circle",
+                    "enclosure": "enclosed",
+                }
+
+        ir = infer_unit_ir(
+            Image.new("RGB", (32, 24), (80, 90, 100)),
+            {"box_xyxy": [0, 0, 32, 24]},
+            image_size=(100, 80),
+            profile_name="full",
+            predictor=_Predictor(),
+        )
+        self.assertEqual(ir["enclosure"], "open")
+        self.assertEqual(ir["floor"]["shape"], "circle")
 
 
 if __name__ == "__main__":

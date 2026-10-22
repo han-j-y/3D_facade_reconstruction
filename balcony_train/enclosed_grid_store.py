@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ _PIPE = ROOT / "balcony_pipeline"
 if str(_PIPE) not in sys.path:
     sys.path.insert(0, str(_PIPE))
 
+from balcony_train.labels import ENCLOSURE_SKINS, FLOOR_SHAPES  # noqa: E402
 from snap import _bands_from_windows_dsl  # noqa: E402
 
 DEFAULT_PHOTO_DIR = ROOT / "data" / "test for enclosure"
@@ -33,12 +35,75 @@ Cell = tuple[int, int]
 Bands = dict[int, tuple[int, int]]
 
 
+@dataclass
+class GridRecord:
+    """One saved facade. Shape and skin are set only when ``cells`` is non-empty."""
+
+    cells: list[Cell]
+    floor_shape: str | None = None
+    skin: str | None = None
+
+    def copy(self) -> GridRecord:
+        return GridRecord(list(self.cells), self.floor_shape, self.skin)
+
+
+def _plan_name(raw: Any, allowed: tuple[str, ...], field: str) -> str | None:
+    if raw is None:
+        return None
+    name = str(raw).strip().lower()
+    if name in ("", "none", "null"):
+        return None
+    if name not in allowed:
+        raise ValueError(f"unknown {field} {raw!r}; expected {allowed}")
+    return name
+
+
+def normalize_floor_shape(raw: Any) -> str | None:
+    return _plan_name(raw, FLOOR_SHAPES, "floor_shape")
+
+
+def normalize_skin(raw: Any) -> str | None:
+    return _plan_name(raw, ENCLOSURE_SKINS, "skin")
+
+
+def record_for_save(
+    cells: Any,
+    shape: Any = None,
+    skin: Any = None,
+    *,
+    plan: bool = False,
+    previous: GridRecord | None = None,
+) -> GridRecord:
+    """Cells plus one floor shape and one skin.
+
+    An empty cell list is a photo with no enclosure, so shape and skin are
+    cleared. With ``plan`` off, an existing shape and skin are kept.
+    """
+    norm = normalize_cells(cells)
+    if not norm:
+        return GridRecord([])
+    if not plan:
+        return GridRecord(
+            norm,
+            previous.floor_shape if previous is not None else None,
+            previous.skin if previous is not None else None,
+        )
+    floor = normalize_floor_shape(shape)
+    shell = normalize_skin(skin)
+    if floor is None or shell is None:
+        raise ValueError("enclosed photo needs floor_shape and skin")
+    return GridRecord(norm, floor, shell)
+
+
 def normalize_cells(raw: Any) -> list[Cell]:
-    """Unique ``(floor, bay)`` pairs, sorted by floor then bay."""
+    """Unique ``(floor, bay)`` pairs, sorted by floor then bay.
+
+    A set is accepted. The label UI keeps the current selection as a set.
+    """
     if raw is None:
         return []
-    if not isinstance(raw, (list, tuple)):
-        raise ValueError(f"cells must be a list, got {type(raw).__name__}")
+    if not isinstance(raw, (list, tuple, set)):
+        raise ValueError(f"cells must be a list or set, got {type(raw).__name__}")
     seen: set[Cell] = set()
     for item in raw:
         if not isinstance(item, (list, tuple)) or len(item) < 2:
@@ -47,12 +112,15 @@ def normalize_cells(raw: Any) -> list[Cell]:
     return sorted(seen)
 
 
-def load_labels(path: Path) -> dict[str, list[Cell]]:
-    """Stem → cells. Missing file is empty. An empty ``cells`` list is kept."""
+def load_records(path: Path) -> dict[str, GridRecord]:
+    """Stem → cells, and floor shape / skin when the row has them.
+
+    A missing file is empty. An empty ``cells`` list is kept and has no plan.
+    """
     path = Path(path)
     if not path.is_file():
         return {}
-    out: dict[str, list[Cell]] = {}
+    out: dict[str, GridRecord] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -61,25 +129,50 @@ def load_labels(path: Path) -> dict[str, list[Cell]]:
         stem = str(rec.get("stem") or "").strip()
         if not stem:
             raise ValueError(f"label row missing stem: {line}")
-        out[stem] = normalize_cells(rec.get("cells"))
+        cells = normalize_cells(rec.get("cells"))
+        if not cells:
+            out[stem] = GridRecord([])
+            continue
+        out[stem] = GridRecord(
+            cells,
+            normalize_floor_shape(rec.get("floor_shape")),
+            normalize_skin(rec.get("skin")),
+        )
     return out
 
 
-def write_labels(path: Path, labels: dict[str, list[Cell]]) -> None:
-    """Rewrite the jsonl. Every key is a saved photo, including empty cells."""
+def load_labels(path: Path) -> dict[str, list[Cell]]:
+    """Stem → cells. Missing file is empty. An empty ``cells`` list is kept."""
+    return {stem: list(rec.cells) for stem, rec in load_records(path).items()}
+
+
+def write_records(path: Path, records: dict[str, GridRecord]) -> None:
+    """Rewrite the jsonl. Shape and skin are omitted when the photo has no cells."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
-    for stem in sorted(labels):
-        cells = normalize_cells(labels[stem])
-        lines.append(
-            json.dumps(
-                {"stem": stem, "cells": [list(cell) for cell in cells]},
-                ensure_ascii=False,
-            )
-        )
+    for stem in sorted(records):
+        rec = records[stem]
+        cells = normalize_cells(rec.cells)
+        row: dict[str, Any] = {"stem": stem, "cells": [list(cell) for cell in cells]}
+        if cells:
+            floor = normalize_floor_shape(rec.floor_shape)
+            skin = normalize_skin(rec.skin)
+            if floor is not None:
+                row["floor_shape"] = floor
+            if skin is not None:
+                row["skin"] = skin
+        lines.append(json.dumps(row, ensure_ascii=False))
     text = ("\n".join(lines) + "\n") if lines else ""
     path.write_text(text, encoding="utf-8")
+
+
+def write_labels(path: Path, labels: dict[str, list[Cell]]) -> None:
+    """Rewrite cells only. A list value does not keep a floor shape or skin."""
+    write_records(
+        path,
+        {stem: GridRecord(normalize_cells(cells)) for stem, cells in labels.items()},
+    )
 
 
 def find_photo(photo_dir: Path, stem: str) -> Path | None:

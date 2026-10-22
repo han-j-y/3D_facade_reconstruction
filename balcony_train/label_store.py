@@ -23,6 +23,7 @@ from typing import Any
 
 from balcony_train.labels import (
     CLASSES,
+    ENCLOSURE_SKINS,
     ENCLOSURES,
     FLOOR_SHAPES,
     LABELED_IMAGE_SUFFIXES,
@@ -68,6 +69,18 @@ def normalize_floor_shape(raw: Any) -> str | None:
     name = LEGACY_FLOOR_SHAPES.get(name, name)
     if name not in FLOOR_SHAPES:
         raise ValueError(f"unknown floor shape {raw!r}; expected {FLOOR_SHAPES}")
+    return name
+
+
+def normalize_skin(raw: Any) -> str | None:
+    """Enclosed shell. Empty stays unset. Unknown names raise."""
+    if raw is None:
+        return None
+    name = str(raw).strip().lower().replace("-", "_").replace(" ", "_")
+    if not name or name in ("null", "none"):
+        return None
+    if name not in ENCLOSURE_SKINS:
+        raise ValueError(f"unknown enclosure skin {raw!r}; expected {ENCLOSURE_SKINS}")
     return name
 
 
@@ -126,6 +139,7 @@ def load_labels(jsonl_path: Path) -> dict[str, dict[str, Any]]:
                 "material": material,
                 "floor_shape": normalize_floor_shape(rec.get("floor_shape")),
                 "enclosure": normalize_enclosure(rec.get("enclosure")),
+                "skin": normalize_skin(rec.get("skin")),
             }
     return by_stem
 
@@ -147,6 +161,7 @@ def labels_from_folders(crops_dir: Path) -> dict[str, dict[str, Any]]:
                 "material": None,
                 "floor_shape": None,
                 "enclosure": None,
+                "skin": None,
             }
     return by_stem
 
@@ -167,12 +182,18 @@ def merge_label_sources(
         if floor is None:
             floor = normalize_floor_shape(prev.get("floor_shape"))
         enclosure = rec.get("enclosure") or prev.get("enclosure")
+        skin = rec.get("skin")
+        if skin is None:
+            skin = normalize_skin(prev.get("skin"))
+        if enclosure != "enclosed":
+            skin = None
         merged[stem] = {
             "path": rec.get("path") or prev.get("path") or f"{stem}.png",
             "kind": kind,
             "material": material,
             "floor_shape": floor,
             "enclosure": enclosure,
+            "skin": skin,
         }
     return merged
 
@@ -199,6 +220,7 @@ def write_labels_jsonl(
                     "material": material,
                     "floor_shape": normalize_floor_shape(rec.get("floor_shape")),
                     "enclosure": enclosure,
+                    "skin": normalize_skin(rec.get("skin")) if enclosure == "enclosed" else None,
                 },
                 ensure_ascii=False,
             )
@@ -265,6 +287,7 @@ def queue_stems(
     need_material: bool = True,
     need_floor_shape: bool = False,
     need_enclosure: bool = False,
+    need_skin: bool = False,
 ) -> list[str]:
     """Stems to show in the UI, unlabeled / incomplete first."""
     images = {p.stem: p for p in iter_crop_images(crops_dir)}
@@ -276,12 +299,15 @@ def queue_stems(
         material = rec.get("material") if rec else None
         floor = rec.get("floor_shape") if rec else None
         enclosure = rec.get("enclosure") if rec else None
+        skin = rec.get("skin") if rec else None
         incomplete = kind is None and not kind_optional(enclosure)
         if need_material and kind == "open_work" and material is None:
             incomplete = True
         if need_floor_shape and floor not in FLOOR_SHAPES:
             incomplete = True
         if need_enclosure and enclosure not in ENCLOSURES:
+            incomplete = True
+        if need_skin and enclosure == "enclosed" and skin not in ENCLOSURE_SKINS:
             incomplete = True
         if incomplete:
             todo.append(stem)
@@ -299,6 +325,7 @@ def save_annotation(
     material: str | None,
     floor_shape: str | None = None,
     enclosure: str | None = None,
+    skin: str | None = None,
     labels: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Update JSONL + move file into kind folder. Returns full label map.
@@ -313,6 +340,7 @@ def save_annotation(
     if kind_n == "open_work" and mat_n is None:
         raise ValueError("material required for open_work (metal or masonry)")
     floor_n = normalize_floor_shape(floor_shape)
+    skin_n = normalize_skin(skin) if enc_n == "enclosed" else None
 
     crops_dir = Path(crops_dir)
     jsonl_path = Path(jsonl_path)
@@ -327,6 +355,7 @@ def save_annotation(
         "material": mat_n,
         "floor_shape": floor_n,
         "enclosure": enc_n,
+        "skin": skin_n,
     }
     write_labels_jsonl(jsonl_path, records)
     return records

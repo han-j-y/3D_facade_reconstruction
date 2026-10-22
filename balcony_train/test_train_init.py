@@ -9,7 +9,8 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
-from balcony_train.labels import CLASSES, FLOOR_SHAPES, MATERIALS
+from balcony_train.labels import CLASSES, ENCLOSURE_SKINS, FLOOR_SHAPES, MATERIALS
+from balcony_train.model import apply_skin_checkpoint
 from balcony_train.train import load_init_heads
 
 
@@ -69,6 +70,25 @@ class LoadInitHeadsTests(unittest.TestCase):
         self.assertTrue(
             torch.equal(dst.floor_head.weight, src.floor_head.weight)
         )
+
+    def test_missing_skin_head_stays_untrained(self) -> None:
+        model = _Stub()
+        trained = apply_skin_checkpoint(
+            model,
+            {"kind_head": {}, "floor_shapes": list(FLOOR_SHAPES)},
+        )
+        self.assertFalse(trained)
+        self.assertFalse(model._skin_trained)
+
+    def test_railing_best_has_no_skin_head(self) -> None:
+        ckpt_path = Path(__file__).resolve().parents[1] / "checkpoints" / "railing_best.pt"
+        if not ckpt_path.is_file():
+            self.skipTest("railing checkpoint missing")
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        self.assertNotIn("skin_head", ckpt)
+        model = _Stub()
+        self.assertFalse(apply_skin_checkpoint(model, ckpt))
+        self.assertEqual(ENCLOSURE_SKINS, ("punched_window", "curtain_wall"))
 
 
 if __name__ == "__main__":

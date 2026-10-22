@@ -1,13 +1,14 @@
-"""Tkinter Label UI for railing kind, material, floor shape, and enclosure.
+"""Tkinter Label UI for railing kind, material, floor shape, enclosure, and skin.
 
 Usage::
 
-    python balcony_train/label_ui.py
-    python balcony_train/label_ui.py --crops-dir runs/balcony_clf/crops
+    C:\\Users\\hiroo\\anaconda3\\envs\\glodon\\python.exe balcony_train/label_ui.py
+    C:\\Users\\hiroo\\anaconda3\\envs\\glodon\\python.exe balcony_train/label_ui.py --crops-dir runs/balcony_clf/crops
 
 Keys: 1/2/3 kind (0 = no railing, enclosed only), M/N material (open_work),
-R/T/C/H/Z floor shape, O/A/E enclosure (open / half_enclosed / enclosed),
-Enter save, S skip, U undo, Q quit.
+R/T/C floor shape, O/A/E enclosure (open / half_enclosed / enclosed),
+P/G skin when enclosed (punched_window / curtain_wall),
+Enter save, S skip, Left previous, U undo, Q quit.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from balcony_train.label_store import (  # noqa: E402
 )
 from balcony_train.labels import (  # noqa: E402
     CLASSES,
+    ENCLOSURE_SKINS,
     ENCLOSURES,
     FLOOR_SHAPES,
     MATERIALS,
@@ -46,6 +48,7 @@ KIND_KEYS = {"0": "", "1": "open_work", "2": "surface_panel", "3": "solid"}
 ENCLOSURE_KEYS = {"o": "open", "a": "half_enclosed", "e": "enclosed"}
 MATERIAL_KEYS = {"m": "metal", "n": "masonry"}
 FLOOR_KEYS = {"r": "rectangle", "t": "triangle", "c": "circle"}
+SKIN_KEYS = {"p": "punched_window", "g": "curtain_wall"}
 # Fallback when the image pane has not been laid out yet.
 PREVIEW_FALLBACK = (900, 700)
 
@@ -86,13 +89,16 @@ class LabelApp:
             need_material=True,
             need_floor_shape=True,
             need_enclosure=True,
+            need_skin=True,
         )
         self.index = 0
         self.undo_stack: list[dict] = []
+        self.back_stack: list[str] = []
         self.kind_var = tk.StringVar(value="")
         self.material_var = tk.StringVar(value="")
         self.floor_var = tk.StringVar(value="")
         self.enclosure_var = tk.StringVar(value="")
+        self.skin_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="")
         self.path_var = tk.StringVar(value="")
         self._photo: ImageTk.PhotoImage | None = None
@@ -178,13 +184,29 @@ class LabelApp:
                 text=f"{key}: {name}",
                 value=name,
                 variable=self.enclosure_var,
+                command=self._sync_skin,
             ).pack(side=tk.LEFT, padx=8)
 
-        btns = ttk.Frame(self.root, padding=8)
-        btns.pack(fill=tk.X)
+        self.skin_fr = ttk.LabelFrame(
+            self.root,
+            text="Enclosed skin — P punched_window / G curtain_wall",
+            padding=8,
+        )
+        for name, key in zip(ENCLOSURE_SKINS, ("P", "G")):
+            ttk.Radiobutton(
+                self.skin_fr,
+                text=f"{key}: {name}",
+                value=name,
+                variable=self.skin_var,
+            ).pack(side=tk.LEFT, padx=8)
+
+        self.btns = ttk.Frame(self.root, padding=8)
+        self.btns.pack(fill=tk.X)
+        btns = self.btns
         ttk.Button(btns, text="Save (Enter)", command=self.save).pack(
             side=tk.LEFT, padx=4
         )
+        ttk.Button(btns, text="Previous", command=self.previous).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Skip (S)", command=self.skip).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Undo (U)", command=self.undo).pack(side=tk.LEFT, padx=4)
         ttk.Button(btns, text="Quit (Q)", command=self.root.destroy).pack(
@@ -194,6 +216,7 @@ class LabelApp:
         help_txt = (
             "Material is required only for open_work. Floor shape and enclosure "
             "are required. Kind may be none only for enclosed. "
+            "Skin is required only for enclosed. "
             "Labels → labels.jsonl; images move into crops/{kind}/ (no kind: unlabeled/)."
         )
         ttk.Label(self.root, text=help_txt, padding=8).pack(anchor=tk.W)
@@ -238,9 +261,19 @@ class LabelApp:
             return
         if ch in ENCLOSURE_KEYS:
             self.enclosure_var.set(ENCLOSURE_KEYS[ch])
+            self._sync_skin()
+            return
+        if ch in SKIN_KEYS and self.enclosure_var.get() == "enclosed":
+            self.skin_var.set(SKIN_KEYS[ch])
             return
         if keysym in ("Return", "KP_Enter"):
             self.save()
+            return
+        if keysym == "Left":
+            self.previous()
+            return
+        if keysym == "Right":
+            self.skip()
             return
         if ch == "s":
             self.skip()
@@ -261,6 +294,15 @@ class LabelApp:
             self.material_var.set("")
             self._set_material_enabled(False)
 
+    def _sync_skin(self) -> None:
+        if self.enclosure_var.get() == "enclosed":
+            if not self.skin_fr.winfo_ismapped():
+                self.skin_fr.pack(fill=tk.X, padx=8, pady=4, before=self.btns)
+            return
+        self.skin_var.set("")
+        if self.skin_fr.winfo_ismapped():
+            self.skin_fr.pack_forget()
+
     def _set_material_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
         for child in self.mat_fr.winfo_children():
@@ -274,6 +316,7 @@ class LabelApp:
         n_mat = {m: 0 for m in MATERIALS}
         n_floor = {name: 0 for name in FLOOR_SHAPES}
         n_enc = {name: 0 for name in ENCLOSURES}
+        n_skin = {name: 0 for name in ENCLOSURE_SKINS}
         n_open_no_mat = 0
         for rec in self.labels.values():
             enc = rec.get("enclosure")
@@ -291,6 +334,9 @@ class LabelApp:
             floor = rec.get("floor_shape")
             if floor in n_floor:
                 n_floor[floor] += 1
+            skin = rec.get("skin")
+            if skin in n_skin:
+                n_skin[skin] += 1
         parts = [f"{k}={n_kind[k]}" for k in CLASSES]
         parts.append(
             f"open_work materials metal={n_mat['metal']} masonry={n_mat['masonry']}"
@@ -298,6 +344,7 @@ class LabelApp:
         )
         parts.append("floor " + " ".join(f"{name}={n_floor[name]}" for name in FLOOR_SHAPES))
         parts.append("enclosure " + " ".join(f"{name}={n_enc[name]}" for name in ENCLOSURES))
+        parts.append("skin " + " ".join(f"{name}={n_skin[name]}" for name in ENCLOSURE_SKINS))
         return "  ".join(parts)
 
     def _show_current(self) -> None:
@@ -312,6 +359,8 @@ class LabelApp:
             self.material_var.set("")
             self.floor_var.set("")
             self.enclosure_var.set("")
+            self.skin_var.set("")
+            self._sync_skin()
             self._set_material_enabled(False)
             return
 
@@ -334,6 +383,9 @@ class LabelApp:
         self.floor_var.set(floor if floor in FLOOR_SHAPES else "")
         enclosure = rec.get("enclosure") or ""
         self.enclosure_var.set(enclosure if enclosure in ENCLOSURES else "")
+        skin = rec.get("skin") or ""
+        self.skin_var.set(skin if skin in ENCLOSURE_SKINS else "")
+        self._sync_skin()
 
         try:
             im = Image.open(path).convert("RGB")
@@ -378,6 +430,13 @@ class LabelApp:
                 "open_work needs material: metal (M) or masonry (N).",
             )
             return
+        skin = self.skin_var.get() if enclosure == "enclosed" else ""
+        if enclosure == "enclosed" and skin not in ENCLOSURE_SKINS:
+            messagebox.showwarning(
+                "Skin required",
+                "Enclosed needs a skin: punched_window (P) or curtain_wall (G).",
+            )
+            return
         floor = self.floor_var.get()
         if floor not in FLOOR_SHAPES:
             messagebox.showwarning(
@@ -397,6 +456,7 @@ class LabelApp:
                 material=material,
                 floor_shape=floor,
                 enclosure=enclosure,
+                skin=skin or None,
                 labels=self.labels,
             )
         except Exception as exc:
@@ -411,6 +471,7 @@ class LabelApp:
                 "new_kind": kind,
             }
         )
+        self.back_stack.append(stem)
         self.queue.pop(self.index)
         if self.index >= len(self.queue) and self.queue:
             self.index = len(self.queue) - 1
@@ -419,7 +480,20 @@ class LabelApp:
     def skip(self) -> None:
         if not self.queue:
             return
+        self.back_stack.append(self.queue[self.index])
         self.index = (self.index + 1) % len(self.queue)
+        self._show_current()
+
+    def previous(self) -> None:
+        """Show the crop visited before this one. A saved crop comes back for editing."""
+        if not self.back_stack:
+            return
+        stem = self.back_stack.pop()
+        if stem in self.queue:
+            self.index = self.queue.index(stem)
+        else:
+            self.queue.insert(min(self.index, len(self.queue)), stem)
+            self.index = self.queue.index(stem)
         self._show_current()
 
     def undo(self) -> None:
@@ -445,6 +519,7 @@ class LabelApp:
                 "material": prev.get("material"),
                 "floor_shape": prev.get("floor_shape"),
                 "enclosure": prev.get("enclosure"),
+                "skin": prev.get("skin"),
             }
         else:
             self.labels.pop(stem, None)

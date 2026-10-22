@@ -10,6 +10,7 @@ from typing import Any, Literal
 from balcony_train.labels import (
     CLASSES,
     ENCLOSURE_IGNORE_INDEX,
+    ENCLOSURE_SKINS,
     ENCLOSURES,
     FLOOR_IGNORE_INDEX,
     FLOOR_SHAPES,
@@ -17,6 +18,7 @@ from balcony_train.labels import (
     LEGACY_FLOOR_SHAPES,
     MATERIAL_IGNORE_INDEX,
     MATERIALS,
+    SKIN_IGNORE_INDEX,
     MultitaskSample,
     class_counts,
     enclosure_counts,
@@ -25,6 +27,7 @@ from balcony_train.labels import (
     iter_multitask_samples,
     material_counts,
     sample_targets,
+    skin_target,
     strat_key,
 )
 from balcony_train.paths import DEFAULT_LABELS_JSONL
@@ -119,6 +122,7 @@ def _row_payload(
     floor_idx: int,
     base: Path,
     enc_idx: int = ENCLOSURE_IGNORE_INDEX,
+    skin_idx: int = SKIN_IGNORE_INDEX,
 ) -> dict[str, Any]:
     kind = CLASSES[int(kind_idx)] if int(kind_idx) >= 0 else None
     material = None
@@ -132,6 +136,7 @@ def _row_payload(
         "material": material,
         "floor_shape": floor,
         "enclosure": ENCLOSURES[int(enc_idx)] if int(enc_idx) >= 0 else None,
+        "skin": ENCLOSURE_SKINS[int(skin_idx)] if int(skin_idx) >= 0 else None,
     }
 
 
@@ -150,14 +155,23 @@ def build_split_record(
     normed: list[MultitaskSample] = []
     for row in samples:
         kind_idx, mat_idx, floor_idx = sample_targets(row)
-        normed.append((Path(row[0]), kind_idx, mat_idx, floor_idx, enclosure_target(row)))
+        normed.append(
+            (
+                Path(row[0]),
+                kind_idx,
+                mat_idx,
+                floor_idx,
+                enclosure_target(row),
+                skin_target(row),
+            )
+        )
 
     splits: dict[str, list[dict[str, Any]]] = {}
     for name in ("train", "val", "test"):
         rows: list[dict[str, Any]] = []
         for idx in indices[name]:
-            path, kind_idx, mat_idx, floor_idx, enc_idx = normed[idx]
-            rows.append(_row_payload(path, kind_idx, mat_idx, floor_idx, base, enc_idx))
+            path, kind_idx, mat_idx, floor_idx, enc_idx, skin_idx = normed[idx]
+            rows.append(_row_payload(path, kind_idx, mat_idx, floor_idx, base, enc_idx, skin_idx))
         splits[name] = rows
     return {
         "version": 2,
@@ -225,7 +239,11 @@ def samples_from_split_record(
             floor_idx = FLOOR_IGNORE_INDEX
         enc_raw = row.get("enclosure")
         enc_idx = ENCLOSURES.index(str(enc_raw)) if enc_raw in ENCLOSURES else ENCLOSURE_IGNORE_INDEX
-        out.append((path, kind_idx, mat_idx, floor_idx, enc_idx))
+        skin_raw = row.get("skin")
+        skin_idx = (
+            ENCLOSURE_SKINS.index(str(skin_raw)) if skin_raw in ENCLOSURE_SKINS else SKIN_IGNORE_INDEX
+        )
+        out.append((path, kind_idx, mat_idx, floor_idx, enc_idx, skin_idx))
     return out
 
 

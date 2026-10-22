@@ -17,7 +17,7 @@ from balcony_train.evaluate import (
     misclass_folder_name,
     write_eval_list,
 )
-from balcony_train.labels import FLOOR_IGNORE_INDEX, MATERIAL_IGNORE_INDEX
+from balcony_train.labels import FLOOR_IGNORE_INDEX, MATERIAL_IGNORE_INDEX, SKIN_IGNORE_INDEX
 
 
 class EvaluateFilterTests(unittest.TestCase):
@@ -150,6 +150,38 @@ class EvaluateFilterTests(unittest.TestCase):
             self.assertTrue(copied.is_file())
             self.assertFalse(any(dest.rglob("floor_unlabeled.png")))
             self.assertFalse(any(dest.rglob("floor_ok.png")))
+
+    def test_copy_skin_misclassified_images(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            wrong = root / "src" / "skin_wrong.png"
+            unlabeled = root / "src" / "skin_unlabeled.png"
+            ok = root / "src" / "skin_ok.png"
+            for path in (wrong, unlabeled, ok):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(path.name.encode())
+            # skin: 0 punched_window, 1 curtain_wall
+            rows = [
+                ScoredCrop(wrong, 0, 0, 0, 0, 0, 0, 2, 2, 0, 1),
+                ScoredCrop(unlabeled, 0, 0, 0, 0, 0, 0, 2, 2, SKIN_IGNORE_INDEX, 1),
+                ScoredCrop(ok, 0, 0, 0, 0, 0, 0, 2, 2, 1, 1),
+            ]
+            dest = root / "Wrong"
+            stamp = "2026-10-19_154400"
+            n = copy_misclassified_images(rows, dest, stamp=stamp)
+            self.assertEqual(n, 1)
+            copied = (
+                dest
+                / stamp
+                / "skin"
+                / misclass_folder_name("punched_window", "curtain_wall")
+                / "skin_wrong.png"
+            )
+            self.assertTrue(copied.is_file())
+            listed = (dest / stamp / "mistakes.txt").read_text(encoding="utf-8")
+            self.assertIn("skin\tpunched_window\tcurtain_wall\tskin_wrong.png", listed)
+            self.assertFalse(any(dest.rglob("skin_unlabeled.png")))
+            self.assertFalse(any(dest.rglob("skin_ok.png")))
 
     def test_error_run_dir_adds_suffix_when_stamp_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

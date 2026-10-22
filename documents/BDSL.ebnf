@@ -91,12 +91,17 @@ enclosure_name  = "open" | "half_enclosed" | "enclosed" ;
      - Open balconies never take a roof.
 
    Window on an enclosed front (balcony_layout.front_window_targets):
-     A window on the same floor whose bays overlap the balcony and whose
-     center lies on the flat front edge is moved onto the enclosure front:
-     clamped 8 cm inside the front, the front panel becomes wall infill with
-     the opening cut, and the main wall is not cut there. If < 60 % of the
-     window width fits (narrow front, triangle, circle) the window
-     stays on the main wall behind the shell.
+     A punched window (walls.infill wall, or glass without curtain_wall)
+     on the same floor whose bays overlap the balcony and whose center lies
+     on the flat front edge is moved onto the enclosure front: clamped 8 cm
+     inside the front, the front panel becomes wall infill with the opening
+     cut, and the main wall is not cut there. If < 60 % of the window width
+     fits (narrow front, triangle, circle) the window stays on the main wall
+     behind the shell.
+     curtain_wall (IR marker walls.curtain_wall = true, with infill glass)
+     drops those windows instead: nothing moves to the front and the main
+     wall is not cut. "infill glass" alone is not curtain wall; hand-written
+     BDSL keeps the punched move.
 
    Photo recovery takes enclosure from the classifier's enclosure head
    (open when the checkpoint has none) and does not vote on it. *)
@@ -111,7 +116,9 @@ column_kv       = "count", ws, int
 walls_block     = "walls:", nl, { ws, wall_kv, nl } ;
 wall_kv         = "infill", ws, ( "glass" | "wall" ) ;
 (* default: glass (panes with ~1 m mullions). wall: 200 mm solid panels.
-   The front panel is forced to wall infill when a window is moved onto it. *)
+   The front panel is forced to wall infill when a window is moved onto it.
+   Photo recovery may also set walls.curtain_wall = true (IR only, not a
+   BDSL keyword). That glass shell drops the windows in its bays. *)
 
 (* ——— extra floor params (optional; shape already on balcony_line) ——— *)
 
@@ -194,7 +201,7 @@ output_block    = "output:", nl, { ws, ident, ws, scalar, nl } ;
     "structure": "projecting"|"inset"|"composite"|"free_standing",
     "enclosure": "open"|"half_enclosed"|"enclosed",
     "columns"?: { "count": int, "width": <scalar>, "style": "square"|"round" },
-    "walls"?: { "infill": "glass"|"wall" },
+    "walls"?: { "infill": "glass"|"wall", "curtain_wall"?: bool },
     "floor": { "shape": "rectangle"|"circle"|"triangle",
                "params": { "width": <scalar>, "depth": <scalar>, "height"? } },
     "railing": { "kind": "open_work"|"surface_panel"|"solid", "height": <scalar>,

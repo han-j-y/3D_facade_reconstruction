@@ -14,6 +14,11 @@ Example::
 
 Keys: click toggles a cell, Next or Enter marks this photo done, S skips,
 C clears the selection, Left goes back, U undo, Q or Finish closes.
+
+The eval labels file also asks for one floor shape and one skin on each
+photo that has cells. R rectangle, T triangle, C circle (Clear is Delete),
+P punched window, G curtain wall. An empty selection still means no enclosure
+and stores neither. Train cell labels (``--no-plan``) keep C as clear.
 """
 
 from __future__ import annotations
@@ -37,13 +42,15 @@ from balcony_train.enclosed_grid_store import (  # noqa: E402
     DEFAULT_EVAL_LABELS_JSONL,
     DEFAULT_EVAL_PHOTO_DIR,
     Cell,
+    GridRecord,
     cell_at,
     facade_stems_from_crop_labels,
     find_photo,
     list_grid_stems,
     load_grid,
-    load_labels,
-    write_labels,
+    load_records,
+    record_for_save,
+    write_records,
 )
 
 Fill = tuple[int, int, int, int]
@@ -87,22 +94,30 @@ class EnclosedGridApp:
         dsl_dir: Path,
         labels_path: Path,
         stems: list[str] | None = None,
+        plan: bool = False,
     ) -> None:
         self.root = root
         self.photo_dir = Path(photo_dir)
         self.dsl_dir = Path(dsl_dir)
         self.labels_path = Path(labels_path)
+        self.plan = bool(plan)
         ready, missing = list_grid_stems(self.photo_dir, self.dsl_dir, stems=stems)
         self.queue = ready
         self.missing = missing
-        self.labels = load_labels(self.labels_path)
+        self.labels = load_records(self.labels_path)
         self.index = 0
         for i, stem in enumerate(self.queue):
-            if stem not in self.labels:
+            rec = self.labels.get(stem)
+            if rec is None:
+                self.index = i
+                break
+            if self.plan and rec.cells and (rec.floor_shape is None or rec.skin is None):
                 self.index = i
                 break
         self.selected: set[Cell] = set()
-        self.undo_stack: list[tuple[str, list[Cell] | None]] = []
+        self.undo_stack: list[tuple[str, GridRecord | None]] = []
+        self.floor_var = tk.StringVar(value="")
+        self.skin_var = tk.StringVar(value="")
         self._photo: Image.Image | None = None
         self._floor_y: dict[int, tuple[int, int]] = {}
         self._bay_x: dict[int, tuple[int, int]] = {}
@@ -128,7 +143,24 @@ class EnclosedGridApp:
             "Click a cell to mark it enclosed. Next marks this photo done "
             "(no cells = no enclosure). Skip leaves it unlabeled."
         )
+        if self.plan:
+            hint += " Enclosure photos also need a floor shape and a skin."
         ttk.Label(top, text=hint).pack(anchor=tk.W)
+        if self.plan:
+            plan = ttk.Frame(top)
+            plan.pack(fill=tk.X, pady=(6, 0))
+            ttk.Label(plan, text="Floor").pack(side=tk.LEFT, padx=(0, 6))
+            for name, key in (("rectangle", "R"), ("triangle", "T"), ("circle", "C")):
+                ttk.Radiobutton(
+                    plan, text=f"{name} ({key})", value=name, variable=self.floor_var
+                ).pack(side=tk.LEFT, padx=4)
+            ttk.Label(plan, text="   Skin").pack(side=tk.LEFT, padx=(12, 6))
+            for name, key in (("punched_window", "P"), ("curtain_wall", "G")):
+                ttk.Radiobutton(
+                    plan, text=f"{name} ({key})", value=name, variable=self.skin_var
+                ).pack(side=tk.LEFT, padx=4)
+            self.floor_var.trace_add("write", lambda *_a: self._render())
+            self.skin_var.trace_add("write", lambda *_a: self._render())
 
         self.canvas = tk.Canvas(self.root, bg="#1e1e1e", highlightthickness=0)
         self.canvas.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
@@ -138,7 +170,8 @@ class EnclosedGridApp:
         bar = ttk.Frame(self.root, padding=8)
         bar.pack(fill=tk.X)
         ttk.Button(bar, text="Save (Enter)", command=self.save).pack(side=tk.LEFT, padx=4)
-        ttk.Button(bar, text="Clear (C)", command=self.clear_selection).pack(side=tk.LEFT, padx=4)
+        clear_key = "Delete" if self.plan else "C"
+        ttk.Button(bar, text=f"Clear ({clear_key})", command=self.clear_selection).pack(side=tk.LEFT, padx=4)
         ttk.Button(bar, text="Skip (S)", command=self.skip).pack(side=tk.LEFT, padx=4)
         ttk.Button(bar, text="Prev", command=self.prev).pack(side=tk.LEFT, padx=4)
         ttk.Button(bar, text="Next", command=self.next).pack(side=tk.LEFT, padx=4)
@@ -148,11 +181,20 @@ class EnclosedGridApp:
     def _bind_keys(self) -> None:
         self.root.bind("<Return>", lambda _e: self.save())
         self.root.bind("<Key-s>", lambda _e: self.skip())
-        self.root.bind("<Key-c>", lambda _e: self.clear_selection())
         self.root.bind("<Left>", lambda _e: self.prev())
         self.root.bind("<Right>", lambda _e: self.next())
         self.root.bind("<Key-u>", lambda _e: self.undo())
         self.root.bind("<Key-q>", lambda _e: self.finish())
+        if self.plan:
+            self.root.bind("<Delete>", lambda _e: self.clear_selection())
+            self.root.bind("<BackSpace>", lambda _e: self.clear_selection())
+            self.root.bind("<Key-r>", lambda _e: self.floor_var.set("rectangle"))
+            self.root.bind("<Key-t>", lambda _e: self.floor_var.set("triangle"))
+            self.root.bind("<Key-c>", lambda _e: self.floor_var.set("circle"))
+            self.root.bind("<Key-p>", lambda _e: self.skin_var.set("punched_window"))
+            self.root.bind("<Key-g>", lambda _e: self.skin_var.set("curtain_wall"))
+        else:
+            self.root.bind("<Key-c>", lambda _e: self.clear_selection())
 
     def _on_configure(self, _event: tk.Event) -> None:
         if self._resize_after is not None:
@@ -183,11 +225,24 @@ class EnclosedGridApp:
             self.skip()
             return
         saved = self.labels.get(stem)
-        self.selected = set(saved) if saved is not None else set()
+        self.selected = set(saved.cells) if saved is not None else set()
+        if self.plan:
+            self.floor_var.set(saved.floor_shape if saved is not None and saved.floor_shape else "")
+            self.skin_var.set(saved.skin if saved is not None and saved.skin else "")
         n_saved = sum(1 for s in self.queue if s in self.labels)
         state = "not done"
         if saved is not None:
-            state = "done, no enclosure" if not saved else f"done, {len(saved)} cells"
+            if not saved.cells:
+                state = "done, no enclosure"
+            else:
+                plan = ""
+                if self.plan:
+                    plan = (
+                        f", {saved.floor_shape}, {saved.skin}"
+                        if saved.floor_shape and saved.skin
+                        else ", plan missing"
+                    )
+                state = f"done, {len(saved.cells)} cells{plan}"
         self.path_var.set(f"[{self.index + 1}/{len(self.queue)}]  {stem}   labeled {n_saved}/{len(self.queue)}")
         miss = f"   no DSL: {len(self.missing)}" if self.missing else ""
         self.status_var.set(f"{state}{miss}")
@@ -212,6 +267,10 @@ class EnclosedGridApp:
         self.canvas.create_image(ox, oy, anchor=tk.NW, image=self._tk_image)
         n = len(self.selected)
         choice = "no enclosure" if n == 0 else f"{n} cell(s)"
+        if self.plan and n:
+            floor = self.floor_var.get() or "shape?"
+            skin = self.skin_var.get() or "skin?"
+            choice = f"{choice}, {floor}, {skin}"
         self.canvas.create_text(
             12,
             ch - 16,
@@ -247,10 +306,24 @@ class EnclosedGridApp:
             return False
         stem = self.queue[self.index]
         prev = self.labels.get(stem)
-        prev_copy = list(prev) if prev is not None else None
-        self.labels[stem] = sorted(self.selected)
+        prev_copy = prev.copy() if prev is not None else None
         try:
-            write_labels(self.labels_path, self.labels)
+            saved = record_for_save(
+                self.selected,
+                self.floor_var.get(),
+                self.skin_var.get(),
+                plan=self.plan,
+                previous=prev,
+            )
+        except ValueError as exc:
+            messagebox.showinfo(
+                "Need shape and skin",
+                f"{exc}\n\nR rectangle, T triangle, C circle, P punched window, G curtain wall.",
+            )
+            return False
+        self.labels[stem] = saved
+        try:
+            write_records(self.labels_path, self.labels)
         except OSError as exc:
             if prev_copy is None:
                 self.labels.pop(stem, None)
@@ -269,12 +342,30 @@ class EnclosedGridApp:
         if self.queue and self._photo is not None:
             stem = self.queue[self.index]
             prev = self.labels.get(stem)
-            cells = sorted(self.selected)
-            changed = (prev is None and bool(cells)) or (
-                prev is not None and list(prev) != cells
-            )
-            if changed:
-                self._write_current()
+            try:
+                current = record_for_save(
+                    self.selected,
+                    self.floor_var.get(),
+                    self.skin_var.get(),
+                    plan=self.plan,
+                    previous=prev,
+                )
+            except ValueError as exc:
+                messagebox.showinfo(
+                    "Need shape and skin",
+                    f"{exc}\n\nR rectangle, T triangle, C circle, P punched window, G curtain wall.",
+                )
+                return
+            if prev is None:
+                changed = bool(current.cells)
+            else:
+                changed = (
+                    prev.cells != current.cells
+                    or prev.floor_shape != current.floor_shape
+                    or prev.skin != current.skin
+                )
+            if changed and not self._write_current():
+                return
         self.root.destroy()
 
     def _move(self, step: int) -> None:
@@ -306,8 +397,8 @@ class EnclosedGridApp:
         if prev is None:
             self.labels.pop(stem, None)
         else:
-            self.labels[stem] = list(prev)
-        write_labels(self.labels_path, self.labels)
+            self.labels[stem] = prev.copy()
+        write_records(self.labels_path, self.labels)
         if stem in self.queue:
             self.index = self.queue.index(stem)
         self._show_current()
@@ -329,6 +420,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Every photo in --in-dir that has a window grid (ignore --crop-labels).",
     )
+    ap.add_argument(
+        "--plan",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Ask for floor shape and skin on enclosure photos. Default: on for the eval labels file.",
+    )
     return ap.parse_args()
 
 
@@ -338,9 +435,15 @@ def main() -> None:
     if not args.all_photos:
         stems = facade_stems_from_crop_labels(args.crop_labels)
     ready, missing = list_grid_stems(args.in_dir, args.dsl_dir, stems=stems)
+    plan = (
+        args.plan
+        if args.plan is not None
+        else Path(args.labels).resolve() == DEFAULT_EVAL_LABELS_JSONL.resolve()
+    )
     print(f"grid ready {len(ready)}  waiting for window grid {len(missing)}", flush=True)
     if missing:
         print("no facade_dsl.json: " + ", ".join(missing), flush=True)
+    print(f"plan labels {'on' if plan else 'off'}", flush=True)
     root = tk.Tk()
     EnclosedGridApp(
         root,
@@ -348,6 +451,7 @@ def main() -> None:
         dsl_dir=args.dsl_dir,
         labels_path=args.labels,
         stems=stems,
+        plan=plan,
     )
     root.mainloop()
 

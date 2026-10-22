@@ -341,8 +341,58 @@ def even_along_polyline(points: Sequence[Point], n: int) -> list[Point]:
 
 MULLION_SPACING_M = 1.0
 MULLION_WIDTH_M = 0.06
+# Curtain-wall circle panes stay inside this band. The count is the integer
+# whose pane width is nearest 1 m and, when possible, inside the band.
+GLASS_PANE_MIN_M = 0.8
+GLASS_PANE_MAX_M = 1.2
+# Horizontal curtain-wall mullion, measured up from the top of each floor slab.
+CURTAIN_TRANSOM_ABOVE_FLOOR_M = 2.1
 SURFACE_PANEL_M = 0.025
 ENCLOSED_CLEAR_H_M = 2.5
+
+
+def curtain_transom_z(
+    floor_top: float,
+    ceiling: float,
+    *,
+    rise: float = CURTAIN_TRANSOM_ABOVE_FLOOR_M,
+    mull_w: float = MULLION_WIDTH_M,
+) -> float | None:
+    """Height of the horizontal mullion, or None when it would not fit.
+
+    ``floor_top`` is the top of the slab. The mullion is omitted when the
+    storey ends before the bar would clear the ceiling.
+    """
+    z = float(floor_top) + float(rise)
+    half = float(mull_w) / 2.0
+    if z - half <= float(floor_top) + 1e-4:
+        return None
+    if z + half >= float(ceiling) - 1e-4:
+        return None
+    return z
+
+
+def curtain_glass_spans(
+    floor_top: float,
+    ceiling: float,
+    *,
+    mull_w: float = MULLION_WIDTH_M,
+) -> list[tuple[float, float]]:
+    """Glass intervals on one storey, split around the 2.1 m transom when it fits."""
+    z_lo = float(floor_top)
+    z_hi = float(ceiling)
+    if z_hi - z_lo <= 1e-3:
+        return []
+    z = curtain_transom_z(z_lo, z_hi, mull_w=mull_w)
+    if z is None:
+        return [(z_lo, z_hi)]
+    half = float(mull_w) / 2.0
+    spans: list[tuple[float, float]] = []
+    if z - half - z_lo > 1e-3:
+        spans.append((z_lo, z - half))
+    if z_hi - (z + half) > 1e-3:
+        spans.append((z + half, z_hi))
+    return spans
 
 
 def grid_stations(
@@ -365,6 +415,98 @@ def grid_stations(
             continue
         out.append(i * step)
     return out
+
+
+def pane_count(
+    length: float,
+    lo: float = GLASS_PANE_MIN_M,
+    hi: float = GLASS_PANE_MAX_M,
+    target: float = MULLION_SPACING_M,
+) -> int:
+    """How many panes split ``length`` so each is about ``target`` and inside ``lo``..``hi``.
+
+    When no integer lands inside the band, the count whose width is closest
+    to the band is used.
+    """
+    length = max(1e-6, float(length))
+    lo = max(1e-6, float(lo))
+    hi = max(lo, float(hi))
+    n_min = max(1, math.ceil(length / hi - 1e-9))
+    n_max = max(1, math.floor(length / lo + 1e-9))
+    prefer = max(1, int(round(length / max(target, 1e-6))))
+    if n_min <= n_max:
+        return min(n_max, max(n_min, prefer))
+
+    def penalty(n: int) -> float:
+        width = length / n
+        if width < lo:
+            return lo - width
+        if width > hi:
+            return width - hi
+        return 0.0
+
+    return min(range(1, max(n_min, n_max, prefer) + 1), key=penalty)
+
+
+def _band_penalty(width: float, lo: float, hi: float) -> float:
+    if width < lo:
+        return lo - width
+    if width > hi:
+        return width - hi
+    return 0.0
+
+
+def semicircle_pane_count(
+    diameter: float,
+    lo: float = GLASS_PANE_MIN_M,
+    hi: float = GLASS_PANE_MAX_M,
+    target: float = MULLION_SPACING_M,
+) -> int:
+    """Panes around a semicircle so each chord is about ``target`` and inside ``lo``..``hi``."""
+    radius = max(1e-6, float(diameter) / 2.0)
+    lo = max(1e-6, float(lo))
+    hi = max(lo, float(hi))
+
+    def chord(n: int) -> float:
+        return 2.0 * radius * math.sin(math.pi / (2.0 * n))
+
+    limit = max(1, int(math.ceil(math.pi * radius / lo)) + 1)
+    in_band = [
+        n
+        for n in range(1, limit + 1)
+        if lo - 1e-9 <= chord(n) <= hi + 1e-9
+    ]
+    if in_band:
+        return min(in_band, key=lambda n: (abs(chord(n) - target), n))
+    return min(range(1, limit + 1), key=lambda n: _band_penalty(chord(n), lo, hi))
+
+
+def curtain_circle_panes(
+    x0: float,
+    x1: float,
+    y_wall: float,
+    depth: float | None = None,
+) -> list[Point]:
+    """Semicircle stations, wall-left to wall-right, one glass pane between each.
+
+    Depth defaults to half the diameter, so the plan is a true semicircle.
+    The pane count is chosen from the arc length.
+    """
+    if x1 < x0:
+        x0, x1 = x1, x0
+    rx = max(0.05, (x1 - x0) / 2.0)
+    ry = rx if depth is None else max(0.05, float(depth))
+    if abs(ry - rx) < 1e-6:
+        n = semicircle_pane_count(2.0 * rx)
+    else:
+        arc = math.pi * math.sqrt((rx * rx + ry * ry) / 2.0)
+        n = pane_count(arc)
+    cx = 0.5 * (x0 + x1)
+    pts: list[Point] = []
+    for i in range(n + 1):
+        t = math.pi * (1.0 - i / n)
+        pts.append((cx + rx * math.cos(t), y_wall + ry * math.sin(t)))
+    return pts
 
 
 def glass_bays(

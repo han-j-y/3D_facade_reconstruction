@@ -1,10 +1,11 @@
-"""Train multitask kind, material, floor-shape, enclosure heads on frozen DINOv2.
+"""Train multitask kind, material, floor, enclosure, and skin heads on frozen DINOv2.
 
 Saves ``checkpoints/railing_best.pt``. Material loss applies only to open_work.
-Floor / enclosure / kind losses apply only where that label is set.
+Floor / enclosure / kind / skin losses apply only where that label is set.
 
-``--init-ckpt`` loads an existing kind/material checkpoint.
-``--floor-only`` trains just the floor head and leaves those weights unchanged.
+``--init-ckpt`` loads an existing checkpoint.
+``--heads-only floor,skin`` trains just those heads. ``--floor-only`` is the
+same as ``--heads-only floor``.
 """
 
 from __future__ import annotations
@@ -26,18 +27,26 @@ from balcony_train.dataset import MultitaskCropDataset  # noqa: E402
 from balcony_train.labels import (  # noqa: E402
     CLASSES,
     ENCLOSURE_IGNORE_INDEX,
+    ENCLOSURE_SKINS,
     ENCLOSURES,
     FLOOR_IGNORE_INDEX,
     FLOOR_SHAPES,
     KIND_IGNORE_INDEX,
     MATERIAL_IGNORE_INDEX,
     MATERIALS,
+    SKIN_IGNORE_INDEX,
     class_counts,
     enclosure_counts,
     floor_counts,
     material_counts,
+    skin_counts,
 )
-from balcony_train.model import RailingClassifier, load_backbone, save_checkpoint  # noqa: E402
+from balcony_train.model import (  # noqa: E402
+    RailingClassifier,
+    apply_skin_checkpoint,
+    load_backbone,
+    save_checkpoint,
+)
 from balcony_train.paths import (  # noqa: E402
     DEFAULT_CROPS_DIR,
     DEFAULT_LABELS_JSONL,
@@ -68,13 +77,16 @@ def _metrics(
     floor_total = 0
     enc_correct = 0
     enc_total = 0
-    for images, kind_y, mat_y, floor_y, enc_y in loader:
+    skin_correct = 0
+    skin_total = 0
+    for images, kind_y, mat_y, floor_y, enc_y, skin_y in loader:
         images = images.to(device)
         kind_y = kind_y.to(device)
         mat_y = mat_y.to(device)
         floor_y = floor_y.to(device)
         enc_y = enc_y.to(device)
-        kind_logits, mat_logits, floor_logits, enc_logits = model(images)
+        skin_y = skin_y.to(device)
+        kind_logits, mat_logits, floor_logits, enc_logits, skin_logits = model(images)
         kind_mask = kind_y != KIND_IGNORE_INDEX
         kind_pred = kind_logits.argmax(dim=1)
         kind_correct += int((kind_pred[kind_mask] == kind_y[kind_mask]).sum().item())
@@ -94,16 +106,65 @@ def _metrics(
             floor_pred = floor_logits.argmax(dim=1)
             floor_correct += int((floor_pred[floor_mask] == floor_y[floor_mask]).sum().item())
             floor_total += int(floor_mask.sum().item())
+        skin_mask = skin_y != SKIN_IGNORE_INDEX
+        if bool(skin_mask.any()):
+            skin_pred = skin_logits.argmax(dim=1)
+            skin_correct += int((skin_pred[skin_mask] == skin_y[skin_mask]).sum().item())
+            skin_total += int(skin_mask.sum().item())
     return {
         "kind_acc": kind_correct / max(kind_total, 1),
         "material_acc": mat_correct / max(mat_total, 1) if mat_total else float("nan"),
         "floor_acc": floor_correct / max(floor_total, 1) if floor_total else float("nan"),
         "enclosure_acc": enc_correct / max(enc_total, 1) if enc_total else float("nan"),
+        "skin_acc": skin_correct / max(skin_total, 1) if skin_total else float("nan"),
         "n_kind": float(kind_total),
         "n_material": float(mat_total),
         "n_floor": float(floor_total),
         "n_enclosure": float(enc_total),
+        "n_skin": float(skin_total),
     }
+
+
+def _print_confusion(model: RailingClassifier, loader: DataLoader, device: torch.device) -> None:
+    """Print floor and skin counts so a small enclosed set is readable."""
+    floor_conf = torch.zeros((len(FLOOR_SHAPES), len(FLOOR_SHAPES)), dtype=torch.int64)
+    skin_conf = torch.zeros((len(ENCLOSURE_SKINS), len(ENCLOSURE_SKINS)), dtype=torch.int64)
+    model.eval()
+    with torch.no_grad():
+        for images, _kind_y, _mat_y, floor_y, _enc_y, skin_y in loader:
+            _k, _m, floor_logits, _e, skin_logits = model(images.to(device))
+            floor_pred = floor_logits.argmax(dim=1).cpu()
+            skin_pred = skin_logits.argmax(dim=1).cpu()
+            for t, p in zip(floor_y.tolist(), floor_pred.tolist()):
+                if int(t) != FLOOR_IGNORE_INDEX:
+                    floor_conf[int(t), int(p)] += 1
+            for t, p in zip(skin_y.tolist(), skin_pred.tolist()):
+                if int(t) != SKIN_IGNORE_INDEX:
+                    skin_conf[int(t), int(p)] += 1
+    if int(floor_conf.sum().item()):
+        print("floor rows=true cols=pred  " + "  ".join(FLOOR_SHAPES))
+        for i, name in enumerate(FLOOR_SHAPES):
+            row = " ".join(f"{int(v):4d}" for v in floor_conf[i].tolist())
+            print(f"  {name:16s} {row}")
+    if int(skin_conf.sum().item()):
+        print("skin rows=true cols=pred  " + "  ".join(ENCLOSURE_SKINS))
+        for i, name in enumerate(ENCLOSURE_SKINS):
+            row = " ".join(f"{int(v):4d}" for v in skin_conf[i].tolist())
+            print(f"  {name:16s} {row}")
+
+
+HEAD_ONLY_NAMES = ("floor", "skin")
+
+
+def selected_head_names(args: argparse.Namespace) -> set[str]:
+    """Heads that should receive gradients. Empty means train every head."""
+    names = {part.strip() for part in str(args.heads_only or "").split(",") if part.strip()}
+    if args.floor_only:
+        names.add("floor")
+    unknown = names - set(HEAD_ONLY_NAMES)
+    if unknown:
+        raise SystemExit(f"unknown --heads-only {sorted(unknown)}; expected floor,skin")
+    return names
 
 
 def parse_args() -> argparse.Namespace:
@@ -118,6 +179,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--material-loss-weight", type=float, default=1.0)
     ap.add_argument("--floor-loss-weight", type=float, default=1.0)
     ap.add_argument("--enclosure-loss-weight", type=float, default=1.0)
+    ap.add_argument("--skin-loss-weight", type=float, default=1.0)
     ap.add_argument("--train-frac", type=float, default=DEFAULT_TRAIN_FRAC)
     ap.add_argument("--val-frac", type=float, default=DEFAULT_VAL_FRAC)
     ap.add_argument("--test-frac", type=float, default=DEFAULT_TEST_FRAC)
@@ -136,7 +198,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--floor-only",
         action="store_true",
-        help="optimize only the floor head (requires --init-ckpt)",
+        help="alias for --heads-only floor (requires --init-ckpt)",
+    )
+    ap.add_argument(
+        "--heads-only",
+        default="",
+        help="comma-separated heads to train: floor,skin (requires --init-ckpt)",
     )
     ap.add_argument(
         "--device",
@@ -168,10 +235,12 @@ def load_init_heads(model: RailingClassifier, ckpt_path: Path) -> bool:
     if "enclosure_head" in ckpt and encs == tuple(model.enclosures):
         model.enclosure_head.load_state_dict(ckpt["enclosure_head"])
     floors = tuple(ckpt.get("floor_shapes") or ())
+    had_floor = False
     if "floor_head" in ckpt and floors == tuple(model.floor_shapes):
         model.floor_head.load_state_dict(ckpt["floor_head"])
-        return True
-    return False
+        had_floor = True
+    apply_skin_checkpoint(model, ckpt)
+    return had_floor
 
 
 def main() -> None:
@@ -235,11 +304,17 @@ def main() -> None:
     train_mat_counts = material_counts(train_rows)
     train_floor_counts = floor_counts(train_rows)
     train_enc_counts = enclosure_counts(train_rows)
-    if args.floor_only and args.init_ckpt is None:
-        raise SystemExit("--floor-only requires --init-ckpt")
-    if args.floor_only and sum(int(train_floor_counts[name]) for name in FLOOR_SHAPES) < 1:
+    train_skin_counts = skin_counts(train_rows)
+    only = selected_head_names(args)
+    if only and args.init_ckpt is None:
+        raise SystemExit("--heads-only requires --init-ckpt")
+    if "floor" in only and sum(int(train_floor_counts[name]) for name in FLOOR_SHAPES) < 1:
         raise SystemExit(
-            "no floor_shape labels in the train split; label floors before --floor-only"
+            "no floor_shape labels in the train split; label floors before training the floor head"
+        )
+    if "skin" in only and sum(int(train_skin_counts[name]) for name in ENCLOSURE_SKINS) < 1:
+        raise SystemExit(
+            "no skin labels in the train split; label enclosed skins before training the skin head"
         )
 
     model = RailingClassifier(pretrained=True, freeze_backbone=True)
@@ -250,19 +325,27 @@ def main() -> None:
             f"init={args.init_ckpt}  "
             f"floor_head={'loaded' if had_floor else 'new'}"
         )
-    if args.floor_only:
-        for p in list(model.kind_head.parameters()) + list(model.material_head.parameters()):
-            p.requires_grad = False
-        train_params = list(model.floor_head.parameters())
-        print("training floor head only; kind and material weights stay fixed")
+    head_params = {
+        "kind": model.kind_head,
+        "material": model.material_head,
+        "floor": model.floor_head,
+        "enclosure": model.enclosure_head,
+        "skin": model.skin_head,
+    }
+    if only:
+        for name, head in head_params.items():
+            if name not in only:
+                for p in head.parameters():
+                    p.requires_grad = False
+        train_params = [p for name in only for p in head_params[name].parameters()]
+        print(f"training {','.join(sorted(only))} only; other heads stay fixed")
     else:
-        train_params = (
-            list(model.kind_head.parameters())
-            + list(model.material_head.parameters())
-            + list(model.floor_head.parameters())
-            + list(model.enclosure_head.parameters())
-        )
-    heads = (model.kind_head, model.material_head, model.floor_head, model.enclosure_head)
+        train_params = [p for head in head_params.values() for p in head.parameters()]
+        if sum(int(train_skin_counts[name]) for name in ENCLOSURE_SKINS) > 0:
+            model._skin_trained = True  # type: ignore[attr-defined]
+    if "skin" in only:
+        model._skin_trained = True  # type: ignore[attr-defined]
+    heads = tuple(head_params.values())
     for head in heads:
         head.train()
     opt = torch.optim.Adam(train_params, lr=args.lr)
@@ -303,8 +386,17 @@ def main() -> None:
     floor_loss_fn = nn.CrossEntropyLoss(
         weight=floor_weight, ignore_index=FLOOR_IGNORE_INDEX
     )
+    skin_n = max(sum(int(train_skin_counts[name]) for name in ENCLOSURE_SKINS), 1)
+    skin_k = max(len(ENCLOSURE_SKINS), 1)
+    skin_weight = torch.tensor(
+        [skin_n / (skin_k * max(int(train_skin_counts[name]), 1)) for name in ENCLOSURE_SKINS],
+        dtype=torch.float32,
+        device=device,
+    )
+    skin_loss_fn = nn.CrossEntropyLoss(weight=skin_weight, ignore_index=SKIN_IGNORE_INDEX)
     mat_w = float(args.material_loss_weight)
     floor_w = float(args.floor_loss_weight)
+    skin_w = float(args.skin_loss_weight)
 
     best_score = -1.0
     best_state = None
@@ -314,32 +406,30 @@ def main() -> None:
         model.backbone.eval()
         running = 0.0
         n_batch = 0
-        for images, kind_y, mat_y, floor_y, enc_y in train_loader:
+        for images, kind_y, mat_y, floor_y, enc_y, skin_y in train_loader:
             images = images.to(device)
             kind_y = kind_y.to(device)
             mat_y = mat_y.to(device)
             floor_y = floor_y.to(device)
             enc_y = enc_y.to(device)
-            kind_logits, mat_logits, floor_logits, enc_logits = model(images)
+            skin_y = skin_y.to(device)
+            kind_logits, mat_logits, floor_logits, enc_logits, skin_logits = model(images)
             has_floor = bool((floor_y != FLOOR_IGNORE_INDEX).any())
-            if args.floor_only:
-                if not has_floor:
-                    continue
-                loss = floor_w * floor_loss_fn(floor_logits, floor_y)
-            else:
-                # An all-ignored batch makes CrossEntropyLoss NaN, so each term is gated.
-                terms = []
-                if bool((kind_y != KIND_IGNORE_INDEX).any()):
-                    terms.append(kind_loss_fn(kind_logits, kind_y))
-                if bool((mat_y != MATERIAL_IGNORE_INDEX).any()):
-                    terms.append(mat_w * mat_loss_fn(mat_logits, mat_y))
-                if has_floor:
-                    terms.append(floor_w * floor_loss_fn(floor_logits, floor_y))
-                if bool((enc_y != ENCLOSURE_IGNORE_INDEX).any()):
-                    terms.append(enc_w * enc_loss_fn(enc_logits, enc_y))
-                if not terms:
-                    continue
-                loss = sum(terms)
+            has_skin = bool((skin_y != SKIN_IGNORE_INDEX).any())
+            terms = []
+            if (not only or "kind" in only) and bool((kind_y != KIND_IGNORE_INDEX).any()):
+                terms.append(kind_loss_fn(kind_logits, kind_y))
+            if (not only or "material" in only) and bool((mat_y != MATERIAL_IGNORE_INDEX).any()):
+                terms.append(mat_w * mat_loss_fn(mat_logits, mat_y))
+            if (not only or "floor" in only) and has_floor:
+                terms.append(floor_w * floor_loss_fn(floor_logits, floor_y))
+            if (not only or "enclosure" in only) and bool((enc_y != ENCLOSURE_IGNORE_INDEX).any()):
+                terms.append(enc_w * enc_loss_fn(enc_logits, enc_y))
+            if (not only or "skin" in only) and has_skin:
+                terms.append(skin_w * skin_loss_fn(skin_logits, skin_y))
+            if not terms:
+                continue
+            loss = terms[0] if len(terms) == 1 else sum(terms)
             opt.zero_grad()
             loss.backward()
             opt.step()
@@ -352,6 +442,7 @@ def main() -> None:
         mat_acc = metrics["material_acc"]
         floor_acc = metrics["floor_acc"]
         enc_acc = metrics["enclosure_acc"]
+        skin_acc = metrics["skin_acc"]
         parts = [f"kind_acc={kind_acc:.3f}"]
         weights = [(kind_acc, 0.4)]
         if mat_acc == mat_acc:
@@ -369,6 +460,11 @@ def main() -> None:
             weights.append((enc_acc, 0.2))
         else:
             parts.append("enc_acc=n/a")
+        if skin_acc == skin_acc:
+            parts.append(f"skin_acc={skin_acc:.3f} n={int(metrics['n_skin'])}")
+            weights.append((skin_acc, 0.2))
+        else:
+            parts.append("skin_acc=n/a")
         weight_sum = sum(w for _acc, w in weights)
         score = sum(acc * w for acc, w in weights) / weight_sum
         extra = "  ".join(parts)
@@ -384,6 +480,7 @@ def main() -> None:
     if best_state is not None:
         for head, state in zip(heads, best_state):
             head.load_state_dict(state)
+    _print_confusion(model, loader, device)
     save_checkpoint(
         model,
         args.out,
@@ -392,6 +489,7 @@ def main() -> None:
         material_counts=mat_counts,
         floor_counts=shape_counts,
         enclosure_counts=enc_counts,
+        skin_counts=skin_counts(samples),
         train_counts=train_counts,
         train_material_counts=train_mat_counts,
         train_floor_counts=train_floor_counts,
