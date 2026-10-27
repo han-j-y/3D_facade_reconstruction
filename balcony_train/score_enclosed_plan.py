@@ -36,6 +36,7 @@ from balcony_train.enclosed_grid_store import (  # noqa: E402
     DEFAULT_DSL_DIR,
     DEFAULT_EVAL_LABELS_JSONL,
     DEFAULT_EVAL_PHOTO_DIR,
+    GRID_FAILURE,
     find_photo,
     load_grid,
     load_records,
@@ -45,9 +46,11 @@ from balcony_train.evaluate_enclosed_grid import (  # noqa: E402
     format_report,
     load_pred_cells,
     score_photo,
+    scored_floor_shape,
     summarize,
     vote_plan,
 )
+from balcony_train.labels import ENCLOSURE_SKINS, FLOOR_SHAPES  # noqa: E402
 from balcony_train.paths import DEFAULT_RAILING_CKPT  # noqa: E402
 
 DEFAULT_PREDS = ROOT / "runs" / "cell_clf" / "compare_clf_rules_gate" / "preds.json"
@@ -69,6 +72,8 @@ def score_rows(
     skipped: list[str] = []
     for stem in sorted(records):
         rec = records[stem]
+        if rec.status == GRID_FAILURE:
+            continue
         pred_cells = preds.get(stem, set())
         row = score_photo(rec.cells, pred_cells)
         row["stem"] = stem
@@ -160,6 +165,52 @@ def copy_plan_mistakes(
     return n
 
 
+def _confusion(rows: list[dict], classes: tuple[str, ...], true_of, pred_of) -> list[list[int]]:
+    """Counts for judged photos. A photo with no predicted cells is left out."""
+    index = {name: i for i, name in enumerate(classes)}
+    conf = [[0 for _ in classes] for _ in classes]
+    for row in rows:
+        if not row.get("plan_labeled") or not row.get("pred"):
+            continue
+        true_name = true_of(row)
+        pred_name = pred_of(row)
+        if true_name not in index or pred_name not in index:
+            continue
+        conf[index[true_name]][index[pred_name]] += 1
+    return conf
+
+
+def format_confusion(title: str, classes: tuple[str, ...], conf: list[list[int]]) -> str:
+    """Same text table as the open-balcony eval: rows are labels, columns are predictions."""
+    lines = [f"{title}  " + "  ".join(classes)]
+    for name, counts in zip(classes, conf):
+        row = " ".join(f"{value:4d}" for value in counts)
+        lines.append(f"  {name:16s} {row}")
+    return "\n".join(lines)
+
+
+def format_plan_confusion(rows: list[dict]) -> str:
+    """Floor and skin tables. Triangle counts as rectangle, matching the photo vote."""
+    floor = _confusion(
+        rows,
+        FLOOR_SHAPES,
+        lambda row: scored_floor_shape(row.get("gt_shape")),
+        lambda row: scored_floor_shape(row.get("pred_shape")),
+    )
+    skin = _confusion(
+        rows,
+        ENCLOSURE_SKINS,
+        lambda row: row.get("gt_skin"),
+        lambda row: row.get("pred_skin"),
+    )
+    return "\n".join(
+        [
+            format_confusion("floor rows=true cols=pred", FLOOR_SHAPES, floor),
+            format_confusion("skin rows=true cols=pred", ENCLOSURE_SKINS, skin),
+        ]
+    )
+
+
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--labels", type=Path, default=DEFAULT_EVAL_LABELS_JSONL)
@@ -186,6 +237,9 @@ def main() -> None:
     if not records:
         print(f"no labeled photos in {args.labels}")
         return
+    failures = sorted(stem for stem, rec in records.items() if rec.status == GRID_FAILURE)
+    if failures:
+        print(f"grid failure ({len(failures)}): " + ", ".join(failures))
     if not args.preds.is_file():
         print(f"no predicted cells at {args.preds}")
         return
@@ -219,6 +273,7 @@ def main() -> None:
     if skipped:
         print("skipped (no photo or window grid): " + ", ".join(skipped))
     print(format_report(summarize(rows), rows))
+    print(format_plan_confusion(rows))
     if args.errors_to is not None and str(args.errors_to) != "":
         copy_plan_mistakes(rows, args.errors_to)
 

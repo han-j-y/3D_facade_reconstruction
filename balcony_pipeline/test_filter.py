@@ -18,7 +18,6 @@ from filter import (  # noqa: E402
     has_window_center_above,
     mostly_covered_by_partner_window,
     no_window_above,
-    similar_width_to_partner,
     wider_than_partner_window,
 )
 
@@ -165,28 +164,22 @@ class FilterTests(unittest.TestCase):
         self.assertIn("window_cover", reasons[tuple(t1_like)])
         self.assertNotIn("window_cover", reasons[tuple(real_balc)])
 
-    def test_juliet_width_drops_similar_width(self) -> None:
+    def test_similar_width_juliet_is_kept(self) -> None:
         win = [[100, 50, 200, 150]]  # w=100
-        juliet = [105, 120, 195, 180]  # w=90 → ratio 0.90
-        wide = [40, 120, 220, 180]  # w=180 → ratio 1.80
-        narrow = [120, 120, 170, 180]  # w=50 → ratio 0.50
-        self.assertTrue(similar_width_to_partner(juliet, win, iw=400, ih=400))
-        self.assertFalse(similar_width_to_partner(wide, win, iw=400, ih=400))
-        self.assertFalse(similar_width_to_partner(narrow, win, iw=400, ih=400))
-
+        juliet = [105, 120, 195, 180]  # w=90, about the window width
+        wide = [40, 120, 220, 180]  # w=180
+        narrow = [120, 120, 170, 180]  # w=50
         im = Image.new("RGB", (400, 400), (200, 200, 200))
         instances = [_inst(win[0]), _inst([100, 10, 200, 40], floor=1)]
         kept, log = filter_balcony_boxes([juliet, wide, narrow], im, instances)
-        self.assertEqual(kept, [wide, narrow])
+        self.assertEqual(kept, [juliet, wide, narrow])
         reasons = {tuple(e["box"]): e["reasons"] for e in log}
-        self.assertIn("juliet_width", reasons[tuple(juliet)])
-        self.assertNotIn("juliet_width", reasons[tuple(wide)])
-        self.assertNotIn("juliet_width", reasons[tuple(narrow)])
+        self.assertEqual(reasons[tuple(juliet)], [])
 
     def test_filter(self) -> None:
         im = Image.new("RGB", (400, 400), (200, 200, 200))
         instances = [_inst([100, 50, 200, 150])]
-        # widths 80 → ratio 0.80 (below juliet band); not below sill / not rooftop
+        # widths 80; not below sill / not rooftop
         good = [110, 120, 190, 180]
         thick_ok = [110, 140, 190, 200]
         bad_below = [110, 148, 190, 320]

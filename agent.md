@@ -21,6 +21,9 @@ Python: `C:\Users\hiroo\anaconda3\envs\glodon\python.exe` only.
 - The eval set is never used for training or for choosing parameters.
 - Label UI:
   `balcony_train/enclosed_grid_ui.py --in-dir data/base_jpg --all-photos --labels runs/enclosed_grid/labels_train.jsonl`
+- Train labels hold 29 enclosure photos, 37 balconies (4-connected cell groups), 110 cells. `labels_train.jsonl` still has all 29.
+- Shared SAM3 masks: `balcony_train/export_enclosed_masks.py` writes `runs/enclosed_grid/gt_masks/`. One white-on-black PNG per balcony, same size as the photo. The white region is the window-cell rectangle, not the balcony outline. `check/` is a color overlay for looking; do not train on it.
+- Left out of the share because the window grid does not cover the enclosure: `cmp_b0291`, `cmp_b0304`, `cmp_b0305`. Shared set is 26 photos, 33 balconies, 103 cells. `0291` mixes an open railing and windows in one cell. `0304` and `0305` only have window boxes, so the oriel body is not a cell.
 
 ## Metrics
 
@@ -45,6 +48,7 @@ Python: `C:\Users\hiroo\anaconda3\envs\glodon\python.exe` only.
 | Pure classifier + touching OP1 (no gate) | 34/61 | 9/25 / 23 | 25/36 |
 | Pure classifier + four cell rules | 41/61 | 16/26 / 24 | 25/35 |
 | **Four cell rules + gate ≥ 0.10** | **47/61** | **16/26 / 21** | **31/35** |
+| SAM3 fold-0 fine-tune, raw boxes snapped to the grid | 33/61 | 6/26 / 21 | 27/35 |
 
 ### OP1: SAM3 → depth
 
@@ -150,6 +154,28 @@ Open-balcony floor shape is a separate majority inside each appearance cluster (
 
 A curtain-wall circle is one semicircular drum. Touching cells (same floor, neighboring bays, or the floor above in overlapping bays) fuse in `fuse_curtain_circles`: width is the union of the bays, depth is half that width, glass runs from the lowest sill to the top of the stack. Each storey gets a floor slab on that outline. A horizontal mullion sits 2100 mm above each slab top (`CURTAIN_TRANSOM_ABOVE_FLOOR_M`) and the glass splits there; a storey shorter than that gets no transom. A rectangle curtain wall already has a slab per floor and only gains the same transom. Punched enclosures are unchanged.
 
+### Tried: SAM3 fold-0 fine-tune, raw boxes
+
+`balcony_train/eval_sam3_enclosed_ft.py`. Checkpoint `proj-facade/sam3-enclosed-facade-fold0` (base `facebook/sam3`, trained on 301 of 378 CMP base facades in fold 0). The held-out fold is cmp_b stems. This run scores cmp_x only and does not read cmp_b. Inference follows the model card: prompt `enclosed balcony`, score threshold 0.45, mask threshold 0.5, and one padding box `input_boxes=[[[0.5, 0.5, 0.1, 0.1]]]` with label `-10` so the geometry encoder stays on. Boxes are snapped with `cells_from_boxes`. The DA3 stage filters and the cell classifier are not applied to this score.
+
+Eval once, current labels (26 enclosure / 35 none, 2022 cells):
+
+```text
+61 images, 2022 cells
+TP 104  FP 54  FN 33  TN 1831
+Precision 0.658
+Recall 0.759
+F1 0.705
+IoU 0.545
+exact 33/61
+enclosure exact 6/26  detect 21/26
+none 27/35
+```
+
+Exact enclosure photos: `0005`, `0119`, `0129`, `0137`, `0147`, `0149`. Missed (no overlapping cell): `0032`, `0097`, `0123`, `0144`, `0185`. Wrong rectangle: `0006`, `0020`, `0028`, `0074`, `0078`, `0081`, `0090`, `0116`, `0118`, `0121`, `0125`, `0127`, `0143`, `0179`, `0212`. False positives on no-enclosure photos: `0045`, `0055`, `0073`, `0120`, `0128`, `0167`, `0171`, `0180`. Outputs: `runs/sam3_ft_fold0/cmp_x/` (`summary.json`, `summary.txt`, `board.png`, `compare/{stem}.jpg`, cache `boxes.json`). `cmp_x0005` smoke check: 2 boxes, tp 12, fp 0, fn 0, tn 51, exact.
+
+`--stages` draws the six OP1 panels from those cached boxes and the existing depth maps `runs/da3_enclosure/{stem}_depth.npy` (61/61 present). Symmetry is on. Strips: `runs/sam3_ft_fold0/cmp_x/stages/{stem}_stages.jpg` and the stacked `stages_board.jpg`. Stage 1 already drops a seed shorter than 0.85 of a floor, so the strip counts are a different result from the cell table. `cmp_x0005` is exact in the cell table and `n=0` on every panel of its strip.
+
 ## What was learned
 
 - Exact match is hard for every method: errors are mostly one floor or one bay off.
@@ -221,15 +247,128 @@ C looks like a labeling-policy question (turret tops, balcony bases) more than a
 | `enclosed_detect.py` | Pipeline detector: same four rules and gate ≥ 0.10. Model cache `runs/cell_clf/model_rules_gate.joblib` |
 | `enclosed_floor_ui.py` | Label rectangle/circle on enclosed cells cropped from `data/base`. One plan per photo → `runs/enclosed_floor/` |
 | `export_enclosed_crops.py` | Train enclosed volumes → `runs/balcony_clf/crops/unlabeled/<stem>_enclosed_<NN>.png` for floor and skin labels |
+| `export_enclosed_masks.py` | Shared binary masks → `runs/enclosed_grid/gt_masks/`. Skips `cmp_b0291`, `cmp_b0304`, `cmp_b0305` |
 | `draw_clf_compare.py` | Pure-classifier compare images with probabilities, grouped boards → `runs/cell_clf/compare_clf/` |
 | `draw_cell_clf_compare.py` | Grouped compare boards from a results json |
 | `score_enclosed_plan.py` | Eval floor shape and skin from `labels_eval.jsonl` and official predicted cells |
 | `draw_depth_cells.py`, `draw_sam3_raw.py` | Depth / raw SAM3 panels (`runs/cell_clf/wrong_board/{depth,sam3_raw}/` for the 17 wrong photos) |
+| `eval_sam3_enclosed_ft.py` | Fold-0 SAM3 fine-tune on cmp_x. Raw boxes → `runs/sam3_ft_fold0/cmp_x/`. `--stages` writes the six-panel strips under `stages/` |
+
+## Open-balcony type clustering
+
+Open balconies are typed after snap. Two modes live in `balcony_pipeline/cluster.py`. The pipeline default is still appearance.
+
+- `appearance` (default): DINOv2 ROI, spectral clustering, then Potts on neighboring floors and bays. This is the old window appearance path.
+- `box` (`run_balcony.py --cluster-mode box`): z-scored width, height, and aspect, same GMM as the window track's `--cluster-mode box` (`box_geometry_labels`). DINOv2 is still computed. It is used by `apply_symmetry_repair` (cosine twin merge / steal), not to form the types. `labels_box` reverts a flip that would mix two size groups. `--k-max-box` defaults to 6. `--twin-mirror-min` defaults to 0.35.
+
+Same-size balconies with different railings become one type. The railing vote then writes one kind for that size group.
+
+### Visual compare (not scored)
+
+`balcony_pipeline/compare_open_cluster.py --limit 20`. First 20 names in `data/baseForBatch` (`cmp_x0004` through `cmp_x0121`). SAM3 balcony boxes are detected once. Both panels use those boxes after the usual filter and snap. The window floor × bay grid is built from `data/extended/<stem>.xml` with the same column functions as the window track (`windows_dsl_from_boxes`). It is not a `runs/batch` facade DSL, so unit counts will not match an older appearance overlay of the same photo. `cmp_x0006` here is 22 units; an earlier appearance overlay of that facade was 19 units and 5 types.
+
+Outputs: `runs/balcony_cluster_compare/{stem}_compare.jpg` (left appearance, right box + symmetry), `board.jpg`, `summary.json`, `{stem}_labels.json`, `{stem}_raw_boxes.json`.
+
+Five photos had fewer than 2 open units and were not clustered: `0004`, `0008`, `0013`, `0015`, `0019`.
+
+Type counts on the other 15 (appearance → box, after the symmetry gate):
+
+| Stem | Units | Appearance | Box |
+|---|---|---|---|
+| `0005` | 22 | 4 | 2 |
+| `0006` | 22 | 2 | 5 |
+| `0009` | 4 | 2 | 2 |
+| `0010` | 3 | 2 | 2 |
+| `0011` | 5 | 2 | 2 |
+| `0012` | 2 | 1 | 2 |
+| `0014` | 2 | 2 | 2 |
+| `0016` | 9 | 2 | 3 |
+| `0017` | 4 | 2 | 2 |
+| `0018` | 5 | 2 | 3 |
+| `0020` | 5 | 3 | 2 |
+| `0084` | 3 | 1 | 2 |
+| `0094` | 6 | 3 | 3 |
+| `0116` | 9 | 3 | 3 |
+| `0121` | 6 | 2 | 4 |
+
+Equal type count does not mean the same grouping. Symmetry changed the box-mode type count only on `0018` (4→3) and `0116` (4→3). On `0006`, `0020`, `0094`, and `0121` the repair moved labels and the size gate reverted those moves, so the type count stayed at the box clustering.
+
+`detect_windows` accepts a loaded SAM3 model so this batch does not reload it per photo.
+
+## Extended label distribution
+
+Two finished censuses of `data/extended` (`cmp_x`). Neither is the 61-photo enclosure eval set. Do not retune the gate or the cell rules from these counts. Reprint the crop margins with `balcony_train/summarize_xml_labels.py`.
+
+### Open crops
+
+`runs/balcony_clf/crops_ext_xml/labels.jsonl`. 738 rows. 737 are finished open balconies. One row, `cmp_x0093_bal_000`, is `enclosed` with floor and skin still empty, so it is left out of the tables below. `half_enclosed` is 0. `none.jsonl` lists 84 photos with no balcony crop. Counts are crops, not photos. An empty structure label is `projecting`. Material is counted only on `open_work`.
+
+| kind | crops |
+|---|---:|
+| open_work | 643 |
+| solid | 89 |
+| surface_panel | 5 |
+
+| material (open_work only) | crops |
+|---|---:|
+| metal | 381 |
+| masonry | 262 |
+
+| floor | crops |
+|---|---:|
+| rectangle | 628 |
+| circle | 106 |
+| triangle | 3 |
+
+| structure | crops |
+|---|---:|
+| projecting | 561 |
+| juliet | 176 |
+
+The axes are not independent. Multiplying the margins invents combinations that do not occur and splits the largest cell. Use the joint. Seven cells cover 714/737 (96.9%):
+
+| kind | material | floor | structure | crops |
+|---|---|---|---|---:|
+| open_work | metal | rectangle | projecting | 268 |
+| open_work | masonry | rectangle | juliet | 129 |
+| open_work | masonry | rectangle | projecting | 108 |
+| open_work | metal | circle | projecting | 72 |
+| solid | — | rectangle | projecting | 72 |
+| open_work | metal | rectangle | juliet | 40 |
+| open_work | masonry | circle | projecting | 25 |
+
+The other 23 crops are six cells: solid circle projecting 8, solid rectangle juliet 6, surface_panel rectangle projecting 5, solid triangle projecting 2, open_work metal triangle projecting 1, solid circle juliet 1.
+
+### Enclosed photos
+
+`runs/enclosed_grid/labels_ext_all.jsonl`. One floor shape and one skin per photo. An empty cell list is no enclosure, so those photos have neither. 215 photos, all finished.
+
+| | photos |
+|---|---:|
+| no enclosure | 142 |
+| enclosure | 73 |
+
+The 73 enclosure photos cover 508 cells.
+
+| floor | photos |
+|---|---:|
+| rectangle | 55 |
+| circle | 17 |
+| triangle | 1 |
+
+| skin | photos |
+|---|---:|
+| punched_window | 71 |
+| curtain_wall | 2 |
+
+Joint: rectangle × punched_window 54, circle × punched_window 16, rectangle × curtain_wall 1, circle × curtain_wall 1, triangle × punched_window 1.
 
 ## Open items
 
 - Pipeline default is four cell rules + gate ≥ 0.10: 47/61 total, enclosure exact 16/26, detect 21/26, none 31/35. False positives left: `0073`, `0120`, `0173`, `0180`. The gate blanks `0074`, `0081`, and `0121`. `0006` is still short the gallery floor. Rule 4's extra cells on `0121`, `0073`, and `0134` are not in the labels. Switch back with `--enclosed-method sam3`.
+- The fold-0 SAM3 fine-tune was scored once on cmp_x (raw boxes, 33/61, cells TP 104 / FP 54 / FN 33). It is not wired into `--enclosed-method`. The stage strips under `runs/sam3_ft_fold0/cmp_x/stages/` were not scored as cells.
 - Touching-OP1 add is below both gate → OP1 (41/61) and the pipeline default (47/61). With the gate it is 39/61; on the pure classifier (no gate) it is 34/61 and breaks classifier-exact photos (`0119`, `0123`, `0143`). If retried, do not add cells on a photo the classifier already matched, and decide the top-floor cut (85% vs the existing 90%) on cmp_b.
 - Rules 1–3 in the "not yet tested" list (per-bay floor range, horizontal extend, border-bay drop) are still untried. Test them on cmp_b, then check eval once.
 - Rerun `cell_clf_search.py` on the swapped eval set if the search table is needed again.
 - Add labels for photos with enclosures; avoid buildings that appear in the eval set.
+- Open-balcony types still default to DINOv2 appearance. `--cluster-mode box` was compared visually on 15 of the first 20 `data/baseForBatch` photos (`runs/balcony_cluster_compare/`). It was not scored against railing labels. Same-size balconies with different railings collapse to one type.

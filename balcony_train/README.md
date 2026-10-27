@@ -189,6 +189,31 @@ C:\Users\hiroo\anaconda3\envs\glodon\python.exe balcony_train/evaluate.py --devi
 
 (Or point ``--data-dir`` / ``--labels`` at the full ``crops_ext_eval`` / ``labels_ext_eval.jsonl`` to score everything labeled.)
 
+### Extended census from CMP XML (open UI, then enclosed UI)
+
+Crops are the balcony class (palette index 7, light green) in ``data/extended/*.png``.
+Each connected region is cut from the matching ``.jpg``. Photos with no balcony
+pixels are listed in ``none.jsonl``.
+
+```text
+C:\Users\hiroo\anaconda3\envs\glodon\python.exe balcony_train/crop_balconies_xml.py
+C:\Users\hiroo\anaconda3\envs\glodon\python.exe balcony_train/label_open_ui.py
+C:\Users\hiroo\anaconda3\envs\glodon\python.exe balcony_train/label_enclosed_ui.py
+C:\Users\hiroo\anaconda3\envs\glodon\python.exe balcony_train/summarize_xml_labels.py
+```
+
+Open-balcony type test on ``data/extended_selected`` (kind, material, floor).
+Crops stay in ``crops_ext_xml``; ``--photo-dir`` keeps crops from those photos::
+
+```text
+C:\Users\hiroo\anaconda3\envs\glodon\python.exe balcony_train/evaluate.py --device cuda --ckpt checkpoints/railing_flux640.pt --data-dir runs/balcony_clf/crops_ext_xml --labels runs/balcony_clf/crops_ext_xml/labels.jsonl --split all --include-synth --photo-dir data/extended_selected --errors-to runs/balcony_clf/eval_view_ext_selected/Wrong
+```
+
+Open UI: 1/2/3 kind, M/N material, R/T/C floor, P projecting / J juliet, Enter.
+E sends the crop to the enclosed UI. Enclosed UI: R/T/C floor, P/G skin, Enter. A is half_enclosed
+(railing kind still required). O sends a crop back to the open UI. Labels go to
+``runs/balcony_clf/crops_ext_xml/labels.jsonl``.
+
 ## 4. Pipeline / compile
 
 - Predictor returns `{kind, material}`; IR stores `railing.material` for open_work.

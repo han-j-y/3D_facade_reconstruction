@@ -7,8 +7,10 @@
   Photo recovery emits the same JSON IR via tokens (like window structure IR),
   not this text. Humans author .bdsl; the pipeline votes IR fingerprints.
 
-  A façade document *embeds* BDSL (see FDSL.ebnf) in `balconies:`.
-  Multi-bay span is *placement* (FDSL balcony_placement), not part of BDSL.
+  A façade recovery document (FDSL.ebnf §3) stores this JSON IR on
+  balcony_types[].structure_ir. Multi-bay span is layout.balconies
+  (floor + bay_start..bay_end), not part of BDSL. normalize_facade_spec
+  copies that onto compiled balconies / balcony_placement (row + col span).
 
   Coordinates: local 3D after compile — width along façade X, depth along +Y
   (outward), height along Z. Floor shape is the slab plan (looking down).
@@ -167,8 +169,9 @@ int             = digit, { digit } ;
 opening_line    = "opening", ws, opening_kind ;
 opening_kind    = "door" | "window" | "none" ;
 (* Optional / legacy. Wall door-or-window lives on the shared floor×bay
-   grid from the window pipeline (FDSL placement). Balcony bind is
-   balcony_placement (row + col span). Do not vote on opening. *)
+   grid from the window pipeline (FDSL layout.placement). Balcony bind is
+   layout.balconies (floor + bay span), copied to balcony_placement
+   (row + col span) at compile. Do not vote on opening. *)
 
 (* ——— enclosed glazing: nested WDSL (see WDSL.ebnf) ——— *)
 

@@ -730,7 +730,7 @@ def _parse_output(lines: list[str]) -> dict[str, Any]:
         key = tokens[0]
         out[key] = _parse_scalar(tokens[1])
     if "muntin_width" not in out:
-        out["muntin_width"] = {"relative_to": "min_side", "value": 0.025}
+        out["muntin_width"] = {"relative_to": "min_side", "value": 0.06}
     if "muntin_depth" not in out:
         out["muntin_depth"] = 0.04
     if "glass_thickness" not in out:

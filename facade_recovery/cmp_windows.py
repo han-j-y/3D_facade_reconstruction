@@ -50,3 +50,32 @@ def load_cmp_xml_windows(
         ]
         raw.append({"id": f"{stem}_w{i}", "box_xyxy": box, "score": 1.0, "source": "cmp_xml"})
     return raw
+
+
+CMP_WINDOW_CLASS = 3
+
+
+def load_cmp_labelmap_windows(
+    png_path: Path,
+    *,
+    stem: str = "labelmap",
+    min_side: int = 6,
+    aspect: tuple[float, float] = (0.15, 6.0),
+) -> list[dict[str, Any]]:
+    """Window boxes from the CMP label map (``<stem>.png``, class 3 = window), one per connected component.
+
+    The CMP XML boxes are not aligned with the base jpgs; the label map is."""
+    import numpy as np
+    from PIL import Image
+    from scipy import ndimage
+
+    lab, _ = ndimage.label(np.asarray(Image.open(png_path)) == CMP_WINDOW_CLASS)
+    raw: list[dict[str, Any]] = []
+    for sl in ndimage.find_objects(lab):
+        y, x = sl
+        w, h = x.stop - x.start, y.stop - y.start
+        if min(w, h) < min_side or not aspect[0] <= w / h <= aspect[1]:
+            continue
+        raw.append({"id": f"{stem}_w{len(raw)}", "box_xyxy": [int(x.start), int(y.start), int(x.stop), int(y.stop)],
+                    "score": 1.0, "source": "cmp_labelmap"})
+    return raw

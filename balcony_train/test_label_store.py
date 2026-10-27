@@ -19,6 +19,7 @@ from balcony_train.label_store import (  # noqa: E402
     normalize_floor_shape,
     normalize_kind,
     normalize_material,
+    normalize_structure,
     queue_stems,
     save_annotation,
 )
@@ -38,8 +39,12 @@ class LabelStoreTests(unittest.TestCase):
         self.assertEqual(normalize_floor_shape("Hexagon"), "rectangle")
         self.assertEqual(normalize_floor_shape("trapezoid"), "rectangle")
         self.assertIsNone(normalize_floor_shape(None))
+        self.assertIsNone(normalize_structure("projecting"))
+        self.assertEqual(normalize_structure("Juliet"), "juliet")
         with self.assertRaises(ValueError):
             normalize_floor_shape("pentagon")
+        with self.assertRaises(ValueError):
+            normalize_structure("inset")
 
     def test_save_open_work_requires_material(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -135,6 +140,43 @@ class LabelStoreTests(unittest.TestCase):
                 crops, merged, unlabeled_only=True, need_floor_shape=True
             )
             self.assertEqual(pending, ["plain"])
+
+    def test_juliet_roundtrip_and_projecting_stays_unset(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            crops = root / "crops"
+            jsonl = root / "labels.jsonl"
+            src = crops / "unlabeled" / "rail.png"
+            _touch_png(src)
+            labels = save_annotation(
+                crops_dir=crops,
+                jsonl_path=jsonl,
+                image_path=src,
+                kind="open_work",
+                material="metal",
+                floor_shape="rectangle",
+                enclosure="open",
+                structure="juliet",
+            )
+            self.assertEqual(labels["rail"]["structure"], "juliet")
+            loaded = load_labels(jsonl)
+            self.assertEqual(loaded["rail"]["structure"], "juliet")
+            self.assertIn('"structure": "juliet"', jsonl.read_text(encoding="utf-8"))
+
+            placed = crops / "open_work" / "rail.png"
+            labels = save_annotation(
+                crops_dir=crops,
+                jsonl_path=jsonl,
+                image_path=placed,
+                kind="open_work",
+                material="metal",
+                floor_shape="rectangle",
+                enclosure="open",
+                structure="projecting",
+                labels=labels,
+            )
+            self.assertIsNone(labels["rail"]["structure"])
+            self.assertIsNone(load_labels(jsonl)["rail"]["structure"])
 
 
 if __name__ == "__main__":

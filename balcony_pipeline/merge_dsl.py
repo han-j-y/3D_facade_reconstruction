@@ -139,7 +139,11 @@ def merge_balcony_into_windows_dsl(
                 image_size=(iw, ih),
             )
             pids = tuple(
-                sorted(int(w["unit_id"]) for w in partners if w.get("unit_id") is not None)
+                # Door partners carry ids like "door_0": window ids first, then doors.
+                sorted(
+                    (w["unit_id"] for w in partners if w.get("unit_id") is not None),
+                    key=lambda v: (isinstance(v, str), v if isinstance(v, int) else 0, str(v)),
+                )
             )
             key = (floor_i, pids or tuple(center_bays), name)
 

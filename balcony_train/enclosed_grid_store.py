@@ -1,8 +1,9 @@
 """Ground truth for enclosed volumes as window-grid cells.
 
 A saved photo with an empty cell list has no enclosure. A photo that is not
-in the file is still unlabeled. Cells are ``(floor_id, bay_id)`` from the
-window facade DSL.
+in the file is still unlabeled. ``status`` ``grid_failure`` is a photo whose
+window grid cannot be labeled, so it is not a cell label and not "no
+enclosure". Cells are ``(floor_id, bay_id)`` from the window facade DSL.
 """
 
 from __future__ import annotations
@@ -33,18 +34,24 @@ DEFAULT_EVAL_LABELS_JSONL = ROOT / "runs" / "enclosed_grid" / "labels_eval.jsonl
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
 Cell = tuple[int, int]
 Bands = dict[int, tuple[int, int]]
+GRID_FAILURE = "grid_failure"
 
 
 @dataclass
 class GridRecord:
-    """One saved facade. Shape and skin are set only when ``cells`` is non-empty."""
+    """One saved facade. Shape and skin are set only when ``cells`` is non-empty.
+
+    ``status`` is ``grid_failure`` when the window grid cannot be labeled.
+    That row has no cells. It is not a photo with no enclosure.
+    """
 
     cells: list[Cell]
     floor_shape: str | None = None
     skin: str | None = None
+    status: str | None = None
 
     def copy(self) -> GridRecord:
-        return GridRecord(list(self.cells), self.floor_shape, self.skin)
+        return GridRecord(list(self.cells), self.floor_shape, self.skin, self.status)
 
 
 def _plan_name(raw: Any, allowed: tuple[str, ...], field: str) -> str | None:
@@ -55,6 +62,17 @@ def _plan_name(raw: Any, allowed: tuple[str, ...], field: str) -> str | None:
         return None
     if name not in allowed:
         raise ValueError(f"unknown {field} {raw!r}; expected {allowed}")
+    return name
+
+
+def _status_name(raw: Any) -> str | None:
+    if raw is None:
+        return None
+    name = str(raw).strip().lower()
+    if name in ("", "none", "null"):
+        return None
+    if name != GRID_FAILURE:
+        raise ValueError(f"unknown status {raw!r}; expected {GRID_FAILURE}")
     return name
 
 
@@ -77,10 +95,13 @@ def record_for_save(
     """Cells plus one floor shape and one skin.
 
     An empty cell list is a photo with no enclosure, so shape and skin are
-    cleared. With ``plan`` off, an existing shape and skin are kept.
+    cleared. A previous grid failure stays a grid failure until cells are
+    chosen. With ``plan`` off, an existing shape and skin are kept.
     """
     norm = normalize_cells(cells)
     if not norm:
+        if previous is not None and previous.status == GRID_FAILURE:
+            return GridRecord([], status=GRID_FAILURE)
         return GridRecord([])
     if not plan:
         return GridRecord(
@@ -129,7 +150,13 @@ def load_records(path: Path) -> dict[str, GridRecord]:
         stem = str(rec.get("stem") or "").strip()
         if not stem:
             raise ValueError(f"label row missing stem: {line}")
+        status = _status_name(rec.get("status"))
         cells = normalize_cells(rec.get("cells"))
+        if status == GRID_FAILURE:
+            if cells:
+                raise ValueError(f"{stem} is a grid failure, so it cannot list cells")
+            out[stem] = GridRecord([], status=GRID_FAILURE)
+            continue
         if not cells:
             out[stem] = GridRecord([])
             continue
@@ -142,8 +169,15 @@ def load_records(path: Path) -> dict[str, GridRecord]:
 
 
 def load_labels(path: Path) -> dict[str, list[Cell]]:
-    """Stem → cells. Missing file is empty. An empty ``cells`` list is kept."""
-    return {stem: list(rec.cells) for stem, rec in load_records(path).items()}
+    """Stem → cells. Missing file is empty. An empty ``cells`` list is kept.
+
+    Grid failures are omitted. They are not photos with no enclosure.
+    """
+    return {
+        stem: list(rec.cells)
+        for stem, rec in load_records(path).items()
+        if rec.status != GRID_FAILURE
+    }
 
 
 def write_records(path: Path, records: dict[str, GridRecord]) -> None:
@@ -153,6 +187,11 @@ def write_records(path: Path, records: dict[str, GridRecord]) -> None:
     lines: list[str] = []
     for stem in sorted(records):
         rec = records[stem]
+        if rec.status == GRID_FAILURE:
+            if rec.cells:
+                raise ValueError(f"{stem} is a grid failure, so it cannot list cells")
+            lines.append(json.dumps({"stem": stem, "status": GRID_FAILURE}, ensure_ascii=False))
+            continue
         cells = normalize_cells(rec.cells)
         row: dict[str, Any] = {"stem": stem, "cells": [list(cell) for cell in cells]}
         if cells:
@@ -243,7 +282,18 @@ def load_grid(dsl_path: Path) -> tuple[Bands, Bands]:
     """Floor bands and bay bands from a window ``facade_dsl.json``."""
     dsl = json.loads(Path(dsl_path).read_text(encoding="utf-8"))
     floor_y, bay_x = _bands_from_windows_dsl(dsl)
-    return floor_y, bay_x
+    return _ordered_bands(floor_y), _ordered_bands(bay_x)
+
+
+def _ordered_bands(bands: Bands) -> Bands:
+    """Each band runs from the smaller edge to the larger one."""
+    ordered: Bands = {}
+    for bid, (a0, a1) in bands.items():
+        lo, hi = (a0, a1) if a0 <= a1 else (a1, a0)
+        if hi <= lo:
+            continue
+        ordered[int(bid)] = (lo, hi)
+    return ordered
 
 
 def _band_id(value: float, bands: Bands) -> int | None:

@@ -11,11 +11,18 @@ save, or copy the images that would be evaluated (no GPU / checkpoint needed).
 ``enclosure/true-{label}__pred-{label}/``, and
 ``skin/true-{label}__pred-{label}/``.
 ``mistakes.txt`` in that folder lists every copy.
+
+``--photo-dir`` keeps only crops whose photo stem is in that folder
+(``cmp_x0001_bal_000.png`` belongs to ``cmp_x0001``). Use it to score
+``data/extended_selected`` from the CMP-XML crop labels::
+
+    C:\\Users\\hiroo\\anaconda3\\envs\\glodon\\python.exe balcony_train/evaluate.py --device cuda --ckpt checkpoints/railing_flux640.pt --data-dir runs/balcony_clf/crops_ext_xml --labels runs/balcony_clf/crops_ext_xml/labels.jsonl --split all --include-synth --photo-dir data/extended_selected --errors-to runs/balcony_clf/eval_view_ext_selected/Wrong
 """
 
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import sys
 from collections import defaultdict
@@ -63,6 +70,45 @@ from balcony_train.splits import (  # noqa: E402
     load_split,
     make_or_load_split,
 )
+
+
+_CROP_PHOTO_STEM = re.compile(r"^(?P<stem>.+)_bal_\d+$", re.IGNORECASE)
+_PHOTO_SUFFIXES = {".jpg", ".jpeg", ".png", ".xml"}
+
+
+def photo_stem_from_crop(path: Path) -> str | None:
+    """Photo id for a balcony crop named ``{photo}_bal_000.png``."""
+    match = _CROP_PHOTO_STEM.match(Path(path).stem)
+    if match is None:
+        return None
+    return match.group("stem")
+
+
+def photo_stems_in_dir(photo_dir: Path) -> set[str]:
+    """Lowercase stems of facade files in ``photo_dir``."""
+    photo_dir = Path(photo_dir)
+    if not photo_dir.is_dir():
+        return set()
+    return {
+        path.stem.lower()
+        for path in photo_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in _PHOTO_SUFFIXES
+    }
+
+
+def filter_indices_by_photo_stems(
+    samples: list[MultitaskSample],
+    indices: list[int],
+    photo_stems: set[str],
+) -> list[int]:
+    """Keep crops whose ``{photo}_bal_NNN`` name is in ``photo_stems``."""
+    needles = {stem.lower() for stem in photo_stems}
+    kept: list[int] = []
+    for i in indices:
+        stem = photo_stem_from_crop(Path(samples[i][0]))
+        if stem is not None and stem.lower() in needles:
+            kept.append(i)
+    return kept
 
 
 def filter_indices_by_name_prefix(
@@ -279,6 +325,7 @@ def resolve_eval_subset(
     split: str,
     stem_prefix: str,
     include_synth: bool,
+    photo_dir: Path | None = None,
 ) -> tuple[list[MultitaskSample], list[int], str]:
     """Return samples, eval indices, and split_label."""
     _, samples = make_or_load_split(
@@ -319,6 +366,22 @@ def resolve_eval_subset(
     if prefix:
         print(f"filter filename prefix={prefix!r}: {n_before} -> {len(eval_idx)}")
         split_label = f"{split_label}|prefix={prefix}"
+    if photo_dir is not None:
+        stems = photo_stems_in_dir(photo_dir)
+        if not stems:
+            raise SystemExit(f"no facade files in {photo_dir}")
+        n_before = len(eval_idx)
+        eval_idx = filter_indices_by_photo_stems(samples, eval_idx, stems)
+        print(
+            f"filter photos in {photo_dir}: {len(stems)} photos, "
+            f"crops {n_before} -> {len(eval_idx)}"
+        )
+        if not eval_idx:
+            raise SystemExit(
+                f"no labeled crops from photos in {photo_dir} "
+                f"(had {n_before} before the photo filter)"
+            )
+        split_label = f"{split_label}|photos={Path(photo_dir).name}"
     return samples, eval_idx, split_label
 
 
@@ -345,6 +408,15 @@ def parse_args() -> argparse.Namespace:
         "--include-synth",
         action="store_true",
         help="score all sources in the split (ignore --stem-prefix; includes flux2_*)",
+    )
+    ap.add_argument(
+        "--photo-dir",
+        type=Path,
+        default=None,
+        help=(
+            "score only crops from facade photos in this folder "
+            "(crop cmp_x0001_bal_000 belongs to photo cmp_x0001)"
+        ),
     )
     ap.add_argument(
         "--list",
@@ -396,6 +468,7 @@ def main() -> None:
         split=str(args.split),
         stem_prefix=str(args.stem_prefix),
         include_synth=bool(args.include_synth),
+        photo_dir=Path(args.photo_dir) if args.photo_dir is not None else None,
     )
 
     list_only = (

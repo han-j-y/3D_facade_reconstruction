@@ -100,6 +100,22 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--pca-dim", type=int, default=32)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--k-max", type=int, default=8)
+    ap.add_argument(
+        "--cluster-mode",
+        choices=("appearance", "box"),
+        default="appearance",
+        help=(
+            "open-balcony types. appearance (default): DINOv2 spectral + Potts. "
+            "box: z-scored width/height/aspect, then DINOv2 symmetry repair"
+        ),
+    )
+    ap.add_argument("--k-max-box", type=int, default=6)
+    ap.add_argument(
+        "--twin-mirror-min",
+        type=float,
+        default=0.35,
+        help="min DINOv2 cosine for a symmetry twin merge (box mode)",
+    )
     ap.add_argument("--col-tol", type=float, default=0.04)
     ap.add_argument("--row-tol", type=float, default=0.055)
     ap.add_argument("--spatial-strength", type=float, default=1.8)
@@ -474,7 +490,8 @@ def cluster_boxes(
     args: argparse.Namespace,
     device: torch.device,
 ) -> dict:
-    print(f"=== 3 Cluster balcony types ({args.dino}) ===")
+    mode = getattr(args, "cluster_mode", "appearance")
+    print(f"=== 3 Cluster balcony types ({mode}, {args.dino}) ===")
     dino = torch.hub.load("facebookresearch/dinov2", args.dino, pretrained=True)
     dino = dino.to(device).eval()
     clustered = cluster_balcony_boxes(
@@ -495,7 +512,22 @@ def cluster_boxes(
         patch=rp.patch,
         base=rp.base,
         reemb=rp.reemb,
+        cluster_mode=mode,
+        k_max_box=getattr(args, "k_max_box", 6),
     )
+    if mode == "box":
+        labels, sym_log = rp.apply_symmetry_repair(
+            facade,
+            boxes,
+            clustered["labels"],
+            clustered["feats"],
+            labels_box=clustered.get("labels_box"),
+            twin_mirror_min=getattr(args, "twin_mirror_min", 0.35),
+        )
+        clustered["labels"] = labels
+        clustered["symmetry_log"] = sym_log
+        for line in sym_log[-8:]:
+            print(f"  {line}")
     del dino
     torch.cuda.empty_cache()
     return clustered
@@ -570,7 +602,7 @@ def run(args: argparse.Namespace) -> Path | None:
                 filtered_boxes,
                 title=(
                     f"1a. Filtered balconies  kept={len(filtered_boxes)}/"
-                    f"{len(raw_boxes)}  (below-windows | juliet-width | window-cover | no-window-above)"
+                    f"{len(raw_boxes)}  (below-windows | window-cover | no-window-above)"
                 ),
                 color=(40, 180, 90),
             ),

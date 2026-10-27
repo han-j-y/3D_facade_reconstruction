@@ -187,13 +187,13 @@ grid_rule     = "{", '"op": "grid"', ',"vertical": ', json_int, ',"horizontal": 
                    A list of pane trees (e.g. one for body, one for head) is allowed. *)
 
 (* ---- output ---- *)
-output        = "{", [ '"muntin_width": ', scalar_json ],      (* default 0.02 *)
+output        = "{", [ '"muntin_width": ', scalar_json ],      (* default 0.06*min_side *)
                      [ ',"muntin_depth": ', scalar_json ],     (* default 0.04 *)
                      [ ',"glass_thickness": ', scalar_json ],  (* default 0.01 *)
                 "}" ;
 (* Values emitted by the structure model / decoder (§4):
      frame  {thickness: 0.06*min_side, depth: 0.08, material: painted_wood}
-     output {muntin_width: 0.025*min_side, muntin_depth: 0.035, glass_thickness: 0.01}
+     output {muntin_width: 0.06*min_side, muntin_depth: 0.035, glass_thickness: 0.01}
      glass  = inset(root, 0.06*min_side)                                      *)
 
 json_bool     = "true" | "false" ;

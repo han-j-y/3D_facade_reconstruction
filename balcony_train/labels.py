@@ -12,6 +12,9 @@ MATERIALS: tuple[str, ...] = ("metal", "masonry")
 FLOOR_SHAPES: tuple[str, ...] = ("rectangle", "triangle", "circle")
 # Retired plan names still found in older labels, splits, and IR files.
 LEGACY_FLOOR_SHAPES: dict[str, str] = {"hexagon": "rectangle", "trapezoid": "rectangle"}
+# Open-UI structure. Juliet is a railing with no walk-out slab.
+# inset / composite / free_standing stay out of this label vocabulary.
+LABEL_STRUCTURES: tuple[str, ...] = ("projecting", "juliet")
 # Matches BDSL ``enclosure``.
 ENCLOSURES: tuple[str, ...] = ("open", "half_enclosed", "enclosed")
 # Enclosed shell: solid wall with cut windows, or full-height glass bays.

@@ -45,6 +45,7 @@ from balcony_train.enclosed_grid_store import (  # noqa: E402
     GridRecord,
     cell_at,
     facade_stems_from_crop_labels,
+    GRID_FAILURE,
     find_photo,
     list_grid_stems,
     load_grid,
@@ -77,6 +78,10 @@ def render_grid(
     label = _font(max(13, base.width // 52))
     for fid, (y0, y1) in sorted(floor_y.items()):
         for bid, (x0, x1) in sorted(bay_x.items()):
+            x0, x1 = sorted((int(x0), int(x1)))
+            y0, y1 = sorted((int(y0), int(y1)))
+            if x1 <= x0 or y1 <= y0:
+                continue
             on = (int(fid), int(bid)) in selected
             fill: Fill | None = (255, 140, 30, 110) if on else None
             outline: Fill = (255, 170, 40, 255) if on else (40, 220, 120, 230)
@@ -231,7 +236,9 @@ class EnclosedGridApp:
             self.skin_var.set(saved.skin if saved is not None and saved.skin else "")
         n_saved = sum(1 for s in self.queue if s in self.labels)
         state = "not done"
-        if saved is not None:
+        if saved is not None and saved.status == GRID_FAILURE:
+            state = "grid failure"
+        elif saved is not None:
             if not saved.cells:
                 state = "done, no enclosure"
             else:

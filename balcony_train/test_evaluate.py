@@ -14,7 +14,10 @@ from balcony_train.evaluate import (
     error_run_stamp,
     eval_image_paths,
     filter_indices_by_name_prefix,
+    filter_indices_by_photo_stems,
     misclass_folder_name,
+    photo_stem_from_crop,
+    photo_stems_in_dir,
     write_eval_list,
 )
 from balcony_train.labels import FLOOR_IGNORE_INDEX, MATERIAL_IGNORE_INDEX, SKIN_IGNORE_INDEX
@@ -30,6 +33,29 @@ class EvaluateFilterTests(unittest.TestCase):
         ]
         kept = filter_indices_by_name_prefix(samples, [0, 1, 2, 3], "cmp")
         self.assertEqual(kept, [0, 2])
+
+    def test_photo_stem_from_crop(self) -> None:
+        self.assertEqual(
+            photo_stem_from_crop(Path("open_work/cmp_x0001_bal_000.png")),
+            "cmp_x0001",
+        )
+        self.assertIsNone(photo_stem_from_crop(Path("open_work/flux2_metal_000.png")))
+
+    def test_filter_keeps_crops_from_photo_dir(self) -> None:
+        samples = [
+            (Path("open_work/cmp_x0001_bal_000.png"), 0, 0),
+            (Path("open_work/cmp_x0001_bal_001.png"), 0, 0),
+            (Path("solid/cmp_x0099_bal_000.png"), 2, MATERIAL_IGNORE_INDEX),
+            (Path("open_work/flux2_metal_000.png"), 0, 0),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "cmp_x0001.jpg").write_bytes(b"a")
+            (root / "cmp_x0001.xml").write_bytes(b"b")
+            stems = photo_stems_in_dir(root)
+            kept = filter_indices_by_photo_stems(samples, [0, 1, 2, 3], stems)
+        self.assertEqual(kept, [0, 1])
+        self.assertEqual(stems, {"cmp_x0001"})
 
     def test_empty_prefix_keeps_all(self) -> None:
         samples = [

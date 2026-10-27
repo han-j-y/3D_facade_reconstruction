@@ -5,11 +5,13 @@ Drop a candidate if:
      (windows: ~10% expanded in X/Y for overlap; Y shrunk ~10% for sill).
      Skip this drop when the balcony is >=20% wider than an overlapping partner
      window (real multi-bay / wide slab cue).
-  2. Juliet-like: width is close to a partner window (default 0.85–1.08×).
-  3. Window-inclusive: intersection with a raw partner window covers >=90% of
+  2. Window-inclusive: intersection with a raw partner window covers >=90% of
      the balcony area (T1 window+box false positives).
-  4. Rooftop / top rail: drop when no window in the balcony's bay span has its
+  3. Rooftop / top rail: drop when no window in the balcony's bay span has its
      center higher than the balcony center (image Y up = smaller cy).
+
+Juliet balconies stay. A box whose width is close to its partner window is
+not dropped for that reason.
 """
 
 from __future__ import annotations
@@ -142,33 +144,6 @@ def wider_than_partner_window(
         b, window_boxes, iw=iw, ih=ih, expand_frac=expand_frac
     ):
         if bw >= float(min_width_ratio) * _box_width(raw):
-            return True
-    return False
-
-
-def similar_width_to_partner(
-    box: list[int] | list[float],
-    window_boxes: list[list[int]],
-    *,
-    iw: int,
-    ih: int,
-    expand_frac: float = 0.10,
-    min_ratio: float = 0.85,
-    max_ratio: float = 1.08,
-) -> bool:
-    """True if balcony width is close to a partner window (Juliet-like).
-
-    Uses the same partner pairing as decoration filters (10% expanded window
-    overlap). Drop cue when ratio is in ``[min_ratio, max_ratio]`` inclusive.
-    """
-    b = _as_box(box)
-    bw = _box_width(b)
-    lo, hi = float(min_ratio), float(max_ratio)
-    for raw in _partner_windows(
-        b, window_boxes, iw=iw, ih=ih, expand_frac=expand_frac
-    ):
-        ratio = bw / _box_width(raw)
-        if lo <= ratio <= hi:
             return True
     return False
 
@@ -314,8 +289,6 @@ def filter_balcony_boxes(
     expand_frac: float = 0.10,
     above_margin_frac: float = 0.0,
     min_width_ratio: float = 1.20,
-    juliet_min_ratio: float = 0.85,
-    juliet_max_ratio: float = 1.08,
     window_cover_frac: float = 0.90,
 ) -> tuple[list[list[int]], list[dict[str, Any]]]:
     """Return (kept_boxes, drop_log)."""
@@ -347,15 +320,6 @@ def filter_balcony_boxes(
             min_width_ratio=min_width_ratio,
         )
         below = below_raw and not wide_keep
-        juliet = similar_width_to_partner(
-            b,
-            win_boxes,
-            iw=iw,
-            ih=ih,
-            expand_frac=expand_frac,
-            min_ratio=juliet_min_ratio,
-            max_ratio=juliet_max_ratio,
-        )
         window_cover = mostly_covered_by_partner_window(
             b,
             win_boxes,
@@ -372,13 +336,11 @@ def filter_balcony_boxes(
             reasons.append("below_windows")
         if below_raw and wide_keep:
             reasons.append("wide_vs_window")
-        if juliet:
-            reasons.append("juliet_width")
         if window_cover:
             reasons.append("window_cover")
         if rooftop:
             reasons.append("no_window_above")
-        keep = (not below) and (not juliet) and (not window_cover) and (not rooftop)
+        keep = (not below) and (not window_cover) and (not rooftop)
         log.append({"box": b, "keep": keep, "reasons": reasons})
         if keep:
             kept.append(b)

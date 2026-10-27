@@ -15,13 +15,18 @@ if str(ROOT) not in sys.path:
 
 from PIL import Image
 
-from balcony_train.score_enclosed_plan import copy_plan_mistakes  # noqa: E402
+from balcony_train.score_enclosed_plan import (  # noqa: E402
+    copy_plan_mistakes,
+    format_plan_confusion,
+)
 from balcony_train.evaluate_enclosed_grid import (  # noqa: E402
     apply_plan_score,
     cells_from_boxes,
+    enclosed_plan_type,
     format_report,
     load_pred_cells,
     render_compare,
+    render_plan_types,
     score_photo,
     select_labels,
     summarize,
@@ -98,6 +103,24 @@ class EnclosedGridEvalTests(unittest.TestCase):
         self.assertGreater(purple[0], 80)
         self.assertGreater(purple[2], 80)
 
+    def test_plan_type_folds_triangle_and_missing_skin(self) -> None:
+        self.assertEqual(enclosed_plan_type("curtain_wall", "circle"), ("curtain_wall", "circle"))
+        self.assertEqual(enclosed_plan_type("curtain_wall", "triangle"), ("curtain_wall", "rectangle"))
+        self.assertEqual(enclosed_plan_type(None, "rectangle"), ("punched_window", "rectangle"))
+        self.assertEqual(enclosed_plan_type("nope", None), ("punched_window", "rectangle"))
+
+    def test_plan_boxes_use_a_separate_color_per_type(self) -> None:
+        photo = Image.new("RGB", (200, 100), (180, 180, 180))
+        boxes = [
+            {"plan": ("punched_window", "rectangle"), "box": [0, 0, 100, 100]},
+            {"plan": ("curtain_wall", "circle"), "box": [100, 0, 200, 100]},
+        ]
+        painted = render_plan_types(photo, boxes)
+        orange = painted.getpixel((50, 50))
+        green = painted.getpixel((150, 50))
+        self.assertGreater(orange[0], orange[2])
+        self.assertGreater(green[1], green[0])
+
     def test_vote_needs_a_predicted_cell_and_a_strict_majority(self) -> None:
         image = Image.new("RGB", (100, 100), (20, 20, 20))
         floor_y = {0: (0, 50), 1: (50, 100)}
@@ -133,6 +156,13 @@ class EnclosedGridEvalTests(unittest.TestCase):
         text = format_report(summarize([hit, missed]), [hit, missed])
         self.assertIn("shape 1/1  shape_acc=1.000  skin 1/1  skin_acc=1.000  no_cells=1", text)
         self.assertNotIn("rectangle  None", text)
+        hit["pred"] = [(1, 0)]
+        missed["pred"] = []
+        table = format_plan_confusion([hit, missed])
+        self.assertIn("floor rows=true cols=pred  rectangle  triangle  circle", table)
+        self.assertIn("skin rows=true cols=pred  punched_window  curtain_wall", table)
+        self.assertIn("rectangle           1    0    0", table)
+        self.assertIn("punched_window      1    0", table)
 
     def test_pred_json_accepts_flat_and_nested_cells(self) -> None:
         with TemporaryDirectory() as tmp:

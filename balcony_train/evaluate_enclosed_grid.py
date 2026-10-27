@@ -44,10 +44,12 @@ from balcony_train.enclosed_grid_store import (  # noqa: E402
     DEFAULT_DSL_DIR,
     DEFAULT_EVAL_LABELS_JSONL,
     DEFAULT_EVAL_PHOTO_DIR,
+    GRID_FAILURE,
     Cell,
     find_photo,
     load_grid,
     load_labels,
+    load_records,
 )
 from balcony_train.labels import ENCLOSURE_SKINS  # noqa: E402
 
@@ -104,6 +106,40 @@ def scored_floor_shape(shape: str | None) -> str | None:
     if raw in ("rectangle", "triangle"):
         return "rectangle"
     return None
+
+
+# One box color per enclosed mesh: skin × floor. Triangle is already rectangle.
+PLAN_TYPES: tuple[tuple[str, str], ...] = (
+    ("punched_window", "rectangle"),
+    ("punched_window", "circle"),
+    ("curtain_wall", "rectangle"),
+    ("curtain_wall", "circle"),
+)
+PLAN_TYPE_COLOR: dict[tuple[str, str], tuple[int, int, int]] = {
+    ("punched_window", "rectangle"): (255, 150, 30),
+    ("punched_window", "circle"): (230, 50, 170),
+    ("curtain_wall", "rectangle"): (40, 130, 255),
+    ("curtain_wall", "circle"): (30, 190, 110),
+}
+PLAN_TYPE_LABEL: dict[tuple[str, str], str] = {
+    ("punched_window", "rectangle"): "punched rect",
+    ("punched_window", "circle"): "punched circle",
+    ("curtain_wall", "rectangle"): "curtain rect",
+    ("curtain_wall", "circle"): "curtain circle",
+}
+
+
+def enclosed_plan_type(skin: str | None, floor: str | None) -> tuple[str, str]:
+    """Map one cell prediction onto the four mesh types.
+
+    An unknown or missing skin is punched. An unknown floor is rectangle.
+    Triangle counts as rectangle, matching the photo-level vote.
+    """
+    shape = scored_floor_shape(floor) or "rectangle"
+    skin_name = str(skin or "").strip().lower()
+    if skin_name not in ENCLOSURE_SKINS:
+        skin_name = "punched_window"
+    return skin_name, shape
 
 
 def vote_plan(
@@ -248,6 +284,45 @@ def format_report(summary: dict[str, Any], rows: list[dict[str, Any]]) -> str:
                 f"{row['gt_skin']}  {row['pred_skin']}"
             )
     return "\n".join(lines)
+
+
+def render_plan_types(
+    photo: Any,
+    boxes: list[dict[str, Any]],
+    *,
+    title: str = "",
+) -> Any:
+    """Draw one bounding box per detected cell, colored by its plan type."""
+    from PIL import Image, ImageDraw, ImageFont
+
+    base = photo.convert("RGBA")
+    layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    line = max(3, base.width // 180)
+    font = ImageFont.load_default()
+    for path in ("C:/Windows/Fonts/YuGothM.ttc", "C:/Windows/Fonts/meiryo.ttc"):
+        if Path(path).is_file():
+            font = ImageFont.truetype(path, max(14, base.width // 48))
+            break
+    for item in boxes:
+        skin, shape = item["plan"]
+        color = PLAN_TYPE_COLOR[(skin, shape)]
+        x0, y0, x1, y1 = item["box"]
+        draw.rectangle((x0, y0, x1, y1), fill=(*color, 70), outline=(*color, 255), width=line)
+        label = PLAN_TYPE_LABEL[(skin, shape)]
+        tx, ty = x0 + 4, y0 + 2
+        tw = max(8, font.getlength(label)) if hasattr(font, "getlength") else 8 * len(label)
+        draw.rectangle((tx - 2, ty, tx + tw + 4, ty + 18), fill=(0, 0, 0, 180))
+        draw.text((tx, ty), label, fill=(255, 255, 255, 255), font=font)
+    painted = Image.alpha_composite(base, layer).convert("RGB")
+    if not title:
+        return painted
+    bar_h = max(28, painted.height // 28)
+    out = Image.new("RGB", (painted.width, painted.height + bar_h), (16, 18, 22))
+    out.paste(painted, (0, bar_h))
+    bar = ImageDraw.Draw(out)
+    bar.text((8, 4), title, fill=(240, 240, 240), font=font)
+    return out
 
 
 def render_compare(
@@ -538,6 +613,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    failures = sorted(
+        stem
+        for stem, rec in load_records(args.labels).items()
+        if rec.status == GRID_FAILURE
+    )
+    if failures:
+        print(f"grid failure ({len(failures)}): " + ", ".join(failures))
     labels = load_labels(args.labels)
     if not labels:
         print(f"no labeled photos in {args.labels}")

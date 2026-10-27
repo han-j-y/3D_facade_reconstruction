@@ -20,9 +20,9 @@ Docstring only: documents `--with-balconies`.
 - `facade_compile.compile_facade_scene` calls that pass (window-only JSON still compiles as before).
 
 ### `documents/FDSL.ebnf`
-- `balconies:` type library (each body is BDSL).
-- `balcony_placement:` spans on the existing floor×bay grid (e.g. `F1 B1-B3 loggia`).
-- Window `placement:` must not list balcony type names.
+- Recovery JSON (§3): `balcony_types[]` (`structure_ir` is BDSL JSON) and `layout.balconies` (`floor`, `bay_start`–`bay_end`).
+- Compiled JSON (§2): `balconies` and `balcony_placement` (`row`, `col0`, `col1`, `type`), filled by `normalize_facade_spec` (§4).
+- Window `layout.placement` does not list balcony type names.
 
 ### `balcony_pipeline/run_balcony.py`
 - `run()` entry for the window hook.
@@ -52,7 +52,7 @@ Standalone track; does not edit window e2e internals.
 | `run_balcony.py` | CLI + `run()` |
 | `snap.py` | Snap boxes to **window** floors/bays |
 | `cluster.py` | DINOv2 ROI + spectral + Potts (balcony boxes only) |
-| `filter.py` | Drop decoration FPs (below shrunk sill; exempt if >=20% wider than partner window), Juliet-like same-width partners (0.85–1.08×), window-inclusive boxes (partner window covers >=90% of balcony area), or top rail (no window above in the balcony's bay span) |
+| `filter.py` | Drop decoration FPs (below shrunk sill; exempt if >=20% wider than partner window), window-inclusive boxes (partner window covers >=90% of balcony area), or top rail (no window above in the balcony's bay span). Juliet balconies are kept. |
 | `heuristic_ir.py` | Per-crop BDSL JSON IR + `balcony_view` fingerprint |
 | `../balcony_train/` | Optional solid/baluster classifier (`railing.kind` only) |
 | `recovery_profile.py` | Which axes to infer/vote (`railing_only` / `full`) |

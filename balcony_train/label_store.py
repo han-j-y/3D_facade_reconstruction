@@ -9,6 +9,7 @@ Each line::
 ``floor_shape`` is rectangle, triangle, or circle (legacy hexagon and
 trapezoid load as rectangle).
 ``enclosure`` is open, half_enclosed, or enclosed (BDSL ``enclosure``).
+``structure`` is ``juliet`` or null. Null means projecting (the open-UI default).
 Folder layout under ``crops/`` (``open_work/`` etc.) stays in sync for the
 existing kind-only trainer. Records with an enclosure but no kind keep their
 image in ``unlabeled/``.
@@ -26,6 +27,7 @@ from balcony_train.labels import (
     ENCLOSURE_SKINS,
     ENCLOSURES,
     FLOOR_SHAPES,
+    LABEL_STRUCTURES,
     LABELED_IMAGE_SUFFIXES,
     LEGACY_FLOOR_SHAPES,
     MATERIALS,
@@ -81,6 +83,18 @@ def normalize_skin(raw: Any) -> str | None:
         return None
     if name not in ENCLOSURE_SKINS:
         raise ValueError(f"unknown enclosure skin {raw!r}; expected {ENCLOSURE_SKINS}")
+    return name
+
+
+def normalize_structure(raw: Any) -> str | None:
+    """Open-UI structure. Empty and projecting stay unset. Unknown names raise."""
+    if raw is None:
+        return None
+    name = str(raw).strip().lower().replace("-", "_").replace(" ", "_")
+    if not name or name in ("null", "none", "projecting"):
+        return None
+    if name not in LABEL_STRUCTURES:
+        raise ValueError(f"unknown structure {raw!r}; expected {LABEL_STRUCTURES}")
     return name
 
 
@@ -140,6 +154,7 @@ def load_labels(jsonl_path: Path) -> dict[str, dict[str, Any]]:
                 "floor_shape": normalize_floor_shape(rec.get("floor_shape")),
                 "enclosure": normalize_enclosure(rec.get("enclosure")),
                 "skin": normalize_skin(rec.get("skin")),
+                "structure": normalize_structure(rec.get("structure")),
             }
     return by_stem
 
@@ -162,6 +177,7 @@ def labels_from_folders(crops_dir: Path) -> dict[str, dict[str, Any]]:
                 "floor_shape": None,
                 "enclosure": None,
                 "skin": None,
+                "structure": None,
             }
     return by_stem
 
@@ -187,6 +203,9 @@ def merge_label_sources(
             skin = normalize_skin(prev.get("skin"))
         if enclosure != "enclosed":
             skin = None
+        structure = normalize_structure(rec.get("structure"))
+        if enclosure != "open":
+            structure = None
         merged[stem] = {
             "path": rec.get("path") or prev.get("path") or f"{stem}.png",
             "kind": kind,
@@ -194,6 +213,7 @@ def merge_label_sources(
             "floor_shape": floor,
             "enclosure": enclosure,
             "skin": skin,
+            "structure": structure,
         }
     return merged
 
@@ -212,6 +232,7 @@ def write_labels_jsonl(
         if kind is None and enclosure is None:
             continue
         material = normalize_material(rec.get("material"), kind=kind)
+        structure = normalize_structure(rec.get("structure")) if enclosure == "open" else None
         lines.append(
             json.dumps(
                 {
@@ -221,6 +242,7 @@ def write_labels_jsonl(
                     "floor_shape": normalize_floor_shape(rec.get("floor_shape")),
                     "enclosure": enclosure,
                     "skin": normalize_skin(rec.get("skin")) if enclosure == "enclosed" else None,
+                    "structure": structure,
                 },
                 ensure_ascii=False,
             )
@@ -326,6 +348,7 @@ def save_annotation(
     floor_shape: str | None = None,
     enclosure: str | None = None,
     skin: str | None = None,
+    structure: str | None = None,
     labels: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Update JSONL + move file into kind folder. Returns full label map.
@@ -341,6 +364,7 @@ def save_annotation(
         raise ValueError("material required for open_work (metal or masonry)")
     floor_n = normalize_floor_shape(floor_shape)
     skin_n = normalize_skin(skin) if enc_n == "enclosed" else None
+    structure_n = normalize_structure(structure) if enc_n == "open" else None
 
     crops_dir = Path(crops_dir)
     jsonl_path = Path(jsonl_path)
@@ -356,6 +380,7 @@ def save_annotation(
         "floor_shape": floor_n,
         "enclosure": enc_n,
         "skin": skin_n,
+        "structure": structure_n,
     }
     write_labels_jsonl(jsonl_path, records)
     return records

@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from balcony_train.enclosed_grid_store import (  # noqa: E402
+    GRID_FAILURE,
     GridRecord,
     cell_at,
     facade_stems_from_crop_labels,
@@ -151,6 +152,31 @@ class EnclosedGridStoreTests(unittest.TestCase):
         cleared = record_for_save([], "circle", "curtain_wall", plan=True)
         self.assertEqual(cleared.cells, [])
         self.assertIsNone(cleared.skin)
+
+    def test_grid_failure_is_not_a_photo_with_no_enclosure(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "labels.jsonl"
+            write_records(
+                path,
+                {
+                    "cmp_x0045": GridRecord([], status=GRID_FAILURE),
+                    "cmp_x0009": GridRecord([]),
+                },
+            )
+            rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+            row = next(item for item in rows if item["stem"] == "cmp_x0045")
+            self.assertEqual(row, {"stem": "cmp_x0045", "status": "grid_failure"})
+            self.assertNotIn("cells", row)
+            loaded = load_records(path)
+            self.assertEqual(loaded["cmp_x0045"].status, GRID_FAILURE)
+            self.assertEqual(loaded["cmp_x0045"].cells, [])
+            self.assertNotIn("cmp_x0045", load_labels(path))
+            self.assertEqual(load_labels(path)["cmp_x0009"], [])
+            kept = record_for_save([], None, None, previous=loaded["cmp_x0045"])
+            self.assertEqual(kept.status, GRID_FAILURE)
+            labeled = record_for_save([(1, 0)], "rectangle", "punched_window", plan=True, previous=kept)
+            self.assertIsNone(labeled.status)
+            self.assertEqual(labeled.cells, [(1, 0)])
 
     def test_cell_only_write_does_not_invent_a_plan(self) -> None:
         with TemporaryDirectory() as tmp:

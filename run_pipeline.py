@@ -1,15 +1,21 @@
 #!/usr/bin/env python3
 """End-to-end facade recovery: photo → window types → structure IR → DSL.
 
-Pipeline
-  1. Detect   — SAM3 ``window`` boxes (or reuse ``--from-index``)
-  2. Unitize  — merge adjacent same-floor panes / bay faces
+Pipeline (defaults)
+  1. Detect   — facebook/sam3 ``window``, two-tier: score >= 0.7, plus [0.5, 0.7) boxes overlapping none of
+                those; boxes on ``car`` masks dropped (or reuse ``--from-index``)
+  2. Unitize  — ``--merge-mode ast`` (containment / IoU merges)
   3. Layout   — structural columns from box geometry (bay + colspan); legacy ``--layout-mode centroid``
-  4. Cluster  — z-scored box geometry (GMM) then optional DINO splits → window types
-  4. Assetize — per-type crops; medoid exemplar
-  5. Structure — predict window structure IR per unit; majority-vote within type
-  6. DSL       — floor×bay layout (+ colspan) + type library (``facade_dsl.json``)
-  7. (opt)     — Blender façade render via ``scripts/render_facade.py``
+  4. Cluster  — ``--cluster-mode gate``: z-scored box geometry (GMM), then the symmetry axis
+                (``scripts/symmetry_axis_ghost_continuous.py``, ``open balcony`` detections break ties), then
+                pane-tree structure splits inside each box group that keep mirror pairs together
+  5. Doors    — window+door+shop SAM3 fine-tune ``door`` >= 0.45; side facades (edge columns off the main
+                floors) and the doors beside them dropped
+  6. Assetize — per-type crops; medoid exemplar
+  7. Structure — predict window structure IR per unit; majority-vote within type
+  8. DSL       — per-floor bays (``facade_recovery/floor_bays.py``) + type library (``facade_dsl.json``)
+  9. (opt)     — Blender façade render via ``scripts/render_facade.py``
+  10. (opt)    — ``--with-balconies`` runs balcony_pipeline on this floor×bay grid
 
 Majority vote uses a discrete ``structure_view`` fingerprint (shape + pane
 topology + program ops). Continuous floats are ignored. Ties prefer the
@@ -20,7 +26,7 @@ Blender rendering is optional (``--blender-render``).
 Examples::
 
   python run.py --facade-id 8 --device cuda
-  python run.py --image photo.png --out-dir runs/demo --device cuda --with-balconies
+  python run.py --image photo.png --out-dir runs/demo --device cuda
   python run.py --image photo.png --device cuda --with-balconies --threshold 0.45 --balcony-threshold 0.35
   python run.py --image-dir data/base --out-dir runs/batch --device cuda --with-balconies
   python run.py --image-dir data/base --out-dir runs/batch --device cuda --with-balconies --blender-render
@@ -51,6 +57,7 @@ from facade_recovery.box_cluster import (  # noqa: E402
     cluster_box_geometry_pipeline,
     cluster_within_groups,
 )
+from facade_recovery.cmp_windows import load_cmp_labelmap_windows, load_cmp_xml_windows  # noqa: E402
 from facade_recovery.merge_guard import (  # noqa: E402
     filter_indices,
     spanning_box_indices,
@@ -74,6 +81,8 @@ from facade_recovery.doors import (  # noqa: E402
     cluster_door_units,
     filter_door_boxes,
 )
+from facade_recovery.floor_bays import apply_floor_bays, drop_side_facades  # noqa: E402
+from facade_recovery.sym_gate import gate_cluster, mirror_partners, refine_axis, two_tier  # noqa: E402
 from facade_recovery.paths import (  # noqa: E402
     default_structure_ckpt,
     default_train_up,
@@ -149,14 +158,15 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--from-index", type=Path, default=None, help="reuse SAM index.json")
     ap.add_argument(
         "--windows",
-        choices=("sam", "xml"),
+        choices=("sam", "xml", "labelmap"),
         default="sam",
-        help="window boxes: SAM detect (default) or CMP XML next to the image",
+        help="window boxes: SAM detect (default), CMP XML, or the CMP label map (<stem>.png, class 3) "
+        "next to the image",
     )
     ap.add_argument(
         "--merge-mode",
         choices=("structural", "ast"),
-        default="structural",
+        default="ast",
         help="unitize merge: e2e structural columns, or ast "
         "(scripts/overlay_facade_merge_boxes_ast.py: centroid bays + vertical same-stack merge)",
     )
@@ -172,7 +182,7 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Zhang-style L–R symmetry repair on type labels after clustering "
-        "(default on; --no-symmetry to skip)",
+        "(default on; --no-symmetry to skip; not used by --cluster-mode gate, which splits under the axis)",
     )
     ap.add_argument(
         "--twin-mirror-min",
@@ -200,20 +210,44 @@ def parse_args() -> argparse.Namespace:
         default=0.5,
         help="drop a window/door box when this fraction of it lies on an excluded-object mask",
     )
-    ap.add_argument(
-        "--threshold",
-        type=float,
-        default=0.45,
-        help="SAM3 score threshold for window detect (default: 0.45)",
-    )
+    ap.add_argument("--threshold", type=float, default=0.5, help="window detection score threshold (fill tier)")
     ap.add_argument(
         "--balcony-threshold",
         type=float,
         default=None,
-        help="SAM3 score threshold for balcony detect with --with-balconies "
-        "(default: same as --threshold)",
+        help="SAM3 score threshold for balcony detect with --with-balconies (default: 0.45)",
     )
-    ap.add_argument("--min-side", type=int, default=24)
+    ap.add_argument(
+        "--anchor-score",
+        type=float,
+        default=0.7,
+        help="two-tier detection: keep windows scoring >= this, then add those in [--threshold, this) that overlap "
+        "no kept box by --fill-max-overlap of the smaller box (0.5 alone over-merges two-pane windows, 0.6 alone "
+        "drops windows). 0 = single threshold",
+    )
+    ap.add_argument("--fill-max-overlap", type=float, default=0.2)
+    ap.add_argument(
+        "--sam-model",
+        default="facebook/sam3",
+        help="SAM3 model (HF id or directory) for window detection; default: the released model. The CMP window "
+        "fine-tune (../sam3_ft/hf/cmp_windows_ft_stable_ema19) detects stone ornaments as windows. "
+        "Doors: --door-sam-model; --exclude-prompts keep facebook/sam3",
+    )
+    ap.add_argument(
+        "--min-side",
+        type=int,
+        default=13,
+        help="drop SAM detections with a side below this (px); 8 keeps slivers of neighbouring facades' windows at "
+        "the image edge, which then take over real windows' floor/bay cells; 12 keeps the side pane of b0010's "
+        "bay window",
+    )
+    ap.add_argument(
+        "--min-rel-width",
+        type=float,
+        default=0.0,
+        help="drop SAM window detections narrower than this x the facade's median window width (side panes of "
+        "bay windows, slivers). 0.35 = 1st percentile of GT windows on the cmp_windows train split. 0 = off",
+    )
     ap.add_argument("--max-side-frac", type=float, default=0.55)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--dino", default="dinov2_vits14")
@@ -223,9 +257,67 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--k-max", type=int, default=8, help="max k for appearance / final clustering")
     ap.add_argument(
         "--cluster-mode",
-        choices=("shape_then_feat", "box", "appearance"),
-        default="shape_then_feat",
-        help="type clustering: z-scored box GMM then DINO splits (default), box-only, or legacy appearance+Potts",
+        choices=("gate", "shape_then_feat", "shape_then_struct", "struct", "box", "appearance"),
+        default="gate",
+        help="type clustering: gate (default) = z-scored box GMM, then the symmetry axis "
+        "(scripts/symmetry_axis_ghost_continuous.py), then structure splits inside each box group that keep "
+        "mirror pairs together (facade_recovery/sym_gate.py; needs a pane-tree --structure-ckpt); "
+        "shape_then_feat = box GMM then DINO splits; shape_then_struct = box GMM then splits by the pane-tree "
+        "root embedding; struct = the root embedding alone over the whole facade; box-only; or legacy "
+        "appearance+Potts",
+    )
+    ap.add_argument(
+        "--gate-eps",
+        type=float,
+        default=0.1,
+        help="gate: refuse a split that separates more than this fraction of the node's mirror pairs",
+    )
+    ap.add_argument(
+        "--gate-feature",
+        choices=("z", "heads"),
+        default="heads",
+        help="gate: pane-tree descriptor that is cut at --struct-split-thr",
+    )
+    ap.add_argument(
+        "--axis-refine",
+        type=float,
+        default=0.02,
+        help="gate: shift the symmetry axis within +-this x image width to pair the most windows",
+    )
+    ap.add_argument(
+        "--balcony-prompt",
+        default="open balcony",
+        help="gate: SAM3 prompt whose detections break ties between window-symmetry peaks ('' = off)",
+    )
+    ap.add_argument("--balcony-min-score", type=float, default=0.5)
+    ap.add_argument(
+        "--grid",
+        choices=("floor_bays", "columns"),
+        default="floor_bays",
+        help="DSL layout: per-floor bays merged where lines match across floors (facade_recovery/floor_bays.py, "
+        "default) or one column grid for the whole facade (--layout-mode)",
+    )
+    ap.add_argument(
+        "--side-filter",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="drop window columns at the image edges that sit off the main facade's floors (neighbouring "
+        "buildings, side walls), and doors outside the kept windows",
+    )
+    ap.add_argument(
+        "--struct-split-thr",
+        type=float,
+        default=0.16,
+        help="shape_then_struct / struct: average-linkage cosine-distance cut on the root embedding within a box "
+        "group / over the facade (0.16 separates same / different labelled structures best within a facade; "
+        "0.2 for struct on the e2e test windows)",
+    )
+    ap.add_argument(
+        "--struct-feature",
+        choices=("z", "heads"),
+        default="z",
+        help="shape_then_struct / struct descriptor: pane-tree root embedding (z) or its predicted structure "
+        "probabilities (heads; less sensitive to appearance, use with --struct-split-thr 0.2)",
     )
     ap.add_argument("--k-max-box", type=int, default=6, help="max k for stage-1 box geometry clustering")
     ap.add_argument(
@@ -274,7 +366,7 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="optional window compiler package with main.py (or set FACADE_COMPILER_ROOT)",
     )
-    ap.add_argument("--col-tol", type=float, default=0.04)
+    ap.add_argument("--col-tol", type=float, default=0.045)
     ap.add_argument("--row-tol", type=float, default=0.055)
     ap.add_argument(
         "--layout-mode",
@@ -291,6 +383,19 @@ def parse_args() -> argparse.Namespace:
         help="window structure AST checkpoint (default: best available under runs/)",
     )
     ap.add_argument("--structure-only", action=argparse.BooleanOptionalAction, default=True)
+    ap.add_argument(
+        "--structure-adapter",
+        type=Path,
+        default=None,
+        help="real->synthetic feature adapter for a pane-tree --structure-ckpt "
+        "(e.g. ../window_ast_predictor/runs/tree_adapter_s3_noreallike/last.pt)",
+    )
+    ap.add_argument(
+        "--tree-root",
+        type=Path,
+        default=EXP / "window_ast_predictor",
+        help="window_ast_predictor checkout providing the pane-tree model code",
+    )
     ap.add_argument("--skip-structure", action="store_true")
     ap.add_argument(
         "--detect-doors",
@@ -299,6 +404,34 @@ def parse_args() -> argparse.Namespace:
         help="SAM-detect ground doors and add to façade DSL (default on)",
     )
     ap.add_argument("--door-prompt", type=str, default="door")
+    door_ft = EXP / "sam3_ft" / "hf" / "cmp_wds_ft_winit_ema20"
+    ap.add_argument(
+        "--door-sam-model",
+        default=str(door_ft) if door_ft.is_dir() else "facebook/sam3",
+        help="SAM3 model (HF id or directory) for door detection. Default is the window+door+shop CMP fine-tune "
+        "(door AP 0.56 on the CMP test split vs 0.30 for facebook/sam3) when that directory exists, "
+        "otherwise facebook/sam3",
+    )
+    ap.add_argument("--door-threshold", type=float, default=0.45)
+    ap.add_argument(
+        "--shop-as-window",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="also SAM-detect --shop-prompt with --shop-sam-model and add the boxes as windows (ground floor only, "
+        "not overlapping a window or a door detection)",
+    )
+    ap.add_argument("--shop-prompt", type=str, default="shop")
+    ap.add_argument(
+        "--shop-sam-model",
+        default=None,
+        help="SAM3 model for --shop-as-window (default: --sam-model); needs a model trained on CMP 'shop'",
+    )
+    ap.add_argument(
+        "--shop-min-y-frac",
+        type=float,
+        default=0.55,
+        help="keep shop boxes whose center is below this image-height fraction",
+    )
     ap.add_argument(
         "--door-min-y-frac",
         type=float,
@@ -318,9 +451,31 @@ def parse_args() -> argparse.Namespace:
         help="predict IR on all units in a type and majority-vote (default on)",
     )
     ap.add_argument(
+        "--structure-pad",
+        type=float,
+        default=0.0,
+        help="margin per side (fraction of the window box) added around each unit before structure "
+        "prediction; assets stay tight",
+    )
+    ap.add_argument(
+        "--structure-glass-margin",
+        type=str,
+        default="",
+        help="pane-tree only: 'l,t,r,b' margins (fractions of the window box) of the context crop; the "
+        "unit box is passed as the glass box, as in training on base-photo crops (e.g. 0.15,0.075,0.15,0.10)",
+    )
+    ap.add_argument(
+        "--structure-joint",
+        choices=["off", "uniform", "area"],
+        default="off",
+        help="pane-tree only: decode one structure per type with node logits averaged over all members "
+        "(uniform or box-area weights) instead of a majority vote; per-member predictions are still "
+        "stored and compared against it",
+    )
+    ap.add_argument(
         "--with-balconies",
         action="store_true",
-        help="after window DSL, run balcony_pipeline and write facade_dsl_with_balconies.json",
+        help="after the window floor×bay grid, run balcony_pipeline and write facade_dsl_with_balconies.json",
     )
     ap.add_argument(
         "--balcony-recovery-profile",
@@ -377,10 +532,13 @@ def parse_args() -> argparse.Namespace:
 
 
 def balcony_sam3_threshold(args: argparse.Namespace) -> float:
-    """Balcony SAM3 threshold; defaults to ``--threshold`` when unset."""
+    """Balcony SAM3 threshold. Stays 0.45 unless ``--balcony-threshold`` is set.
+
+    The window fill tier (``--threshold``) is 0.5 and must not move balcony detection.
+    """
     if args.balcony_threshold is not None:
         return float(args.balcony_threshold)
-    return float(args.threshold)
+    return 0.45
 
 
 # ---------------------------------------------------------------------------
@@ -397,16 +555,27 @@ def detect_windows(
     min_side: int,
     max_side_frac: float,
     device: torch.device,
+    model_id: str = "facebook/sam3",
+    sam=None,
+    processor=None,
 ) -> list[dict[str, Any]]:
     from transformers import Sam3Model, Sam3Processor
 
     iw, ih = image.size
-    print("loading SAM3…")
-    processor = Sam3Processor.from_pretrained("facebook/sam3")
-    sam = Sam3Model.from_pretrained("facebook/sam3").to(device)
-    sam.eval()
+    own_model = sam is None or processor is None
+    if own_model:
+        print(f"loading SAM3 ({model_id})…")
+        processor = Sam3Processor.from_pretrained(model_id)
+        sam = Sam3Model.from_pretrained(model_id).to(device)
+        sam.eval()
     inputs = processor(images=image, text=prompt, return_tensors="pt")
     inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
+    # The original SAM3 always appends the geometry encoder's CLS token to the text prompt; HF skips the geometry
+    # encoder without boxes. A single padding box (label -10) runs it with only the CLS token valid. Fine-tuned
+    # checkpoints depend on that token; the released weights also detect differently with it (~5% more windows
+    # on the facade_e2e test facades).
+    inputs["input_boxes"] = torch.tensor([[[0.5, 0.5, 0.1, 0.1]]], device=device)
+    inputs["input_boxes_labels"] = torch.tensor([[-10]], device=device)
     outputs = sam(**inputs)
     results = processor.post_process_instance_segmentation(
         outputs,
@@ -423,8 +592,10 @@ def detect_windows(
         else:
             masks = np.asarray(masks)
     print(f"SAM3 raw detections: {len(boxes)}  masks={'yes' if masks is not None else 'no'}")
-    del sam, outputs, inputs
-    torch.cuda.empty_cache()
+    del outputs, inputs
+    if own_model:
+        del sam
+        torch.cuda.empty_cache()
 
     records = []
     n_mask_box = 0
@@ -478,6 +649,43 @@ def detect_windows(
         f"mask∩det={n_mask_box}  clamped_bleed={n_clamped}"
     )
     return records
+
+
+def _overlap(a: list[float], b: list[float]) -> tuple[float, float, float]:
+    """Intersection as a fraction of a, of b, and IoU."""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    aa = max(1e-9, (a[2] - a[0]) * (a[3] - a[1]))
+    ab = max(1e-9, (b[2] - b[0]) * (b[3] - b[1]))
+    return inter / aa, inter / ab, inter / (aa + ab - inter)
+
+
+def shop_windows(
+    shops: list[dict[str, Any]],
+    windows: list[dict[str, Any]],
+    doors: list[dict[str, Any]],
+    *,
+    image_height: int,
+    min_y_frac: float,
+    max_cover: float = 0.3,
+    max_door_iou: float = 0.3,
+    aspect: tuple[float, float] = (0.25, 4.0),
+) -> list[dict[str, Any]]:
+    """Shop detections to add as windows: ground floor, glazing-like aspect (h/w), not covering / covered by a window
+    (> max_cover of either box), not a door (IoU > max_door_iou); greedy by score among themselves."""
+    kept: list[dict[str, Any]] = []
+    for s in sorted(shops, key=lambda r: -r["score"]):
+        b = s["box_xyxy"]
+        w, h = b[2] - b[0], b[3] - b[1]
+        if (b[1] + b[3]) / 2 < min_y_frac * image_height or not aspect[0] <= h / max(w, 1) <= aspect[1]:
+            continue
+        if any(max(_overlap(b, o["box_xyxy"])[:2]) > max_cover for o in windows + kept):
+            continue
+        if any(_overlap(b, d["box_xyxy"])[2] > max_door_iou for d in doors):
+            continue
+        kept.append({**s, "from_prompt": "shop"})
+    return kept
 
 
 @torch.no_grad()
@@ -542,6 +750,25 @@ def drop_boxes_on_mask(
             dropped.append({**r, "exclude_cover": round(cover, 3)})
         else:
             kept.append(r)
+    for i, r in enumerate(kept):
+        r["idx"] = i
+    return kept, dropped
+
+
+def narrow_box_keep(boxes: list[list[float]], rel_width: float) -> list[bool]:
+    """False for boxes narrower than ``rel_width`` x the median box width (bay-window sides, cut-off slivers)."""
+    if rel_width <= 0 or len(boxes) < 3:
+        return [True] * len(boxes)
+    med = float(np.median([b[2] - b[0] for b in boxes]))
+    return [(b[2] - b[0]) >= rel_width * med for b in boxes]
+
+
+def drop_narrow_boxes(
+    records: list[dict[str, Any]], rel_width: float
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    keep = narrow_box_keep([r["box_xyxy"] for r in records], rel_width)
+    kept = [r for r, k in zip(records, keep) if k]
+    dropped = [r for r, k in zip(records, keep) if not k]
     for i, r in enumerate(kept):
         r["idx"] = i
     return kept, dropped
@@ -632,6 +859,8 @@ def cluster_units(
     box_conservative_k_wh_tol: float = 0.008,
     box_merge_near: bool = False,
     box_snap_wh: bool = True,
+    struct_describe=None,
+    struct_split_thr: float = 0.16,
 ) -> dict[str, Any]:
     iw, ih = facade.size
     work_boxes = [list(b) for b in boxes]
@@ -761,6 +990,30 @@ def cluster_units(
             snap_wh=box_snap_wh,
         )
         labels = labels_box
+    elif cluster_mode == "shape_then_struct":
+        if struct_describe is None:
+            raise ValueError("cluster_mode shape_then_struct needs struct_describe")
+        labels_box, _ = cluster_box_geometry_pipeline(
+            merged_boxes,
+            (iw, ih),
+            base,
+            method=box_method,
+            k_max=k_max_box,
+            seed=seed,
+            conservative_k=box_conservative_k,
+            conservative_k_wh_tol=box_conservative_k_wh_tol,
+            merge_near=box_merge_near,
+            snap_wh=box_snap_wh,
+        )
+        labels, box_groups = split_groups_by_structure(
+            struct_describe(merged_boxes), labels_box, thr=struct_split_thr
+        )
+    elif cluster_mode == "struct":
+        if struct_describe is None:
+            raise ValueError("cluster_mode struct needs struct_describe")
+        labels, box_groups = split_groups_by_structure(
+            struct_describe(merged_boxes), np.zeros(n_m, dtype=np.int32), thr=struct_split_thr
+        )
     else:
         labels_box, _ = cluster_box_geometry_pipeline(
             merged_boxes,
@@ -801,6 +1054,32 @@ def cluster_units(
         "merge_adjacent": merge_adjacent,
         "cluster_mode": cluster_mode,
     }
+
+
+def split_groups_by_structure(
+    emb: np.ndarray, box_labels: np.ndarray, *, thr: float
+) -> tuple[np.ndarray, list[dict[str, Any]]]:
+    """Split each box-geometry group by average-linkage clustering of structure embeddings (cosine)."""
+    from scipy.cluster.hierarchy import fcluster, linkage
+    from scipy.spatial.distance import pdist
+
+    labels = np.zeros(len(emb), dtype=np.int32)
+    info: list[dict[str, Any]] = []
+    nxt = 0
+    for g in sorted(set(int(x) for x in box_labels.tolist())):
+        idx = np.where(box_labels == g)[0]
+        if len(idx) == 1:
+            sub = np.zeros(1, dtype=np.int64)
+        else:
+            d = pdist(emb[idx], metric="cosine")
+            sub = fcluster(linkage(d, method="average"), t=thr, criterion="distance") - 1
+        remap = {s: nxt + k for k, s in enumerate(sorted(set(sub.tolist())))}
+        nxt += len(remap)
+        labels[idx] = [remap[s] for s in sub.tolist()]
+        info.append({"box_cluster": g, "n": int(len(idx)), "k_within": len(remap),
+                     "split_reason": f"structure embedding, average linkage, cosine cut {thr}",
+                     "indices": [int(i) for i in idx], "sub_labels": [int(s) for s in sub.tolist()]})
+    return labels, info
 
 
 def pick_medoids(feats: np.ndarray, labels: np.ndarray) -> dict[int, int]:
@@ -973,6 +1252,163 @@ class StructurePredictor:
         return {"tokens": tokens, "ir": ir}
 
 
+class _ForeignPackages:
+    """Swap ``window_ast`` / ``scripts`` in ``sys.modules`` for another project's packages
+    (both projects use those top-level names); the foreign modules stay cached between uses."""
+
+    NAMES = ("window_ast", "scripts")
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.cache: dict[str, Any] = {}
+
+    def _take(self) -> dict[str, Any]:
+        return {k: sys.modules.pop(k) for k in list(sys.modules) if k.split(".")[0] in self.NAMES}
+
+    def __enter__(self) -> "_ForeignPackages":
+        self.saved = self._take()
+        sys.modules.update(self.cache)
+        sys.path.insert(0, str(self.root))
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        sys.path.remove(str(self.root))
+        self.cache = self._take()
+        sys.modules.update(self.saved)
+
+
+def _binarize_panes(panes: dict[str, Any]) -> dict[str, Any]:
+    """Rewrite n-ary splits as right-nested binary splits (the vendored compiler takes 2 children)."""
+    rules = panes["rules"]
+    out: dict[str, Any] = {}
+
+    def go(nid: str) -> None:
+        r = rules[nid]
+        kids = list(r.get("children") or [])
+        if r.get("op") == "split" and len(kids) > 2:
+            at = r.get("at")
+            cuts = list(at) if isinstance(at, (list, tuple)) and len(at) == len(kids) - 1 else \
+                [i / len(kids) for i in range(1, len(kids))]
+            cur, lo = nid, 0.0
+            for i in range(len(kids) - 1):
+                right = kids[-1] if i == len(kids) - 2 else f"{nid}_n{i + 1}"
+                rel = (cuts[i] - lo) / max(1.0 - lo, 1e-6)
+                out[cur] = {"op": "split", "axis": r["axis"], "children": [kids[i], right],
+                            "at": round(min(0.999, max(0.001, rel)), 4)}
+                cur, lo = right, cuts[i]
+        else:
+            out[nid] = dict(r)
+        for c in kids:
+            go(c)
+
+    go(panes.get("root", "root"))
+    return {**panes, "rules": out}
+
+
+class TreeStructurePredictor:
+    """Pane-tree model (+ optional feature adapter) from ``window_ast_predictor``.
+
+    Crops are letterboxed onto the render background as in adapter training. Pane cut
+    positions from the line-profile head are kept as ``at`` in the IR."""
+
+    def __init__(self, ckpt_path: Path, device: torch.device, *, adapter_path: Path | None = None,
+                 tree_root: Path, place_scale: float = 0.68) -> None:
+        from window_ast.structure import ir_to_structure_tokens, structure_tokens_to_ir
+
+        self._tokens_of = ir_to_structure_tokens
+        self._parse = structure_tokens_to_ir
+        self.pkgs = _ForeignPackages(tree_root)
+        self.device = device
+        self.place_scale = place_scale
+        with self.pkgs:
+            from scripts.generate_struct_synth import _child_id, canonical_panes
+            from scripts.train_pane_tree import load_tree_model
+            from scripts.train_tree_adapter import FeatureAdapter, attach_adapter, place
+            from window_ast.dataset import make_eval_transform
+            from window_ast.pane_tree import NODE_CLASSES
+
+            self._child_id, self._canonical, self._classes = _child_id, canonical_panes, NODE_CLASSES
+            self.place = place
+            ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+            self.model = load_tree_model(ckpt_path, device)
+            if adapter_path is not None:
+                adapter = FeatureAdapter(self.model.encoder.feat_dim).to(device)
+                adapter.load_state_dict(torch.load(adapter_path, map_location=device, weights_only=False)["adapter"])
+                attach_adapter(self.model, adapter.eval())
+            self.model.eval()
+            self.tfm = make_eval_transform(int(ck["args"].get("image_size", 336)))
+        print(f"structure: pane tree {ckpt_path}  adapter={adapter_path}")
+
+    def _panes(self, region: str, nodes: list[dict[str, Any]]) -> dict[str, Any] | None:
+        rules: dict[str, Any] = {}
+
+        def build(i: int, nid: str) -> None:
+            n = nodes[i]
+            c = self._classes[n["cls"]]
+            if c == "eps":
+                rules[nid] = {"op": "eps"}
+            elif c == "grid":
+                rules[nid] = {"op": "grid", "vertical": int(n["V"]), "horizontal": int(n["H"])}
+            else:
+                kids = list(reversed(n["children"]))
+                ids = [self._child_id(nid, j) for j in range(len(kids))]
+                at = [round(1.0 - x, 4) for x in reversed(n["cuts"])]
+                rules[nid] = {"op": "split", "axis": c[0], "children": ids, "at": at[0] if len(at) == 1 else at}
+                for cid, ci in zip(ids, kids):
+                    build(ci, cid)
+
+        build(0, "root")
+        with self.pkgs:
+            return self._canonical(rules, region)
+
+    def _input(self, crop_path: Path, glass: list[float] | None) -> torch.Tensor:
+        canvas, _ = self.place(Image.open(crop_path).convert("RGB"), glass or [0, 0, 1, 1], self.place_scale)
+        return self.tfm(canvas)
+
+    def _result(self, toks: list[str], key: str, tree: list[dict[str, Any]]) -> dict[str, Any]:
+        with self.pkgs:
+            from window_ast.pane_tree import parse_prefix_key
+
+        prefix, region = parse_prefix_key(key)
+        try:
+            ir = self._parse(list(prefix) + ["END"])
+            panes = self._panes(region, tree) if region is not None and tree else None
+            if panes is not None:
+                ir["panes"] = _binarize_panes(panes)
+            return {"tokens": self._tokens_of(ir), "ir": ir}
+        except Exception as exc:
+            return {"tokens": toks, "parse_error": str(exc)}
+
+    @torch.no_grad()
+    def predict(self, crop_path: Path, glass: list[float] | None = None) -> dict[str, Any]:
+        with self.pkgs:
+            toks, keys, trees = self.model.predict(self._input(crop_path, glass)[None].to(self.device),
+                                                   return_trees=True)
+        return self._result(toks[0], keys[0], trees[0])
+
+    @torch.no_grad()
+    def describe(self, crops: list[Image.Image], batch: int = 32, feature: str = "z") -> np.ndarray:
+        """Per-crop descriptors [N, d] of tight window crops (crop = glass), for structure-aware clustering:
+        ``z`` root-node embedding or ``heads`` prefix / root type / axis / V / H probabilities."""
+        out = []
+        for i in range(0, len(crops), batch):
+            x = torch.stack([self.tfm(self.place(c.convert("RGB"), [0, 0, 1, 1], self.place_scale)[0])
+                             for c in crops[i:i + batch]]).to(self.device)
+            with self.pkgs:
+                out.append(self.model.describe(x)[feature].float().cpu().numpy())
+        return np.concatenate(out) if out else np.zeros((0, 1), dtype=np.float32)
+
+    @torch.no_grad()
+    def predict_joint(self, crop_paths: list[Path], glasses: list[list[float] | None],
+                      weights: list[float] | None = None) -> dict[str, Any]:
+        """One structure for all crops: logits averaged over members at every tree node."""
+        x = torch.stack([self._input(p, g) for p, g in zip(crop_paths, glasses)]).to(self.device)
+        w = torch.tensor(weights, dtype=torch.float32) if weights is not None else None
+        with self.pkgs:
+            toks, key, tree = self.model.predict_joint(x, weights=w)
+        return self._result(toks, key, tree)
+
+
 def structure_fingerprint(ir: dict[str, Any]) -> str:
     """Stable key for voting (shape / pane topology; no continuous floats)."""
     from window_ast.structure import structure_view
@@ -1071,6 +1507,43 @@ def vote_cluster_ir(
         },
         "members": members_out,
     }
+
+
+def joint_cluster_ir(
+    predictor: TreeStructurePredictor,
+    inputs: list[tuple[Path, list[float] | None, float]],
+    voted: dict[str, Any],
+    *,
+    area_weighted: bool = False,
+) -> dict[str, Any]:
+    """Replace the majority-vote result of ``vote_cluster_ir`` by one jointly decoded structure.
+
+    ``inputs`` are (crop, glass, box area) per member, in ``voted["members"]`` order. The
+    majority result is kept under ``vote["majority_*"]``; ``agrees_with_vote`` is re-scored
+    against the joint structure.
+    """
+    weights = [a for _, _, a in inputs] if area_weighted else None
+    pred = predictor.predict_joint([p for p, _, _ in inputs], [g for _, g, _ in inputs], weights)
+    try:
+        key = structure_fingerprint(pred["ir"]) if pred.get("ir") is not None else None
+    except Exception:
+        key = None
+    if key is None:
+        return voted
+    members = [{**m, "agrees_with_vote": m["structure_key"] == key} for m in voted["members"]]
+    n_agree = sum(m["agrees_with_vote"] for m in members)
+    old = voted["vote"]
+    vote = {
+        **{k: v for k, v in old.items() if k not in ("winner_key", "winner_count", "winner_unit_id", "unanimous")},
+        "mode": "joint_area" if area_weighted else "joint",
+        "winner_key": key,
+        "winner_count": n_agree,
+        "unanimous": n_agree == len(members),
+        "majority_winner_key": old.get("winner_key"),
+        "majority_winner_count": old.get("winner_count"),
+        "majority_winner_unit_id": old.get("winner_unit_id"),
+    }
+    return {"structure_ir": pred["ir"], "structure_tokens": pred["tokens"], "vote": vote, "members": members}
 
 
 def predict_structure_ir(
@@ -1288,6 +1761,78 @@ def render_overview(
     canvas.save(out_path)
 
 
+def gate_types(
+    facade: Image.Image,
+    facade_id: str,
+    clustered: dict[str, Any],
+    struct_predictor: TreeStructurePredictor,
+    args: argparse.Namespace,
+    axis_dir: Path,
+    device: torch.device,
+) -> tuple[np.ndarray, float]:
+    """Type labels of ``--cluster-mode gate`` and the facade's symmetry axis x (px)."""
+    boxes = clustered["merged_boxes"]
+    iw = facade.size[0]
+    columns_xy = None
+    if clustered.get("columns"):
+        units = [
+            {"box_xyxy": b, "floor": int(clustered["floor"][i]), "bay": int(clustered["bay"][i]),
+             "colspan": int(clustered["colspan"][i])}
+            for i, b in enumerate(boxes)
+        ]
+        columns_xy = infer_bay_column_bounds_from_units(
+            [u for u in units if u["colspan"] == 1] or units,
+            len(clustered["columns"]),
+            iw=iw,
+            structural_columns=clustered["columns"],
+        )
+    balconies = []
+    if args.balcony_prompt:
+        print(f"detecting '{args.balcony_prompt}'…")
+        balconies = [
+            d["box_xyxy"]
+            for d in detect_windows(
+                facade,
+                prompt=args.balcony_prompt,
+                threshold=args.balcony_min_score,
+                min_side=8,
+                max_side_frac=0.9,
+                device=device,
+                model_id="facebook/sam3",
+            )
+        ]
+    ax = _load(ROOT / "scripts" / "symmetry_axis_ghost_continuous.py", "e2e_axis")
+    summary = ax.run_case(ax.parse_args([]), facade_id, facade, boxes, columns_xy, balconies, axis_dir)
+    cx = refine_axis(boxes, float(summary["chosen_cx"]), args.axis_refine * iw)
+    partner = mirror_partners(boxes, cx)
+    feat = struct_predictor.describe(
+        [facade.crop(tuple(int(v) for v in b)) for b in boxes], feature=args.gate_feature
+    )
+    labels = gate_cluster(
+        feat, np.asarray(clustered["labels_box"]), partner, thr=args.struct_split_thr, eps=args.gate_eps
+    )
+    print(
+        f"gate: axis {summary['chosen_cx']:.1f} → {cx:.1f} ({summary['dual']['reason']}), "
+        f"balconies={len(balconies)}, mirror-paired {sum(p is not None for p in partner)}/{len(boxes)}, "
+        f"{len(set(clustered['labels_box'].tolist()))} box groups → {len(set(labels.tolist()))} types"
+    )
+    return labels.astype(np.int32), cx
+
+
+def drop_units(clustered: dict[str, Any], keep: list[int]) -> None:
+    """Keep only units ``keep`` in every per-unit field of ``cluster_units`` output; relabel types 0..k-1."""
+    n = len(clustered["merged_boxes"])
+    for key in ("merged_boxes", "members", "bay", "colspan", "floor", "labels", "labels_box", "feats",
+                "feats_raw", "spatial"):
+        val = clustered.get(key)
+        if isinstance(val, np.ndarray) and val.ndim >= 1 and len(val) == n:
+            clustered[key] = val[keep]
+        elif isinstance(val, list) and len(val) == n:
+            clustered[key] = [val[i] for i in keep]
+    _, inv = np.unique(clustered["labels"], return_inverse=True)
+    clustered["labels"] = inv.astype(np.int32)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -1349,6 +1894,13 @@ def run_one(
             raw_windows = load_cmp_xml_windows(xml_path, facade.size, stem=facade_id)
             print(f"CMP XML windows: {len(raw_windows)} from {xml_path}")
             source = "xml"
+        elif args.windows == "labelmap":
+            png_path = facade_path.with_suffix(".png")
+            if not png_path.is_file():
+                raise SystemExit(f"missing CMP label map: {png_path}")
+            raw_windows = load_cmp_labelmap_windows(png_path, stem=facade_id)
+            print(f"CMP label-map windows: {len(raw_windows)} from {png_path}")
+            source = "labelmap"
         else:
             raw_windows = detect_windows(
                 facade,
@@ -1357,8 +1909,34 @@ def run_one(
                 min_side=args.min_side,
                 max_side_frac=args.max_side_frac,
                 device=device,
+                model_id=args.sam_model,
             )
             source = "sam"
+            if args.shop_as_window:
+                big = dict(
+                    threshold=args.threshold,
+                    min_side=max(16, args.min_side // 2),
+                    max_side_frac=min(0.85, args.max_side_frac + 0.25),
+                    device=device,
+                )
+                shops = detect_windows(
+                    facade, prompt=args.shop_prompt, model_id=args.shop_sam_model or args.sam_model, **big
+                )
+                doors = (
+                    detect_windows(facade, prompt=args.door_prompt, model_id=args.door_sam_model, **big)
+                    if args.detect_doors
+                    else []
+                )
+                added = shop_windows(
+                    shops, raw_windows, doors, image_height=facade.height, min_y_frac=args.shop_min_y_frac
+                )
+                for r in added:
+                    r["idx"] = len(raw_windows)
+                    raw_windows.append(r)
+                print(f"shop-as-window: {len(shops)} '{args.shop_prompt}' detections, added {len(added)} as windows")
+            raw_windows, narrow = drop_narrow_boxes(raw_windows, args.min_rel_width)
+            if narrow:
+                print(f"dropped {len(narrow)} narrow windows: {[r['box_xyxy'] for r in narrow]}")
     exclude_prompts = [p.strip() for p in args.exclude_prompts.split(",") if p.strip()]
     exclude_mask = None
     excluded_windows: list[dict[str, Any]] = []
@@ -1380,6 +1958,12 @@ def run_one(
             draw_excluded(facade, exclude_mask, excluded_windows, raw_windows).save(
                 out_dir / "excluded_objects.png"
             )
+    if source == "sam" and args.anchor_score > 0:
+        n0 = len(raw_windows)
+        raw_windows = two_tier(
+            [w for w in raw_windows if w["score"] >= args.threshold], args.anchor_score, args.fill_max_overlap
+        )
+        print(f"two-tier {args.anchor_score}/{args.threshold}: {n0} → {len(raw_windows)} windows")
     # Always persist the boxes actually used (incl. mask∩det clamp on reuse).
     (out_dir / "index_raw.json").write_text(
         json.dumps(
@@ -1412,9 +1996,29 @@ def run_one(
     )
     raw_ov.save(out_dir / "raw_windows.png")
 
+    # --- 2–3 unitize + cluster ---
     print(f"loading {args.dino}…")
     dino = torch.hub.load("facebookresearch/dinov2", args.dino, pretrained=True)
     dino = dino.to(device).eval()
+    struct_predictor: TreeStructurePredictor | None = None
+    gate = args.cluster_mode == "gate"
+    if args.cluster_mode in ("gate", "shape_then_struct", "struct"):
+        kind = torch.load(args.structure_ckpt, map_location="cpu", weights_only=False).get("kind")
+        if kind != "pane_tree" and args.cluster_mode == "gate":
+            print(
+                "warn: --cluster-mode gate needs a pane-tree checkpoint "
+                f"({args.structure_ckpt}, kind={kind!r}). "
+                "Using shape_then_feat until "
+                "../window_ast_predictor/runs/scratch_bal_b/best.pt is present."
+            )
+            args.cluster_mode = "shape_then_feat"
+            gate = False
+        elif kind != "pane_tree":
+            raise SystemExit(f"--cluster-mode {args.cluster_mode} needs a pane-tree --structure-ckpt")
+        else:
+            struct_predictor = TreeStructurePredictor(
+                args.structure_ckpt, device, adapter_path=args.structure_adapter, tree_root=args.tree_root
+            )
     clustered = cluster_units(
         facade,
         raw_boxes,
@@ -1432,7 +2036,7 @@ def run_one(
         merge_mode=args.merge_mode,
         merge_adjacent=args.merge_adjacent,
         vert_gap=args.vert_gap,
-        cluster_mode=args.cluster_mode,
+        cluster_mode="box" if gate else args.cluster_mode,
         k_max_box=args.k_max_box,
         k_max_within=args.k_max_within,
         box_method=args.box_method,
@@ -1440,12 +2044,23 @@ def run_one(
         box_conservative_k_wh_tol=args.box_conservative_k_wh_tol,
         box_merge_near=args.box_merge_near,
         box_snap_wh=args.box_snap_wh,
+        struct_describe=(
+            (lambda bs: struct_predictor.describe([facade.crop(tuple(int(v) for v in b)) for b in bs],
+                                                  feature=args.struct_feature))
+            if struct_predictor is not None else None
+        ),
+        struct_split_thr=args.struct_split_thr,
     )
     merged_boxes = clustered["merged_boxes"]
     members = clustered["members"]
     labels = clustered["labels"]
     feats = clustered["feats"]
-    if args.symmetry:
+    axis_x: float | None = None
+    if gate:
+        labels, axis_x = gate_types(facade, facade_id, clustered, struct_predictor, args, out_dir / "axis", device)
+        clustered["labels"] = labels
+        clustered["cluster_mode"] = "gate"
+    elif args.symmetry:
         print("symmetry repair…")
         labels, sym_log = apply_symmetry_repair(
             facade,
@@ -1470,26 +2085,27 @@ def run_one(
         f"cluster={clustered.get('cluster_mode', 'appearance')}  "
         f"merge={clustered.get('merge_mode', 'structural')}  "
         f"adjacent={'on' if clustered.get('merge_adjacent') else 'off'}  "
-        f"symmetry={'on' if args.symmetry else 'off'}  "
+        f"symmetry={f'axis {axis_x:.1f}' if gate else ('on' if args.symmetry else 'off')}  "
         f"k_box={k_box}  types={n_types}  "
         f"layout={clustered.get('layout_mode', 'centroid')}  "
         f"cols={len(clustered.get('columns') or []) or 'n/a'}"
     )
 
-    medoids = pick_medoids(feats, labels)
-
-    # --- 3b doors ---
+    # --- 3b doors + side facades ---
     door_units: list[dict[str, Any]] = []
     door_types_out: list[dict[str, Any]] = []
+    raw_doors: list[dict[str, Any]] = []
+    kept_doors: list[dict[str, Any]] = []
     if args.detect_doors:
         print("detecting doors…")
         raw_doors = detect_windows(
             facade,
             prompt=args.door_prompt,
-            threshold=args.threshold,
+            threshold=args.door_threshold,
             min_side=max(16, args.min_side // 2),
             max_side_frac=min(0.85, args.max_side_frac + 0.25),
             device=device,
+            model_id=args.door_sam_model,
         )
         raw_doors, excluded_doors = drop_boxes_on_mask(
             raw_doors, exclude_mask, min_cover=args.exclude_min_cover
@@ -1503,6 +2119,30 @@ def run_one(
             min_y_frac=args.door_min_y_frac,
             iou_nms=args.door_iou_nms,
         )
+    side_dropped: list[list[float]] = []
+    if args.side_filter:
+        side = set(
+            drop_side_facades(merged_boxes, *facade.size, doors=[d["box_xyxy"] for d in kept_doors])
+        )
+        if side and len(side) < len(merged_boxes):
+            keep = [i for i in range(len(merged_boxes)) if i not in side]
+            side_dropped = [list(map(float, merged_boxes[i])) for i in sorted(side)]
+            drop_units(clustered, keep)
+            merged_boxes = clustered["merged_boxes"]
+            members = clustered["members"]
+            labels = clustered["labels"]
+            feats = clustered["feats"]
+            x0 = min(b[0] for b in merged_boxes)
+            x1 = max(b[2] for b in merged_boxes)
+            inside = [d for d in kept_doors if x0 <= 0.5 * (d["box_xyxy"][0] + d["box_xyxy"][2]) <= x1]
+            side_dropped += [list(map(float, d["box_xyxy"])) for d in kept_doors if d not in inside]
+            kept_doors = inside
+            print(f"side facades: dropped {len(side)} windows, {len(side_dropped) - len(side)} doors")
+    clustered["side_dropped"] = side_dropped
+
+    medoids = pick_medoids(feats, labels)
+
+    if args.detect_doors:
         door_units = assign_doors_to_layout(
             kept_doors,
             [
@@ -1588,16 +2228,30 @@ def run_one(
             }
         )
 
+    # optional structure IR: predict all members → majority vote per type
     structure_model_note = None
-    predictor: StructurePredictor | None = None
+    predictor: StructurePredictor | TreeStructurePredictor | None = None
     if not args.skip_structure and args.structure_ckpt.is_file():
         print(f"loading structure model {args.structure_ckpt}…")
         structure_model_note = str(args.structure_ckpt)
-        predictor = StructurePredictor(
-            args.structure_ckpt,
-            device,
-            structure_only=args.structure_only,
-        )
+        kind = torch.load(args.structure_ckpt, map_location="cpu", weights_only=False).get("kind")
+        if kind == "pane_tree":
+            predictor = struct_predictor or TreeStructurePredictor(
+                args.structure_ckpt,
+                device,
+                adapter_path=args.structure_adapter,
+                tree_root=args.tree_root,
+            )
+            if args.structure_adapter is not None:
+                structure_model_note += f" + adapter {args.structure_adapter}"
+        elif args.structure_adapter is not None:
+            raise SystemExit("--structure-adapter needs a pane-tree --structure-ckpt")
+        else:
+            predictor = StructurePredictor(
+                args.structure_ckpt,
+                device,
+                structure_only=args.structure_only,
+            )
     elif not args.skip_structure:
         print(f"skip structure IR (missing {args.structure_ckpt})")
 
@@ -1605,6 +2259,7 @@ def run_one(
     for tid, med_i in sorted(medoids.items()):
         exemplar = units[med_i]
         ex_path = out_dir / exemplar["asset"]
+        # canonical exemplar copy
         canon = types_dir / f"type_{tid:02d}" / "exemplar.png"
         shutil.copy(ex_path, canon)
         member_units = [u for u in units if int(u["type_id"]) == int(tid)]
@@ -1618,6 +2273,7 @@ def run_one(
         }
         if predictor is not None:
             member_preds: list[dict[str, Any]] = []
+            joint_inputs: list[tuple[Path, list[float] | None, float]] = []
             predict_units = (
                 member_units
                 if args.structure_vote
@@ -1625,8 +2281,30 @@ def run_one(
             )
             for u in predict_units:
                 crop_p = out_dir / u["asset"]
-                pred = predictor.predict(crop_p)
+                glass_kw = {}
+                if args.structure_glass_margin:
+                    ml, mt, mr, mb = (float(v) for v in args.structure_glass_margin.split(","))
+                    x0, y0, x1, y1 = u["box_xyxy"]
+                    w, h = x1 - x0, y1 - y0
+                    cx0, cy0 = max(0, round(x0 - ml * w)), max(0, round(y0 - mt * h))
+                    cx1, cy1 = min(facade.width, round(x1 + mr * w)), min(facade.height, round(y1 + mb * h))
+                    crop_p = crops_dir / f"unit_{int(u['unit_id']):03d}_ctx.png"
+                    facade.crop((cx0, cy0, cx1, cy1)).save(crop_p)
+                    cw, ch = cx1 - cx0, cy1 - cy0
+                    glass_kw = {"glass": [(x0 - cx0) / cw, (y0 - cy0) / ch, (x1 - cx0) / cw, (y1 - cy0) / ch]}
+                elif args.structure_pad > 0:
+                    x0, y0, x1, y1 = u["box_xyxy"]
+                    px, py = args.structure_pad * (x1 - x0), args.structure_pad * (y1 - y0)
+                    crop_p = crops_dir / f"unit_{int(u['unit_id']):03d}_pad.png"
+                    facade.crop((
+                        max(0, round(x0 - px)), max(0, round(y0 - py)),
+                        min(facade.width, round(x1 + px)), min(facade.height, round(y1 + py)),
+                    )).save(crop_p)
+                pred = predictor.predict(crop_p, **glass_kw)
+                x0, y0, x1, y1 = u["box_xyxy"]
+                joint_inputs.append((crop_p, glass_kw.get("glass"), float((x1 - x0) * (y1 - y0))))
                 member_preds.append({"unit_id": int(u["unit_id"]), **pred})
+                # stash per-unit prediction on the instance
                 u["structure_tokens"] = pred.get("tokens")
                 if pred.get("ir") is not None:
                     u["structure_ir_member"] = pred["ir"]
@@ -1634,10 +2312,13 @@ def run_one(
                     u["structure_parse_error"] = pred["parse_error"]
 
             voted = vote_cluster_ir(member_preds, prefer_unit_id=med_i)
+            if args.structure_joint != "off" and isinstance(predictor, TreeStructurePredictor):
+                voted = joint_cluster_ir(predictor, joint_inputs, voted, area_weighted=args.structure_joint == "area")
             entry["structure_ir"] = voted["structure_ir"]
             entry["structure_tokens"] = voted["structure_tokens"]
             entry["structure_vote"] = voted["vote"]
             entry["structure_members"] = voted["members"]
+            # propagate unified IR onto every unit of this type
             for u in member_units:
                 u["structure_ir"] = voted["structure_ir"]
                 u["structure_tokens_voted"] = voted["structure_tokens"]
@@ -1664,6 +2345,7 @@ def run_one(
             )
         types_out.append(entry)
 
+    # --- 5 DSL ---
     dsl = build_facade_dsl(
         facade_id=facade_id,
         image_path=str(facade_path) if facade_path else "",
@@ -1676,9 +2358,22 @@ def run_one(
     )
     if structure_model_note:
         dsl["meta"]["structure_ckpt"] = structure_model_note
+    if args.structure_glass_margin:
+        dsl["meta"]["structure_glass_margin"] = args.structure_glass_margin
+    if args.structure_joint != "off":
+        dsl["meta"]["structure_joint"] = args.structure_joint
+    if axis_x is not None:
+        dsl["meta"]["axis_x"] = round(axis_x, 1)
+    dsl["meta"]["cluster_mode"] = clustered.get("cluster_mode")
+    if side_dropped:
+        dsl["meta"]["side_dropped"] = [[round(v, 1) for v in b] for b in side_dropped]
+    if args.grid == "floor_bays":
+        dsl = apply_floor_bays(dsl, row_tol=args.row_tol)
+    n_types = len(types_out)
     dsl_path = out_dir / "facade_dsl.json"
     dsl_path.write_text(json.dumps(dsl, indent=2) + "\n", encoding="utf-8")
 
+    # human-readable compact summary
     summary = {
         "facade_id": facade_id,
         "n_raw_windows": len(raw_boxes),
@@ -1708,6 +2403,11 @@ def run_one(
     print(f"  DSL → {dsl_path}")
     print(f"  assets → {types_dir}")
     print(f"  overview → {out_dir / 'overview.png'}")
+    if args.grid == "floor_bays":
+        print(
+            f"  grid=floor_bays  floors={len(dsl['layout']['floors'])}  "
+            f"bays={len(dsl['layout']['bays'])}"
+        )
 
     if args.with_balconies:
         img = Path(facade_path) if facade_path else None
@@ -1849,9 +2549,7 @@ def main() -> None:
         facade_id = "unknown"
         facade_path = None
     else:
-        raise SystemExit(
-            "provide --facade-id, --image, --image-dir, or --from-index"
-        )
+        raise SystemExit("provide --facade-id, --image, --image-dir, or --from-index")
 
     out_dir = Path(args.out_dir) if args.out_dir else ROOT / "runs" / f"facade_e2e_{facade_id}"
     run_one(

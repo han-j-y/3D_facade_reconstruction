@@ -230,8 +230,9 @@ def normalize_facade_spec(
         col_left: float | None = None
         col_right: float | None = None
         if columns_xy and len(columns_xy) == n_bays:
-            end = min(n_bays, bay0 + span)
-            col_left = float(columns_xy[bay0][0])
+            # columns_xy follows the bay order, so index by column, not bay id.
+            end = min(n_bays, c + span)
+            col_left = float(columns_xy[c][0])
             col_right = float(columns_xy[end - 1][1])
             cw = max(1.0, col_right - col_left)
         else:
