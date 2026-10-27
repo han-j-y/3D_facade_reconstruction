@@ -100,7 +100,10 @@ def _compile_region_def(ctx: CompileContext, region_def: dict[str, Any]) -> None
 def output_params(spec: dict[str, Any], root: Region) -> dict[str, float]:
     out = dict(spec.get("output") or {})
     return {
-        "muntin_width": resolve_scalar(out.get("muntin_width", 0.02), root),
+        "muntin_width": resolve_scalar(
+            out.get("muntin_width", {"relative_to": "min_side", "value": 0.06}),
+            root,
+        ),
         "muntin_depth": resolve_scalar(out.get("muntin_depth", 0.04), root),
         "glass_thickness": resolve_scalar(out.get("glass_thickness", 0.01), root),
         "frame_depth": resolve_scalar((spec.get("frame") or {}).get("depth", 0.08), root),

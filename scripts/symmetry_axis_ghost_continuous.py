@@ -41,7 +41,7 @@ from scripts.walkthrough_symmetry_repair import (  # noqa: E402
 from window_ast.symmetry import bounding_box  # noqa: E402
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
         "--sam3-root",
@@ -83,9 +83,17 @@ def parse_args() -> argparse.Namespace:
         default=0.08,
         help="strip / flush threshold as fraction of image width",
     )
+    ap.add_argument(
+        "--balcony-dir",
+        type=Path,
+        default=None,
+        help="dir of cmp_<stem>.json 'open balcony' detections (cache_sam3_detections.py); "
+        "used to break ties between window peaks",
+    )
+    ap.add_argument("--balcony-min-score", type=float, default=0.5)
     ap.add_argument("--color-dist-max", type=float, default=80.0)
     ap.add_argument("--strip-std-min", type=float, default=12.0)
-    return ap.parse_args()
+    return ap.parse_args(argv)
 
 
 def _font(size: int = 14) -> ImageFont.ImageFont:
@@ -1119,6 +1127,15 @@ def _local_maxima(xs: np.ndarray, scores: list[float], min_score: float = 0.0) -
     return out
 
 
+def _climb(scores: list[float], j: int) -> int:
+    """Index of the local maximum reached by walking uphill from ``j``."""
+    while True:
+        k = max((i for i in (j - 1, j + 1) if 0 <= i < len(scores)), key=lambda i: scores[i], default=j)
+        if scores[k] <= scores[j]:
+            return j
+        j = k
+
+
 def disambiguate_mirror_peak(
     raw_best_cx: float,
     mid: float,
@@ -1187,16 +1204,23 @@ def disambiguate_mirror_peak(
     reason = "raw_argmax"
     off_center = dist_raw >= cont_flip_min_frac * fw
 
+    def mirror_peak(right: bool) -> float:
+        """The bbox-mid mirror of the raw peak can land between peaks (score 0, cmp_b0150 two-tier boxes);
+        take the strong peak nearest to it on its side of mid."""
+        peaks = [x for _s, x in _local_maxima(xs, scores, min_score=strong_peak_ratio * best_score)
+                 if (x > mid) == right]
+        return float(min(peaks, key=lambda x: abs(x - mirror_cx))) if peaks else mirror_cx
+
     if continued_right and not continued_left and off_center:
         if mirror_cx > mid and raw_best_cx < mid:
-            chosen = mirror_cx
+            chosen = mirror_peak(True)
             reason = "prefer_mirror_toward_continued_right"
         elif raw_best_cx > mid:
             chosen = raw_best_cx
             reason = "raw_already_toward_continued_right"
     elif continued_left and not continued_right and off_center:
         if mirror_cx < mid and raw_best_cx > mid:
-            chosen = mirror_cx
+            chosen = mirror_peak(False)
             reason = "prefer_mirror_toward_continued_left"
         elif raw_best_cx < mid:
             chosen = raw_best_cx
@@ -1232,7 +1256,9 @@ def disambiguate_mirror_peak(
                 else "fully_captured_peak_nearest_mid"
             )
         elif mid_score >= mid_score_ratio * best_score:
-            chosen = float(mid)
+            # bbox mid follows the outermost boxes (oblique corner-tower slivers, cmp_b0125): take the peak
+            # whose hill mid is on.
+            chosen = float(xs[_climb(scores, j_mid)])
             reason = "prefer_mid_near_best_score"
         else:
             chosen = raw_best_cx
@@ -1240,7 +1266,9 @@ def disambiguate_mirror_peak(
     else:
         # Only prefer geometric mid when it is nearly as good as the best peak.
         if mid_score >= mid_score_ratio * best_score:
-            chosen = float(mid)
+            # bbox mid follows the outermost boxes (oblique corner-tower slivers, cmp_b0125): take the peak
+            # whose hill mid is on.
+            chosen = float(xs[_climb(scores, j_mid)])
             reason = "prefer_mid_near_best_score"
         else:
             chosen = raw_best_cx
@@ -1497,14 +1525,93 @@ def draw_overlay(
     return Image.alpha_composite(base, ov).convert("RGB")
 
 
+def load_balconies(args: argparse.Namespace, stem: str) -> list[list[float]]:
+    """Balcony boxes from ``cache_sam3_detections.py --prompts "open balcony"`` (empty without --balcony-dir)."""
+    if args.balcony_dir is None or not (args.balcony_dir / f"{stem}.json").exists():
+        return []
+    dets = json.loads((args.balcony_dir / f"{stem}.json").read_text())["detections"]["open balcony"]
+    return [d["box_xyxy"] for d in dets if d["score"] >= args.balcony_min_score]
+
+
+def balcony_support(balconies: list, cx: float, pair_iou: float = 0.3) -> int:
+    """Off-axis balconies whose reflection about ``cx`` lands on another balcony."""
+    n = 0
+    for i, b in enumerate(balconies):
+        rb = _reflect(b, cx)
+        if box_iou(rb, b) >= 0.5:
+            continue
+        n += any(box_iou(rb, o) >= pair_iou for j, o in enumerate(balconies) if j != i)
+    return n
+
+
+def balcony_tiebreak(
+    balconies: list, cx: float, xs: np.ndarray, scores: list[float], min_peak_ratio: float = 0.6
+) -> dict:
+    """A regular window grid scores a peak every half pitch; when the chosen axis leaves every balcony
+    unpaired, move to the window peak pairing the most balconies (cmp_b0170). Rows of balconies pair
+    under the window axis already (cmp_b0010, cmp_b0083), so they never trigger a move."""
+    out = {"n": len(balconies), "support": balcony_support(balconies, cx), "moved": False, "cx": float(cx)}
+    if len(balconies) < 2 or out["support"] > 0:
+        return out
+    peaks = _local_maxima(xs, scores, min_score=min_peak_ratio * max(scores))
+    if not peaks:
+        return out
+    score, alt = max(peaks, key=lambda p: (balcony_support(balconies, p[1]), p[0]))
+    if balcony_support(balconies, alt) > 0:
+        out.update(moved=True, cx=float(alt), support=balcony_support(balconies, alt), window_score=float(score))
+    return out
+
+
+def symmetry_peak(facade: Image.Image, boxes: list, columns_xy: list, args: argparse.Namespace) -> float:
+    """Best in-frame mirror score over the boxes' span (no continuation)."""
+    W, H = facade.size
+    _, rows, _ = sweep(
+        boxes,
+        W=float(W),
+        H=float(H),
+        continued_left=False,
+        continued_right=False,
+        ghost_mode=args.ghost_mode,
+        ghost_credit=args.ghost_credit,
+        min_inframe=args.min_inframe,
+        n_samples=args.n_samples,
+        columns_xy=columns_xy,
+        require_pattern_ghost=False,
+        content_mask=make_content_mask(facade, boxes=boxes),
+        allow_self_iou=True,
+    )
+    return float(max(r["score"] for r in rows))
+
+
 def run_stem(args: argparse.Namespace, stem: str) -> dict:
     case = load_case(args.sam3_root, stem)
-    facade: Image.Image = case["facade"]
-    boxes: list[list[float]] = case["boxes"]
-    columns_xy = list(case["columns_xy"] or [])
+    return run_case(args, stem, case["facade"], case["boxes"], case["columns_xy"], load_balconies(args, stem),
+                    args.out_dir / stem)
+
+
+def run_case(
+    args: argparse.Namespace,
+    stem: str,
+    facade: Image.Image,
+    boxes: list[list[float]],
+    columns_xy: list | None,
+    balconies: list[list[float]],
+    out_dir: Path,
+) -> dict:
+    """Axis for one facade from its window boxes, bay columns and balcony boxes; writes plots + summary.json
+    to ``out_dir``."""
+    boxes = [list(map(float, b)) for b in boxes]
+    columns_xy = list(columns_xy or [])
     W, H = facade.size
 
     focus = select_focus_facade(boxes, columns_xy)
+    if focus["changed"]:
+        # A wide bay gap inside one symmetric façade (cmp_b0125) also passes the gap test; keep the split only
+        # if the kept group is more symmetric than all windows together.
+        focus["peak_all"] = symmetry_peak(facade, boxes, columns_xy, args)
+        focus["peak_kept"] = symmetry_peak(facade, focus["boxes"], focus["columns_xy"], args)
+        if focus["peak_all"] >= focus["peak_kept"]:
+            focus["changed"] = False
     if focus["changed"]:
         boxes = focus["boxes"]
         columns_xy = focus["columns_xy"]
@@ -1526,6 +1633,8 @@ def run_stem(args: argparse.Namespace, stem: str) -> dict:
         "n_groups": focus["n_groups"],
         "keep_cols": focus.get("keep_cols"),
         "group_sizes": focus.get("group_sizes"),
+        "peak_all": focus.get("peak_all"),
+        "peak_kept": focus.get("peak_kept"),
     }
     edge_bay = detect_edge_bay_contamination(
         boxes,
@@ -1581,6 +1690,10 @@ def run_stem(args: argparse.Namespace, stem: str) -> dict:
         fully_captured=cont.get("fully_captured", False),
         columns_xy=columns_xy,
     )
+    dual["balcony"] = balcony_tiebreak(balconies, dual["chosen_cx"], xs, ghost_scores)
+    if dual["balcony"]["moved"]:
+        dual["chosen_cx"] = dual["balcony"]["cx"]
+        dual["reason"] += "+balcony_pairs"
     chosen_cx = dual["chosen_cx"]
     # For overlays: only show continued-edge if it actually influenced the choice.
     used_cont = "continued" in dual["reason"] and "ignore" not in dual["reason"]
@@ -1608,7 +1721,6 @@ def run_stem(args: argparse.Namespace, stem: str) -> dict:
     if stem == "cmp_b0150" and len(cols) > 4:
         markers.append((0.5 * (cols[4][0] + cols[4][1]), "B4"))
 
-    out_dir = args.out_dir / stem
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Plot uses detection flags; overlays use effective (axis-influencing) flags.

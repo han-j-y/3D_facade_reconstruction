@@ -17,7 +17,7 @@ _DEFAULT_FRAME = {
     "material": "painted_wood",
 }
 _DEFAULT_OUTPUT = {
-    "muntin_width": {"relative_to": "min_side", "value": 0.025},
+    "muntin_width": {"relative_to": "min_side", "value": 0.06},
     "muntin_depth": 0.035,
     "glass_thickness": 0.01,
 }
@@ -781,7 +781,7 @@ def structure_tokens_to_ir(tokens: list[str]) -> dict[str, Any]:
             else:
                 raise ValueError(f"unexpected structure program token {t!r}")
         # default continuous fields for known ops
-        if op["op"] == "seam":
+        if _is_seam_op(op):
             # Head/body junction: top of body (or bottom of head)
             region = op.get("region", "body")
             y = 0.0 if region == "head" else 1.0

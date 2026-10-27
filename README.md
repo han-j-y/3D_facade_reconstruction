@@ -8,9 +8,10 @@ Blender rendering is **optional**.
 facade_e2e/
   run.py                 # entry point
   run_pipeline.py        # full pipeline
-  facade_recovery/       # path helpers, column layout, merge guard
+  facade_recovery/       # path helpers, column layout, doors, symmetry-gated clustering, per-floor bays
   window_ast/            # vendored structure model + symmetry.py
-  scripts/               # clustering helpers, stage 2/3, templates, rendering
+  scripts/               # clustering helpers, symmetry axis, templates, rendering, diagnostics
+  scripts/drivers/       # batch drivers used for the experiments
   vendor/window_compiler/# Blender main.py + compile/render (optional)
   documents/             # WDSL.ebnf (window grammar), FDSL.ebnf (façade grammar)
   checkpoints/           # structure_best.pt (symlink or copy)
@@ -28,6 +29,8 @@ pip install -r requirements.txt
 ```
 
 Weights are large (~300MB) and not committed; without them the run skips structure IR.
+The default structure model is the pane-tree checkpoint `../window_ast_predictor/runs/scratch_bal_b/best.pt`
+when present (needed by `--cluster-mode gate`), else `checkpoints/structure_best.pt`.
 
 ## Run (core — no Blender)
 
@@ -36,33 +39,49 @@ python run.py --image /path/to/facade.png --out-dir runs/demo --device cuda
 python run.py --facade-id 8 --train-up /path/to/train_up --device cuda
 ```
 
-CMP XML boxes + the window-AST predictor merge/cluster (box GMM, no DINO split):
+The defaults are the current pipeline:
+
+| Stage | Default |
+|------|---------|
+| Detect | `facebook/sam3` prompt `window`, two-tier: keep score ≥ `--anchor-score` 0.7, add boxes in [`--threshold` 0.5, 0.7) that overlap no kept box by `--fill-max-overlap` 0.2 of the smaller box; `--min-side 13`; boxes on `car` masks dropped |
+| Unitize | `--merge-mode ast`, `--col-tol 0.045`, `--row-tol 0.055` |
+| Cluster | `--cluster-mode gate` (below) |
+| Doors | `--door-sam-model ../sam3_ft/hf/cmp_wds_ft_winit_ema20` (window+door+shop fine-tune), `door` ≥ `--door-threshold` 0.45 |
+| Side facades | `--side-filter`: edge window columns that sit off the main facade's floors are dropped (neighbouring buildings, side walls), plus doors outside the kept windows. An outermost column with one window on each of ≥ 3 main floors is kept (corner towers). |
+| Layout | `--grid floor_bays` (below) |
+
+**Gate clustering** (`facade_recovery/sym_gate.py`):
+
+1. Box GMM on z-scored (w, h, aspect) gives the box groups.
+2. The vertical symmetry axis comes from `scripts/symmetry_axis_ghost_continuous.py` (`run_case`). It runs on the units and the bay columns. `open balcony` detections (`--balcony-prompt`, ≥ `--balcony-min-score` 0.5) break ties between window peaks, and the axis is then shifted within ±`--axis-refine` 0.02 × width to pair the most windows. The plots go to `<out>/axis/`.
+3. Windows are paired with their mirror image about the axis (IoU ≥ 0.3).
+4. Inside each box group, the pane-tree descriptor (`--gate-feature heads`) is cut top-down on its average-linkage tree (cosine, `--struct-split-thr` 0.16). A split is refused if it separates more than `--gate-eps` 0.1 of the node's mirror pairs.
+
+The axis is used during clustering, so the separate symmetry repair (below) is not needed.
+
+**Per-floor bays** (`facade_recovery/floor_bays.py`): every floor gets its own bays, one per window or door, split at gap midpoints. Lines that match across floors become shared lines, and a floor's empty stretches inherit lines from the nearest floor with a similar window height. The DSL columns are the union of all floors' lines, and every floor bay spans its columns (`placement_spans`). Floors and bays carry `h_m` / `w_m` so the compiler keeps them as they are. `meta.floor_bays` lists the per-floor bays. `--grid columns` keeps the older single column grid (`--layout-mode`).
+
+Older settings remain available, e.g. CMP XML boxes with box-only clustering:
 
 ```bash
 python run.py --image data/facades/base/cmp_b0250.jpg --windows xml \
-  --merge-mode ast --cluster-mode box --col-tol 0.045 \
+  --anchor-score 0 --cluster-mode box --no-side-filter --grid columns \
   --out-dir runs/e2e_ast_cluster_cmp_b0250 --device cuda --blender-render
 ```
 
-SAM3 mask-tight boxes with the same merge/cluster:
+`--cluster-mode shape_then_feat` (box GMM + DINO splits), `shape_then_struct`, `struct`, `box` and `appearance` skip the axis. With them, **L–R symmetry repair** runs by default (`--symmetry` / `--no-symmetry`).
 
-```bash
-python run.py --image data/facades/base/cmp_b0250.jpg --windows sam \
-  --merge-mode ast --cluster-mode box --col-tol 0.045 \
-  --out-dir runs/e2e_sam3_cluster_cmp_b0250 --device cuda --blender-render
-```
-
-**Layout:** bay count is the max number of windows on any floor. Column bounds come from that densest row; a wide box (e.g. two openings) *spans* those columns instead of merging them. Unitize merge defaults to **containment/IoU only** (`--no-merge-adjacent`); nested full-opening + pane can cross greedy floor bands. Opt in to same-floor nearby-pane merges with `--merge-adjacent`. After clustering, **L–R symmetry repair** runs by default (`--symmetry` / `--no-symmetry`).
-
-**Windows:** `--windows sam` (default) uses SAM3 instance masks as tight boxes; `--windows xml` loads CMP XML next to the image.
+**Windows:** `--windows sam` (default) uses SAM3 instance masks as tight boxes; `--windows xml` loads CMP XML next to the image (it also annotates neighbouring buildings).
 
 Outputs under `runs/facade_e2e_<id>/` (or `--out-dir`):
 
 | File | Description |
 |------|-------------|
+| `index_raw.json` | Window detections used (after car / two-tier filtering) |
 | `raw_windows.png` | Raw SAM3/XML boxes before merge |
+| `axis/` | Symmetry-axis score curve, overlays, `summary.json` (gate mode) |
 | `overview.png` | Units colored by type |
-| `facade_dsl.json` | Floor×bay layout + voted structure IR |
+| `facade_dsl.json` | Per-floor bay layout + voted structure IR (`meta.axis_x`, `meta.side_dropped`, `meta.floor_bays`) |
 | `summary.json` | Counts + vote stats |
 | `assets/types/type_XX/` | Exemplar crop + `structure_ir.json` |
 | `blender/compare_photo_vs_render.png` | Photo vs Blender (with `--blender-render`) |
@@ -79,16 +98,17 @@ python run.py --facade-id 8 --blender-render --device cuda
 
 If Blender is missing, the pipeline still writes `facade_dsl.json` and prints a warning.
 
-## Stages 2–3: symmetry axis + full-stack repair
+## Standalone symmetry axis + full-stack repair (older runs)
 
-Both read stage-1 `e2e_sam3_cluster_<stem>/` dirs read-only and write elsewhere.
+For runs made without `--cluster-mode gate`. Both read stage-1 `e2e_sam3_cluster_<stem>/` dirs read-only and
+write elsewhere.
 
 ```bash
-# stage 2: continuous vertical symmetry axis (crop-aware ghost partners)
+# continuous vertical symmetry axis (crop-aware ghost partners)
 python scripts/symmetry_axis_ghost_continuous.py --sam3-root runs \
   --out-dir runs/symmetry_axis_sweep/ghost_continuous --stems cmp_b0226
 
-# stage 3: symmetry repair about that axis → facade_dsl_repaired.json (+ Blender before/after)
+# symmetry repair about that axis → facade_dsl_repaired.json (+ Blender before/after)
 python scripts/render_sym_repair_fullstack.py --sam3-root runs \
   --axis-root runs/symmetry_axis_sweep/ghost_continuous \
   --out-dir runs/symmetry_from_sam3_fullstack --stems cmp_b0226 --device cuda
@@ -140,8 +160,12 @@ Within each window type, every unit crop is predicted; votes are tallied on a di
 
 ## Requirements
 
-**Required:** torch, torchvision, numpy, Pillow, scikit-learn, transformers (SAM3)
+**Required:** torch, torchvision, numpy, Pillow, scikit-learn, scipy, transformers (SAM3)
 
 **Optional:** Blender ≥ 3.x (uses vendored `vendor/window_compiler`)
 
-**Downloaded at runtime:** HuggingFace `facebook/sam3`, `torch.hub` DINOv2
+**Downloaded at runtime:** HuggingFace `facebook/sam3` (windows, balconies, `--exclude-prompts`), `torch.hub` DINOv2
+
+**Local:** doors default to the window+door+shop SAM3 fine-tune at `../sam3_ft/hf/cmp_wds_ft_winit_ema20`
+(`--door-sam-model facebook/sam3` for the released model); the structure model defaults to
+`../window_ast_predictor/runs/scratch_bal_b/best.pt`
