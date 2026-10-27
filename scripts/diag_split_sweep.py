@@ -103,7 +103,7 @@ def split(feat: np.ndarray, groups: np.ndarray, thr: float, method: str, min_siz
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--runs", type=Path, nargs="+", default=[ROOT / "runs_tree_scratch_bal_b_samwds_ms12"])
-    ap.add_argument("--structure-ckpt", type=Path, default=TREE / "runs" / "scratch_bal_b" / "best.pt")
+    ap.add_argument("--structure-ckpt", type=Path, default=TREE / "checkpoints" / "structure_best.pt")
     ap.add_argument("--labels", type=Path, default=TREE / "data" / "real_labels_test")
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--descs", nargs="+", default=["z", "heads", "bars+heads"],

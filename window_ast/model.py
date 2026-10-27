@@ -135,6 +135,7 @@ class ImageEncoder(nn.Module):
         feats = self.dino.forward_features(images)
         tokens = None
         if isinstance(feats, dict):
+            self.last_cls = feats.get("x_norm_clstoken")
             tokens = feats.get("x_norm_patchtokens")
             if tokens is None and feats.get("x_norm") is not None:
                 tokens = feats["x_norm"][:, 1:, :]

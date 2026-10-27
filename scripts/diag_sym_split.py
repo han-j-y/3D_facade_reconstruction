@@ -160,7 +160,7 @@ def main() -> None:
     ap.add_argument("--min-rel-width", type=float, default=0.0, help="as run_pipeline.py --min-rel-width")
     ap.add_argument("--dump-facades", nargs="+", default=["b0001", "b0150", "b0083"])
     args = ap.parse_args()
-    pred = rp.TreeStructurePredictor(TREE / "runs" / "scratch_bal_b" / "best.pt", torch.device(args.device),
+    pred = rp.TreeStructurePredictor(TREE / "checkpoints" / "structure_best.pt", torch.device(args.device),
                                      tree_root=TREE)
     with pred.pkgs:
         from scripts.train_tree_adapter import topo_ok

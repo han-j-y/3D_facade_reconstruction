@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import run_pipeline as rp  # noqa: E402
 
-TREE = ROOT.parent / "window_ast_predictor"
+TREE = ROOT
 TRAIN_FACADES = {"b0100"}
 NAMES = ["z", "g", "bars", "heads", "bars+heads", "dino"]
 THRS = [0.02, 0.04, 0.06, 0.08, 0.1, 0.12, 0.16, 0.2, 0.25, 0.3, 0.4, 0.5]
@@ -109,7 +109,7 @@ def main() -> None:
     ap.add_argument("--run", type=Path, default=ROOT / "runs_tree_scratch_bal_b_samwds_ms12")
     ap.add_argument("--box-run", type=Path, default=None,
                     help="matching --cluster-mode box run; default: recompute the box groups with the pipeline defaults")
-    ap.add_argument("--structure-ckpt", type=Path, default=TREE / "runs" / "scratch_bal_b" / "best.pt")
+    ap.add_argument("--structure-ckpt", type=Path, default=TREE / "checkpoints" / "structure_best.pt")
     ap.add_argument("--labels", type=Path, default=TREE / "data" / "real_labels_test")
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--dump-labels", type=Path, default=None,

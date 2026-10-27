@@ -21,7 +21,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1]
-EXP = ROOT.parent
+EXP = ROOT
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -413,7 +413,7 @@ def main() -> None:
             )
             index_path = idx if idx.is_file() else None
             if index_path is None:
-                alt = EXP / "window_ast_predictor" / "runs" / f"facade_e2e_base_{fid}" / "index_raw.json"
+                alt = EXP / "runs" / f"facade_e2e_base_{fid}" / "index_raw.json"
                 index_path = alt if alt.is_file() else None
             reports.append(process_one(fid, args.facade_dir, args.out_dir, index_path, args))
 

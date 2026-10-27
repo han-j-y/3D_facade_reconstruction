@@ -32,7 +32,7 @@ import torch
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1]
-EXP = ROOT.parent
+EXP = ROOT
 E2E = ROOT
 if str(ROOT) in sys.path:
     sys.path.remove(str(ROOT))

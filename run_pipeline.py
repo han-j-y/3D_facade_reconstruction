@@ -36,7 +36,9 @@ import importlib.util
 import json
 import shutil
 import sys
+import types
 from collections import defaultdict
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -45,7 +47,6 @@ import torch
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parent
-EXP = ROOT.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -109,7 +110,7 @@ def parse_args() -> argparse.Namespace:
         "--train-up",
         type=Path,
         default=None,
-        help="directory of {id}.png façades (default: ../data/facades/train_up)",
+        help="directory of {id}.png façades (default: data/facades/train_up)",
     )
     ap.add_argument("--out-dir", type=Path, default=None)
     ap.add_argument("--from-index", type=Path, default=None, help="reuse SAM index.json")
@@ -180,9 +181,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--sam-model",
         default="facebook/sam3",
-        help="SAM3 model (HF id or directory) for window detection; default: the released model. The CMP window "
-        "fine-tune (../sam3_ft/hf/cmp_windows_ft_stable_ema19) detects stone ornaments as windows. "
-        "Doors: --door-sam-model; --exclude-prompts keep facebook/sam3",
+        help="SAM3 model (Hugging Face ID or directory) for window detection; default: facebook/sam3. "
+        "Doors: --door-sam-model; --exclude-prompts also use facebook/sam3",
     )
     ap.add_argument(
         "--min-side",
@@ -338,14 +338,13 @@ def parse_args() -> argparse.Namespace:
         "--structure-adapter",
         type=Path,
         default=None,
-        help="real->synthetic feature adapter for a pane-tree --structure-ckpt "
-        "(e.g. ../window_ast_predictor/runs/tree_adapter_s3_noreallike/last.pt)",
+        help="optional real-to-synthetic feature adapter for a pane-tree --structure-ckpt",
     )
     ap.add_argument(
         "--tree-root",
         type=Path,
-        default=EXP / "window_ast_predictor",
-        help="window_ast_predictor checkout providing the pane-tree model code",
+        default=ROOT,
+        help=argparse.SUPPRESS,
     )
     ap.add_argument("--skip-structure", action="store_true")
     ap.add_argument(
@@ -357,9 +356,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--door-prompt", type=str, default="door")
     ap.add_argument(
         "--door-sam-model",
-        default=str(EXP / "sam3_ft" / "hf" / "cmp_wds_ft_winit_ema20"),
-        help="SAM3 model (HF id or directory) for door detection; default: the window+door+shop CMP fine-tune "
-        "(door AP 0.56 on the CMP test split vs 0.30 for facebook/sam3)",
+        default="facebook/sam3",
+        help="SAM3 model (Hugging Face ID or directory) for door detection; default: facebook/sam3",
     )
     ap.add_argument("--door-threshold", type=float, default=0.45)
     ap.add_argument(
@@ -1183,37 +1181,81 @@ def _binarize_panes(panes: dict[str, Any]) -> dict[str, Any]:
 
 
 class TreeStructurePredictor:
-    """Pane-tree model (+ optional feature adapter) from ``window_ast_predictor``.
+    """Bundled pane-tree model with an optional feature adapter.
 
     Crops are letterboxed onto the render background as in adapter training. Pane cut
     positions from the line-profile head are kept as ``at`` in the IR."""
 
     def __init__(self, ckpt_path: Path, device: torch.device, *, adapter_path: Path | None = None,
                  tree_root: Path, place_scale: float = 0.68) -> None:
+        from window_ast.dataset import make_eval_transform
+        from window_ast.pane_tree import NODE_CLASSES
+        from window_ast.pane_tree_model import PaneTreeModel
         from window_ast.structure import ir_to_structure_tokens, structure_tokens_to_ir
 
         self._tokens_of = ir_to_structure_tokens
         self._parse = structure_tokens_to_ir
-        self.pkgs = _ForeignPackages(tree_root)
+        self.pkgs = nullcontext()
         self.device = device
         self.place_scale = place_scale
-        with self.pkgs:
-            from scripts.generate_struct_synth import _child_id, canonical_panes
-            from scripts.train_pane_tree import load_tree_model
-            from scripts.train_tree_adapter import FeatureAdapter, attach_adapter, place
-            from window_ast.dataset import make_eval_transform
-            from window_ast.pane_tree import NODE_CLASSES
+        self._classes = NODE_CLASSES
+        self._child_id = lambda parent, i: ("" if parent == "root" else parent) + "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[i]
+        self._canonical = lambda rules, region: {"region": region, "root": "root", "rules": rules}
 
-            self._child_id, self._canonical, self._classes = _child_id, canonical_panes, NODE_CLASSES
-            self.place = place
-            ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-            self.model = load_tree_model(ckpt_path, device)
-            if adapter_path is not None:
-                adapter = FeatureAdapter(self.model.encoder.feat_dim).to(device)
-                adapter.load_state_dict(torch.load(adapter_path, map_location=device, weights_only=False)["adapter"])
-                attach_adapter(self.model, adapter.eval())
-            self.model.eval()
-            self.tfm = make_eval_transform(int(ck["args"].get("image_size", 336)))
+        def place(img: Image.Image, glass: list[float], scale: float) -> tuple[Image.Image, list[float]]:
+            canvas_size = 512
+            width, height = img.size
+            factor = scale * canvas_size / max(width, height)
+            new_width, new_height = max(1, round(width * factor)), max(1, round(height * factor))
+            x0, y0 = (canvas_size - new_width) / 2, (canvas_size - new_height) / 2
+            canvas = Image.new("RGB", (canvas_size, canvas_size), (186, 186, 186))
+            canvas.paste(img.resize((new_width, new_height), Image.BICUBIC), (round(x0), round(y0)))
+            mapped = [
+                (x0 + glass[0] * new_width) / canvas_size,
+                (y0 + glass[1] * new_height) / canvas_size,
+                (x0 + glass[2] * new_width) / canvas_size,
+                (y0 + glass[3] * new_height) / canvas_size,
+            ]
+            return canvas, mapped
+
+        self.place = place
+        ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        model_args = ck["args"]
+        self.model = PaneTreeModel(
+            ck["prefixes"],
+            d_model=model_args["d_model"],
+            roi=model_args["roi"],
+            pretrained=False,
+            global_feat=model_args.get("global_feat", "mean"),
+        ).to(device)
+        self.model.load_state_dict(ck["model"])
+        if adapter_path is not None:
+            channels = self.model.encoder.feat_dim
+            adapter = torch.nn.Sequential(
+                torch.nn.Conv2d(channels, 256, 1),
+                torch.nn.GELU(),
+                torch.nn.Conv2d(256, 256, 3, padding=1),
+                torch.nn.GELU(),
+                torch.nn.Conv2d(256, 256, 3, padding=1),
+                torch.nn.GELU(),
+                torch.nn.Conv2d(256, channels, 1),
+            ).to(device)
+            adapter_state = torch.load(adapter_path, map_location=device, weights_only=False)["adapter"]
+            adapter.load_state_dict({key.removeprefix("net."): value for key, value in adapter_state.items()})
+
+            def encode_with_adapter(model, images):
+                spatial = model.encoder.forward_spatial(images)
+                spatial = spatial + adapter(spatial)
+                global_features = model.glob(model._global_input(spatial, getattr(model.encoder, "last_cls", None)))
+                output = {
+                    "prefix": model.prefix_head(global_features),
+                    "root_box": torch.sigmoid(model.root_box_head(global_features)),
+                }
+                return model.reduce(spatial), global_features, output
+
+            self.model.encode = types.MethodType(encode_with_adapter, self.model)
+        self.model.eval()
+        self.tfm = make_eval_transform(int(ck["args"].get("image_size", 336)))
         print(f"structure: pane tree {ckpt_path}  adapter={adapter_path}")
 
     def _panes(self, region: str, nodes: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1235,16 +1277,14 @@ class TreeStructurePredictor:
                     build(ci, cid)
 
         build(0, "root")
-        with self.pkgs:
-            return self._canonical(rules, region)
+        return self._canonical(rules, region)
 
     def _input(self, crop_path: Path, glass: list[float] | None) -> torch.Tensor:
         canvas, _ = self.place(Image.open(crop_path).convert("RGB"), glass or [0, 0, 1, 1], self.place_scale)
         return self.tfm(canvas)
 
     def _result(self, toks: list[str], key: str, tree: list[dict[str, Any]]) -> dict[str, Any]:
-        with self.pkgs:
-            from window_ast.pane_tree import parse_prefix_key
+        from window_ast.pane_tree import parse_prefix_key
 
         prefix, region = parse_prefix_key(key)
         try:
@@ -1258,9 +1298,10 @@ class TreeStructurePredictor:
 
     @torch.no_grad()
     def predict(self, crop_path: Path, glass: list[float] | None = None) -> dict[str, Any]:
-        with self.pkgs:
-            toks, keys, trees = self.model.predict(self._input(crop_path, glass)[None].to(self.device),
-                                                   return_trees=True)
+        toks, keys, trees = self.model.predict(
+            self._input(crop_path, glass)[None].to(self.device),
+            return_trees=True,
+        )
         return self._result(toks[0], keys[0], trees[0])
 
     @torch.no_grad()
@@ -1271,8 +1312,7 @@ class TreeStructurePredictor:
         for i in range(0, len(crops), batch):
             x = torch.stack([self.tfm(self.place(c.convert("RGB"), [0, 0, 1, 1], self.place_scale)[0])
                              for c in crops[i:i + batch]]).to(self.device)
-            with self.pkgs:
-                out.append(self.model.describe(x)[feature].float().cpu().numpy())
+            out.append(self.model.describe(x)[feature].float().cpu().numpy())
         return np.concatenate(out) if out else np.zeros((0, 1), dtype=np.float32)
 
     @torch.no_grad()
@@ -1281,8 +1321,7 @@ class TreeStructurePredictor:
         """One structure for all crops: logits averaged over members at every tree node."""
         x = torch.stack([self._input(p, g) for p, g in zip(crop_paths, glasses)]).to(self.device)
         w = torch.tensor(weights, dtype=torch.float32) if weights is not None else None
-        with self.pkgs:
-            toks, key, tree = self.model.predict_joint(x, weights=w)
+        toks, key, tree = self.model.predict_joint(x, weights=w)
         return self._result(toks, key, tree)
 
 

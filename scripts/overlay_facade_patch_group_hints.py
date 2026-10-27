@@ -30,7 +30,7 @@ import torch
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
-EXP = ROOT.parent
+EXP = ROOT
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

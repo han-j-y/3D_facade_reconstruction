@@ -7,7 +7,7 @@ object-mask exclusion. The detections then go through the pipeline's unitize (fl
 per-floor split) and the units are scored against the CMP ground-truth windows (test split COCO, IoU >= 0.5,
 one-to-one) and against the labelled windows of real_labels_test (how many are matched by a unit).
 
-    python scripts/diag_sam3_params.py --cache ../window_ast_predictor/runs/clean_eval/testset/sam3_cache/samoff
+    python scripts/diag_sam3_params.py --cache runs/sam3_cache
 """
 from __future__ import annotations
 
@@ -24,9 +24,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import run_pipeline as rp  # noqa: E402
 
-EXP = ROOT.parent
-COCO = EXP / "sam3_ft" / "data" / "cmp_windows" / "test" / "_annotations.coco.json"
-LABELS = EXP / "window_ast_predictor" / "data" / "real_labels_test" / "labels.jsonl"
+EXP = ROOT
+COCO = EXP / "data" / "cmp_windows" / "test" / "_annotations.coco.json"
+LABELS = EXP / "data" / "real_labels_test" / "labels.jsonl"
 
 
 def iou_matrix(a: list, b: list) -> np.ndarray:

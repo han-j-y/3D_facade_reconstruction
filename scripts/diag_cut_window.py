@@ -62,7 +62,7 @@ def main() -> None:
     ap.add_argument("--descs", nargs="+", default=["heads", "heads_tta", "heads_t2", "z", "bars+heads"])
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
-    pred = rp.TreeStructurePredictor(TREE / "runs" / "scratch_bal_b" / "best.pt", torch.device(args.device),
+    pred = rp.TreeStructurePredictor(TREE / "checkpoints" / "structure_best.pt", torch.device(args.device),
                                      tree_root=TREE)
 
     def load(run: Path, fac: str):

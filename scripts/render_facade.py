@@ -40,7 +40,6 @@ def _resolve_compiler_root() -> Path:
     for cand in (
         ROOT / "vendor" / "window_compiler",
         ROOT / "window_compiler",
-        ROOT.parent / "window_compiler",
     ):
         if (cand / "main.py").is_file():
             return cand.resolve()

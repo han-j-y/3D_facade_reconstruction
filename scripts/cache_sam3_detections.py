@@ -5,7 +5,7 @@ Per facade: ``<stem>.json`` with the ``detect_windows`` records of every --promp
 clamp / size filter as the pipeline), and ``<stem>_masks.npz`` with the union mask of every --mask-prompts entry at
 --mask-threshold (as ``detect_object_mask``).
 
-    python scripts/cache_sam3_detections.py --out ../window_ast_predictor/runs/clean_eval/testset/sam3_cache/samoff
+    python scripts/cache_sam3_detections.py --images data/facades/base --out runs/sam3_cache
 """
 from __future__ import annotations
 
@@ -34,6 +34,7 @@ FACADES = "b0001 b0005 b0010 b0020 b0031 b0050 b0071 b0083 b0125 b0150 b0170 b01
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", type=Path, required=True)
+    ap.add_argument("--images", type=Path, default=ROOT / "data" / "facades" / "base")
     ap.add_argument("--sam-model", default="facebook/sam3")
     ap.add_argument("--prompts", nargs="+", default=["window"])
     ap.add_argument("--threshold", type=float, default=0.3)
@@ -46,10 +47,11 @@ def main() -> None:
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     dev = torch.device(args.device)
-    dirs = [ROOT.parent / "data" / "facades" / "base", ROOT.parent / "beyond-segmentation" / "data" / "x"]
     for fac in args.facades:
         fac = fac.removeprefix("cmp_")
-        path = next(p for p in (d / f"cmp_{fac}.jpg" for d in dirs) if p.is_file())
+        path = args.images / f"cmp_{fac}.jpg"
+        if not path.is_file():
+            raise FileNotFoundError(f"missing facade image: {path} (set --images)")
         img = Image.open(path).convert("RGB")
         dets = {p: rp.detect_windows(img, prompt=p, threshold=args.threshold, min_side=args.min_side,
                                      max_side_frac=args.max_side_frac, device=dev, model_id=args.sam_model)

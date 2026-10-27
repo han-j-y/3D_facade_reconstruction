@@ -14,7 +14,7 @@ facade_e2e/
   scripts/drivers/       # batch drivers used for the experiments
   vendor/window_compiler/# Blender main.py + compile/render (optional)
   documents/             # WDSL.ebnf (window grammar), FDSL.ebnf (façade grammar)
-  checkpoints/           # structure_best.pt (symlink or copy)
+  checkpoints/           # bundled structure checkpoint (Git LFS) + vocabulary
   data/vocab_structure.json
 ```
 
@@ -23,20 +23,17 @@ facade_e2e/
 ```bash
 cd facade_e2e
 pip install -r requirements.txt
-# copy structure weights into checkpoints/ (real files, not symlinks):
-#   cp /path/to/best.pt checkpoints/structure_best.pt
-#   cp /path/to/vocab.json checkpoints/vocab.json
+git lfs pull                    # fetch checkpoints/structure_best.pt
 ```
 
-Weights are large (~300MB) and not committed; without them the run skips structure IR.
-The default structure model is the pane-tree checkpoint `../window_ast_predictor/runs/scratch_bal_b/best.pt`
-when present (needed by `--cluster-mode gate`), else `checkpoints/structure_best.pt`.
+The default pane-tree model and its inference code are included in this repository.
+Without the Git LFS checkpoint, use `--skip-structure --cluster-mode box`.
 
 ## Run (core — no Blender)
 
 ```bash
 python run.py --image /path/to/facade.png --out-dir runs/demo --device cuda
-python run.py --facade-id 8 --train-up /path/to/train_up --device cuda
+python run.py --facade-id 8 --train-up data/facades/train_up --device cuda
 ```
 
 The defaults are the current pipeline:
@@ -46,7 +43,7 @@ The defaults are the current pipeline:
 | Detect | `facebook/sam3` prompt `window`, two-tier: keep score ≥ `--anchor-score` 0.7, add boxes in [`--threshold` 0.5, 0.7) that overlap no kept box by `--fill-max-overlap` 0.2 of the smaller box; `--min-side 13`; boxes on `car` masks dropped |
 | Unitize | `--merge-mode ast`, `--col-tol 0.045`, `--row-tol 0.055` |
 | Cluster | `--cluster-mode gate` (below) |
-| Doors | `--door-sam-model ../sam3_ft/hf/cmp_wds_ft_winit_ema20` (window+door+shop fine-tune), `door` ≥ `--door-threshold` 0.45 |
+| Doors | `facebook/sam3`, prompt `door` ≥ `--door-threshold` 0.45; override with any Hugging Face ID or model directory |
 | Side facades | `--side-filter`: edge window columns that sit off the main facade's floors are dropped (neighbouring buildings, side walls), plus doors outside the kept windows. An outermost column with one window on each of ≥ 3 main floors is kept (corner towers). |
 | Layout | `--grid floor_bays` (below) |
 
@@ -166,6 +163,5 @@ Within each window type, every unit crop is predicted; votes are tallied on a di
 
 **Downloaded at runtime:** HuggingFace `facebook/sam3` (windows, balconies, `--exclude-prompts`), `torch.hub` DINOv2
 
-**Local:** doors default to the window+door+shop SAM3 fine-tune at `../sam3_ft/hf/cmp_wds_ft_winit_ema20`
-(`--door-sam-model facebook/sam3` for the released model); the structure model defaults to
-`../window_ast_predictor/runs/scratch_bal_b/best.pt`
+All default code and checkpoint paths are repository-relative. Input images are
+user-provided via `--image`, `--train-up`, or `DATA_DIR` in the batch drivers.

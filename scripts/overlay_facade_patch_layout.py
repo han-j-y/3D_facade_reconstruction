@@ -32,7 +32,7 @@ from PIL import Image, ImageDraw, ImageFont
 from torchvision import transforms as T
 
 ROOT = Path(__file__).resolve().parents[1]
-EXP = ROOT.parent
+EXP = ROOT
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
