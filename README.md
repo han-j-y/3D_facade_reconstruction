@@ -45,6 +45,7 @@ The defaults are the current pipeline:
 | Cluster | `--cluster-mode gate` (below) |
 | Doors | `facebook/sam3`, prompt `door` ≥ `--door-threshold` 0.45; override with any Hugging Face ID or model directory |
 | Side facades | `--side-filter`: edge window columns that sit off the main facade's floors are dropped (neighbouring buildings, side walls), plus doors outside the kept windows. An outermost column with one window on each of ≥ 3 main floors is kept (corner towers). |
+| Local symmetry | `--local-sym` (gate mode, below) |
 | Layout | `--grid floor_bays` (below) |
 
 **Gate clustering** (`facade_recovery/sym_gate.py`):
@@ -55,6 +56,15 @@ The defaults are the current pipeline:
 4. Inside each box group, the pane-tree descriptor (`--gate-feature heads`) is cut top-down on its average-linkage tree (cosine, `--struct-split-thr` 0.16). A split is refused if it separates more than `--gate-eps` 0.1 of the node's mirror pairs.
 
 The axis is used during clustering, so the separate symmetry repair (below) is not needed.
+
+**Local symmetry** (`facade_recovery/local_sym.py`, `--local-sym`, on by default with gate) runs after the side filter. It fixes single windows that the one global axis leaves in the wrong type, e.g. an occluded or badly segmented copy of a repeated window.
+
+1. Candidate axes are the midpoints of similar window pairs (same floor band, size within 1.5×) and the window centres. Each axis matches every window's reflection to its best window (IoU ≥ 0.3). Its extent grows outward while ≥ 75% of the windows inside are matched, and its strength is the summed match IoU.
+2. A mirror pair's weight is the summed strength × IoU of the axes pairing it (relative to the strongest axis), decaying with the pair's distance (`exp(-d / (3 × bay pitch))`).
+3. An ICM vote on a Potts energy relabels windows: cost(window, type) = 2 × mean cosine distance of its pane-tree descriptor to the type's other members + the weights of its mirror pairs that end up in another type. A window can only move into a mirror partner's type (no new types). If its box size repeats on the facade, that type must also hold a window of the same size (w and h within 12%). A one-off box can join any partner type, unless it is self-symmetric about a strong axis (≥ 0.5 × the strongest).
+4. Occlusion: SAM3 masks for `--local-sym-occluders` (vehicles, fire escapes, trees, street lamps, traffic lights, people; ≥ `--local-sym-occluder-threshold` 0.4) and the image border hide window sides. The pair IoU ignores hidden sides, occluded windows count as one-off sizes, and windows lying on an occluder sit out the vote.
+
+The moves go to `meta.local_sym_moves` and `local_sym.json` (axes, pairs, vote costs). `--no-local-sym` gives plain gate clustering.
 
 **Per-floor bays** (`facade_recovery/floor_bays.py`): every floor gets its own bays, one per window or door, split at gap midpoints. Lines that match across floors become shared lines, and a floor's empty stretches inherit lines from the nearest floor with a similar window height. The DSL columns are the union of all floors' lines, and every floor bay spans its columns (`placement_spans`). Floors and bays carry `h_m` / `w_m` so the compiler keeps them as they are. `meta.floor_bays` lists the per-floor bays. `--grid columns` keeps the older single column grid (`--layout-mode`).
 
@@ -77,8 +87,9 @@ Outputs under `runs/facade_e2e_<id>/` (or `--out-dir`):
 | `index_raw.json` | Window detections used (after car / two-tier filtering) |
 | `raw_windows.png` | Raw SAM3/XML boxes before merge |
 | `axis/` | Symmetry-axis score curve, overlays, `summary.json` (gate mode) |
+| `local_sym.json` | Local-symmetry axes, mirror pairs and type moves (gate mode) |
 | `overview.png` | Units colored by type |
-| `facade_dsl.json` | Per-floor bay layout + voted structure IR (`meta.axis_x`, `meta.side_dropped`, `meta.floor_bays`) |
+| `facade_dsl.json` | Per-floor bay layout + voted structure IR (`meta.axis_x`, `meta.local_sym_moves`, `meta.side_dropped`, `meta.floor_bays`) |
 | `summary.json` | Counts + vote stats |
 | `assets/types/type_XX/` | Exemplar crop + `structure_ir.json` |
 | `blender/compare_photo_vs_render.png` | Photo vs Blender (with `--blender-render`) |

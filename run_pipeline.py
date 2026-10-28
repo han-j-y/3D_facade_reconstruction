@@ -9,8 +9,9 @@ Pipeline (defaults)
   4. Cluster  — ``--cluster-mode gate``: z-scored box geometry (GMM), then the symmetry axis
                 (``scripts/symmetry_axis_ghost_continuous.py``, ``open balcony`` detections break ties), then
                 pane-tree structure splits inside each box group that keep mirror pairs together
-  5. Doors    — window+door+shop SAM3 fine-tune ``door`` >= 0.45; side facades (edge columns off the main
-                floors) and the doors beside them dropped
+  5. Doors    — facebook/sam3 ``door`` >= 0.45; side facades (edge columns off the main
+                floors) and the doors beside them dropped; then (gate) local symmetries let windows join a
+                mirror partner's type (``facade_recovery/local_sym.py``)
   6. Assetize — per-type crops; medoid exemplar
   7. Structure — predict window structure IR per unit; majority-vote within type
   8. DSL       — per-floor bays (``facade_recovery/floor_bays.py``) + type library (``facade_dsl.json``)
@@ -79,6 +80,7 @@ from facade_recovery.doors import (  # noqa: E402
     filter_door_boxes,
 )
 from facade_recovery.floor_bays import apply_floor_bays, drop_side_facades  # noqa: E402
+from facade_recovery.local_sym import OCCLUDER_PROMPTS, local_sym_vote  # noqa: E402
 from facade_recovery.sym_gate import gate_cluster, mirror_partners, refine_axis, two_tier  # noqa: E402
 from facade_recovery.paths import (  # noqa: E402
     default_structure_ckpt,
@@ -255,6 +257,19 @@ def parse_args() -> argparse.Namespace:
         help="drop window columns at the image edges that sit off the main facade's floors (neighbouring "
         "buildings, side walls), and doors outside the kept windows",
     )
+    ap.add_argument(
+        "--local-sym",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="gate: after the side filter, let windows join a mirror partner's type under local symmetries "
+        "(facade_recovery/local_sym.py; joins only, occluder-aware)",
+    )
+    ap.add_argument(
+        "--local-sym-occluders",
+        default=",".join(OCCLUDER_PROMPTS),
+        help="local symmetry: comma SAM3 prompts whose masks hide window sides ('' = border only)",
+    )
+    ap.add_argument("--local-sym-occluder-threshold", type=float, default=0.4)
     ap.add_argument(
         "--struct-split-thr",
         type=float,
@@ -2056,6 +2071,28 @@ def main() -> None:
             print(f"side facades: dropped {len(side)} windows, {len(side_dropped) - len(side)} doors")
     clustered["side_dropped"] = side_dropped
 
+    local_sym_moves: list[list[int]] | None = None
+    if gate and args.local_sym:
+        prompts = [p.strip() for p in args.local_sym_occluders.split(",") if p.strip()]
+        occ_mask = detect_object_mask(
+            facade, prompts=prompts, threshold=args.local_sym_occluder_threshold, device=device
+        )
+        sym_feat = struct_predictor.describe(
+            [facade.crop(tuple(int(v) for v in b)) for b in merged_boxes], feature="heads"
+        )
+        voted, report = local_sym_vote(merged_boxes, labels, sym_feat, occ_mask, facade.size)
+        local_sym_moves = report["moves"]
+        (out_dir / "local_sym.json").write_text(
+            json.dumps({"before": labels.tolist(), "after": voted.tolist(), **report}, indent=1) + "\n",
+            encoding="utf-8",
+        )
+        labels = np.unique(voted, return_inverse=True)[1].astype(np.int32)
+        clustered["labels"] = labels
+        print(
+            f"local symmetry: {len(report['axes'])} axes, moved {len(local_sym_moves)} "
+            f"{[tuple(m) for m in local_sym_moves]} → {len(set(labels.tolist()))} types"
+        )
+
     medoids = pick_medoids(feats, labels)
 
     if args.detect_doors:
@@ -2281,6 +2318,8 @@ def main() -> None:
     if axis_x is not None:
         dsl["meta"]["axis_x"] = round(axis_x, 1)
     dsl["meta"]["cluster_mode"] = clustered.get("cluster_mode")
+    if local_sym_moves is not None:
+        dsl["meta"]["local_sym_moves"] = local_sym_moves
     if side_dropped:
         dsl["meta"]["side_dropped"] = [[round(v, 1) for v in b] for b in side_dropped]
     if args.grid == "floor_bays":
