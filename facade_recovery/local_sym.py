@@ -17,7 +17,9 @@
    holding one of its size-mates; a one-off box size may join any partner's type, unless it is self-symmetric
    about a strong axis (a central feature, not a bad box).
 Occlusion: a window side whose outside strip lies on an occluder mask (vehicles, fire escapes, trees, poles,
-people, balconies) or on the image border is hidden; the pair IoU clips the partner at hidden sides. A hidden side makes
+people, balconies) or on the image border is hidden, but only if the box is smaller there than every unoccluded window
+in its column (x-interval IoU >= 0.5): an occluder can only shrink a box. The pair IoU clips the partner at hidden
+sides. A hidden side makes
 that axis a minimum for that window only: it may match a longer window, and the size tolerance rejects a
 candidate only when this box is already the longer one. The longer window does not gain the shorter occluded
 box as a size-mate. If no partner type meets the test, it stays. Windows lying on an occluder do not take part
@@ -72,6 +74,52 @@ def occluded_sides(
         if y1 >= ih - border:
             s.add(3)
         out.append(s)
+    return out
+
+
+def column_groups(boxes: list[list[float]], min_iou: float = 0.5) -> list[list[int]]:
+    """Windows in one column: connected components of x-interval IoU >= ``min_iou``."""
+    n = len(boxes)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            inter = min(boxes[i][2], boxes[j][2]) - max(boxes[i][0], boxes[j][0])
+            union = max(boxes[i][2], boxes[j][2]) - min(boxes[i][0], boxes[j][0])
+            if inter > 0 and inter / union >= min_iou:
+                parent[find(i)] = find(j)
+    cols: dict[int, list[int]] = {}
+    for i in range(n):
+        cols.setdefault(find(i), []).append(i)
+    return list(cols.values())
+
+
+def cut_sides(boxes: list[list[float]], occ: list[set[int]]) -> list[set[int]]:
+    """An occluder can only shrink a box: a hidden side stays hidden only where the box is smaller than every
+    unoccluded window in its column (left edge right of all theirs, right edge left of all theirs, height below all
+    theirs for top / bottom). A window with no unoccluded column mate keeps its hidden sides."""
+    out = [set(o) for o in occ]
+    for col in column_groups(boxes):
+        free = [k for k in col if not occ[k]]
+        if not free:
+            continue
+        x0 = max(boxes[k][0] for k in free)
+        x1 = min(boxes[k][2] for k in free)
+        h = min(boxes[k][3] - boxes[k][1] for k in free)
+        for i in col:
+            b = boxes[i]
+            if b[0] <= x0:
+                out[i].discard(0)
+            if b[2] >= x1:
+                out[i].discard(2)
+            if b[3] - b[1] >= h:
+                out[i] -= {1, 3}
     return out
 
 
@@ -324,7 +372,7 @@ def local_sym_vote(
     if len(idx) < 2:
         return labels, report
     sub = [list(map(float, boxes[i])) for i in idx]
-    occ = occluded_sides(sub, occluder_mask, iw, ih)
+    occ = cut_sides(sub, occluded_sides(sub, occluder_mask, iw, ih))
     syms = continuous_weights(sub, occ, local_symmetries(sub, occ))
     if not syms:
         return labels, report
