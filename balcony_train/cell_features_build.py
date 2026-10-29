@@ -2,7 +2,7 @@
 
 One row per floor×bay cell with depth, SAM3, current-method, mirror and
 position features plus a DINOv2 embedding of the cell crop (with context).
-Output: ``runs/cell_clf/cells.npz`` (X, y, groups, names, cells, dino).
+Output: ``runs/cell_clf/cells_ext_no0227.npz`` (X, y, groups, names, cells, dino).
 
 Example::
 
@@ -42,8 +42,8 @@ from balcony_train.try_sam3_da3_volumes import (  # noqa: E402
     front_fill_frac,
 )
 
-DEFAULT_VOLUME_CACHE = ROOT / "runs" / "enclosed_grid" / "volume_cells.json"
-DEFAULT_OUT = ROOT / "runs" / "cell_clf" / "cells.npz"
+DEFAULT_VOLUME_CACHE = ROOT / "runs" / "enclosed_grid" / "volume_cells_floor_bays.json"
+DEFAULT_OUT = ROOT / "runs" / "cell_clf" / "cells_ext_no0227.npz"
 ENCLOSURE_PROMPTS = SAM3_PROMPTS[:3]
 
 

@@ -16,9 +16,8 @@ from filter import (  # noqa: E402
     clearly_below_windows,
     filter_balcony_boxes,
     has_window_center_above,
-    mostly_covered_by_partner_window,
     no_window_above,
-    wider_than_partner_window,
+    smaller_overlap_indices,
 )
 
 
@@ -125,52 +124,66 @@ class FilterTests(unittest.TestCase):
         wide_top_rail = [90, 20, 310, 55]
         self.assertTrue(no_window_above(wide_top_rail, instances, ih=500))
 
-    def test_wide_exempts_below_windows(self) -> None:
+    def test_below_sill_is_kept(self) -> None:
         win = [[100, 50, 200, 150]]  # w=100
         im = Image.new("RGB", (400, 400), (200, 200, 200))
         instances = [_inst(win[0])]
-        narrow_deco = [110, 152, 190, 200]  # w=80, would drop
-        wide_balc = [70, 152, 190, 200]  # w=120 >= 1.2 * 100
+        narrow_deco = [110, 152, 190, 200]
         self.assertTrue(
             clearly_below_windows(narrow_deco, win, iw=400, ih=400, expand_frac=0.10)
         )
-        self.assertTrue(wider_than_partner_window(wide_balc, win, iw=400, ih=400))
-        kept, log = filter_balcony_boxes(
-            [narrow_deco, wide_balc], im, instances
-        )
-        self.assertEqual(kept, [wide_balc])
+        kept, log = filter_balcony_boxes([narrow_deco], im, instances)
+        self.assertEqual(kept, [narrow_deco])
         reasons = {tuple(e["box"]): e["reasons"] for e in log}
-        self.assertIn("below_windows", reasons[tuple(narrow_deco)])
-        self.assertIn("wide_vs_window", reasons[tuple(wide_balc)])
+        self.assertEqual(reasons[tuple(narrow_deco)], [])
 
-    def test_window_cover_drops_mostly_inside_partner(self) -> None:
-        win = [[100, 50, 200, 150]]  # 100×100
-        # intersection 100×100 / area 100×110 ≈ 0.909
+    def test_window_sized_railing_is_kept(self) -> None:
+        # A box mostly inside the window used to drop (cover >= 0.9). It stays.
+        win = [[100, 50, 200, 150]]
         t1_like = [100, 50, 200, 160]
-        # wider slab: intersection 100×100 / area 140×130 ≈ 0.55; width ratio 1.4
-        real_balc = [80, 50, 220, 180]
-        self.assertTrue(
-            mostly_covered_by_partner_window(t1_like, win, iw=400, ih=400)
-        )
-        self.assertFalse(
-            mostly_covered_by_partner_window(real_balc, win, iw=400, ih=400)
-        )
-
         im = Image.new("RGB", (400, 400), (200, 200, 200))
         instances = [_inst(win[0]), _inst([100, 10, 200, 40], floor=1)]
-        kept, log = filter_balcony_boxes([t1_like, real_balc], im, instances)
-        self.assertEqual(kept, [real_balc])
+        kept, log = filter_balcony_boxes([t1_like], im, instances)
+        self.assertEqual(kept, [t1_like])
         reasons = {tuple(e["box"]): e["reasons"] for e in log}
-        self.assertIn("window_cover", reasons[tuple(t1_like)])
-        self.assertNotIn("window_cover", reasons[tuple(real_balc)])
+        self.assertEqual(reasons[tuple(t1_like)], [])
+
+    def test_smaller_overlapping_box_is_dropped(self) -> None:
+        im = Image.new("RGB", (400, 400), (200, 200, 200))
+        instances = [_inst([0, 10, 400, 50])]
+        large = [40, 100, 200, 220]
+        small = [60, 120, 100, 160]
+        other = [250, 100, 320, 180]
+        self.assertEqual(smaller_overlap_indices([small, other, large]), {0})
+        kept, log = filter_balcony_boxes([small, other, large], im, instances)
+        self.assertEqual(kept, [other, large])
+        reasons = {tuple(e["box"]): e["reasons"] for e in log}
+        self.assertEqual(reasons[tuple(small)], ["smaller_overlap"])
+        self.assertEqual(reasons[tuple(large)], [])
+        self.assertEqual(reasons[tuple(other)], [])
+
+        # A overlaps B, B overlaps C, A misses C. Both smaller boxes go.
+        chain_a = [0, 100, 50, 150]
+        chain_b = [40, 100, 120, 180]
+        chain_c = [110, 100, 220, 200]
+        kept_chain, _log = filter_balcony_boxes(
+            [chain_a, chain_b, chain_c], im, instances
+        )
+        self.assertEqual(kept_chain, [chain_c])
 
     def test_similar_width_juliet_is_kept(self) -> None:
-        win = [[100, 50, 200, 150]]  # w=100
-        juliet = [105, 120, 195, 180]  # w=90, about the window width
-        wide = [40, 120, 220, 180]  # w=180
-        narrow = [120, 120, 170, 180]  # w=50
-        im = Image.new("RGB", (400, 400), (200, 200, 200))
-        instances = [_inst(win[0]), _inst([100, 10, 200, 40], floor=1)]
+        # Width near the window does not drop a Juliet. Boxes are separated so
+        # the overlap rule is not what this test is checking.
+        juliet = [105, 120, 195, 180]  # w=90, window w=100
+        wide = [280, 120, 460, 180]  # w=180
+        narrow = [520, 120, 570, 180]  # w=50
+        im = Image.new("RGB", (700, 400), (200, 200, 200))
+        instances = [
+            _inst([100, 50, 200, 150]),
+            _inst([300, 50, 400, 150]),
+            _inst([500, 50, 600, 150]),
+            _inst([0, 10, 700, 40], floor=1),
+        ]
         kept, log = filter_balcony_boxes([juliet, wide, narrow], im, instances)
         self.assertEqual(kept, [juliet, wide, narrow])
         reasons = {tuple(e["box"]): e["reasons"] for e in log}
@@ -179,18 +192,16 @@ class FilterTests(unittest.TestCase):
     def test_filter(self) -> None:
         im = Image.new("RGB", (400, 400), (200, 200, 200))
         instances = [_inst([100, 50, 200, 150])]
-        # widths 80; not below sill / not rooftop
         good = [110, 120, 190, 180]
-        thick_ok = [110, 140, 190, 200]
-        bad_below = [110, 148, 190, 320]
-        bad_rooftop = [110, 5, 190, 35]
+        below_sill = [250, 148, 330, 320]
+        rooftop = [110, 5, 190, 35]
         kept, log = filter_balcony_boxes(
-            [good, thick_ok, bad_below, bad_rooftop], im, instances
+            [good, below_sill, rooftop], im, instances
         )
-        self.assertEqual(kept, [good, thick_ok])
+        self.assertEqual(kept, [good, below_sill, rooftop])
         reasons = {tuple(e["box"]): e["reasons"] for e in log}
-        self.assertIn("below_windows", reasons[tuple(bad_below)])
-        self.assertIn("no_window_above", reasons[tuple(bad_rooftop)])
+        self.assertEqual(reasons[tuple(below_sill)], [])
+        self.assertEqual(reasons[tuple(rooftop)], [])
 
 if __name__ == "__main__":
     unittest.main()

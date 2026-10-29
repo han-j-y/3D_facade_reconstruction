@@ -27,7 +27,7 @@ if str(ROOT) not in sys.path:
 from balcony_train.enclosed_grid_store import DEFAULT_EVAL_LABELS_JSONL, load_labels  # noqa: E402
 from balcony_train.evaluate_enclosed_grid import score_photo, summarize  # noqa: E402
 
-DEFAULT_CELLS = ROOT / "runs" / "cell_clf" / "cells.npz"
+DEFAULT_CELLS = ROOT / "runs" / "cell_clf" / "cells_ext_no0227.npz"
 CURRENT = ("in_cells_5", "in_cells_6", "cover_2_depth", "cover_3_merge", "cover_4_grow", "cover_5_clip", "mirror_in_6")
 
 

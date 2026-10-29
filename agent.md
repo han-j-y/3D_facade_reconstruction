@@ -10,7 +10,9 @@ Python: `C:\Users\hiroo\anaconda3\envs\glodon\python.exe` only.
 | Set | Photos | With enclosure | Labels | Photos dir |
 |---|---|---|---|---|
 | Train (cmp_b) | 375 | 29 | `runs/enclosed_grid/labels_train.jsonl` | `data/base_jpg/` |
-| Eval (cmp_x) | 61 | 26 | `runs/enclosed_grid/labels_eval.jsonl` | `runs/balcony_clf/crops_ext_eval/Before Crop/` |
+| Test (cmp_x) | 133 | 56 | `runs/enclosed_grid/labels_ext_all.jsonl` | `data/extended_selected/` |
+
+The default test is the 133-photo row. `paper_eval.py` still reads `runs/balcony_clf/crops_ext_eval/Before Crop` for the CMP xml files and label maps.
 
 - Train photos are the jpgs of `data/base` (the same-stem `.png` files there are CMP
   label maps, never run them). Window grids: `runs/batch/<stem>/facade_dsl.json`
@@ -29,7 +31,7 @@ Python: `C:\Users\hiroo\anaconda3\envs\glodon\python.exe` only.
 
 - exact (bay_floor): predicted cell set equals the label set. Strict; one wrong cell fails.
 - detect: an enclosure photo hits at least one labeled cell; a no-enclosure photo predicts nothing.
-- Enclosure photos in `labels_eval.jsonl` can also store one `floor_shape` and one `skin`. Empty cell lists stay unlabeled for both. The eval grid UI asks for them (R/T/C and P/G). Score with `score_enclosed_plan.py` on the official predicted cells: each cell is cropped, then the same majority vote as the pipeline. Triangle counts as rectangle. No predicted cells is wrong on both. `cmp_x` stays out of the training jsonl.
+- Enclosure photos in `labels_ext_all.jsonl` can also store one `floor_shape` and one `skin`. Empty cell lists stay unlabeled for both. The eval grid UI asks for them (R/T/C and P/G). Score with `score_enclosed_plan.py` on the official predicted cells: each cell is cropped, then the same majority vote as the pipeline. Triangle counts as rectangle. No predicted cells is wrong on both. `cmp_x` stays out of the training jsonl.
 - Reported per group: enclosure (26), none (35), total (61); plus cell tp / fp / fn.
   `0185` was a no-enclosure photo and is now `f0b1`, `f1b1`, `f2b1`, `f3b1`.
   Rows in the table below that still say 25 and 36 were scored before that label edit.
@@ -243,14 +245,14 @@ C looks like a labeling-policy question (turret tops, balcony bases) more than a
 | `cell_dino_flip.py` | Flipped DINOv2 embeddings for flip augmentation |
 | `gate_op1.py` | Gate threshold chosen on cmp_b, then OP1 cells; eval once |
 | `op3_touch_op1.py` | OP3 rectangle plus touching OP1 cells. Default gate ≥ 0.2 → `runs/cell_clf/compare_touch/`. `--gate 0` is the pure classifier → `runs/cell_clf/compare_clf_op1/` |
-| `clf_three_rules.py` | Pure classifier plus the four cell rules → `runs/cell_clf/compare_clf_rules/`. `--gate 0.10` blanks photos under that gate → `runs/cell_clf/compare_clf_rules_gate/` |
+| `clf_three_rules.py` | Pure classifier plus the four cell rules → `runs/cell_clf/compare_clf_rules/`. `--gate 0.10` blanks photos under that gate → `runs/cell_clf/compare_clf_rules_gate_ext_relabel/` |
 | `enclosed_detect.py` | Pipeline detector: same four rules and gate ≥ 0.10. Model cache `runs/cell_clf/model_rules_gate.joblib` |
 | `enclosed_floor_ui.py` | Label rectangle/circle on enclosed cells cropped from `data/base`. One plan per photo → `runs/enclosed_floor/` |
 | `export_enclosed_crops.py` | Train enclosed volumes → `runs/balcony_clf/crops/unlabeled/<stem>_enclosed_<NN>.png` for floor and skin labels |
 | `export_enclosed_masks.py` | Shared binary masks → `runs/enclosed_grid/gt_masks/`. Skips `cmp_b0291`, `cmp_b0304`, `cmp_b0305` |
 | `draw_clf_compare.py` | Pure-classifier compare images with probabilities, grouped boards → `runs/cell_clf/compare_clf/` |
 | `draw_cell_clf_compare.py` | Grouped compare boards from a results json |
-| `score_enclosed_plan.py` | Eval floor shape and skin from `labels_eval.jsonl` and official predicted cells |
+| `score_enclosed_plan.py` | Test floor shape and skin from `labels_ext_all.jsonl` and official predicted cells |
 | `draw_depth_cells.py`, `draw_sam3_raw.py` | Depth / raw SAM3 panels (`runs/cell_clf/wrong_board/{depth,sam3_raw}/` for the 17 wrong photos) |
 | `eval_sam3_enclosed_ft.py` | Fold-0 SAM3 fine-tune on cmp_x. Raw boxes → `runs/sam3_ft_fold0/cmp_x/`. `--stages` writes the six-panel strips under `stages/` |
 
@@ -363,6 +365,153 @@ The 73 enclosure photos cover 508 cells.
 
 Joint: rectangle × punched_window 54, circle × punched_window 16, rectangle × curtain_wall 1, circle × curtain_wall 1, triangle × punched_window 1.
 
+## Open-balcony box detection (CMP label maps)
+
+Scored open-balcony boxes against balcony rectangles in the CMP label PNGs. This is not the enclosure cell metric above. Ground truth is palette index 7 in `data/extended_selected/<stem>.png`: 8-connected components, tight boxes scaled onto the photo.
+
+Photos: 123 of the 145 jpgs in `data/extended_selected`. The other 22 were left out because their balcony labels are wrong:
+
+- `0006`, `0011`, `0012`, `0014`, `0016`, `0021`, `0043`, `0116`, `0173`, `0227`. `0006`, `0011`, `0012`, `0014`, `0016`, and `0116` were also moved out of `data/baseForBatch` into `data/baseForBatch_excluded`; the other four were never in that folder, so `data/baseForBatch` now has 17 jpgs.
+- `0002`, `0003`, `0008`, `0009`, `0036`, `0044`, `0047`, `0067`, `0107`, `0127`, `0162`, `0176`, removed in a second pass.
+
+Matching: one-to-one, greedy from the highest IoU, IoU ≥ 0.5 is a true positive. An unmatched prediction is a false positive and an unmatched ground-truth unit a false negative. This is one operating point at score ≥ 0.45, not mean average precision.
+
+The labels sometimes split one balcony into several boxes (piers through a railing). Label boxes that sit side by side form a group: vertical overlap at least half the shorter box height, horizontal gap at most that height, transitive. In each photo every group counts either as one bounding box or as its label boxes, whichever gives more true positives; a tie keeps the label boxes. Recall uses the count of the chosen units. The vertical-overlap test keeps balconies stacked in one column from merging across floors. Counting every group as one box drops the score (raw boxes, 123 photos: precision 0.514, recall 0.704), because it joins the twin railings under paired windows that SAM3 finds one by one (`0089` goes from 8 TP to 0).
+
+Cite the pipeline row. Pipeline boxes are what `run_balcony.py` passes to the window grid: SAM3 `balcony` boxes at score ≥ 0.45, clamped to the mask, sides under 16 px dropped, then `filter_balcony_boxes`. `filter.py` currently only drops the smaller of two overlapping boxes; its window rules are disabled in the working tree. `merge_adjacent_boxes(mode="balcony")` changed no box after that filter, and snapping does not move pixel boxes. `drop_open_under_enclosed` is not applied.
+
+| Boxes | Pred | GT units | TP | FP | FN | Precision | Recall | F1 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| SAM3 raw | 738 | 634 | 478 | 260 | 156 | 0.648 | 0.754 | 0.697 |
+| Mask clamp + 16 px | 699 | 634 | 457 | 242 | 177 | 0.654 | 0.721 | 0.686 |
+| Pipeline (+ overlap filter) | 612 | 633 | 432 | 180 | 201 | 0.706 | 0.682 | 0.694 |
+
+Mask clamping loses 21 TP (shrunk boxes fall under IoU 0.5). The overlap filter removes 62 FP and 25 TP. Five groups were counted as one box on the raw boxes (`0095`, `0113`, `0121`, `0130`, `0144`, one TP each).
+
+### IoU ≥ 0.3 next to 0.5 (paper table)
+
+Same protocol and the same 123 photos; only the IoU threshold changes. The group rule picks its best split per threshold, so GT units shift slightly. The paper reports both thresholds. The mask-clamp rows stay out of the paper table.
+
+| Boxes | IoU | Pred | GT units | TP | FP | FN | Precision | Recall | F1 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| SAM3 raw | ≥ 0.5 | 738 | 634 | 478 | 260 | 156 | 0.648 | 0.754 | 0.697 |
+| SAM3 raw | ≥ 0.3 | 738 | 631 | 523 | 215 | 108 | 0.709 | 0.829 | 0.764 |
+| Mask clamp + 16 px | ≥ 0.5 | 699 | 634 | 457 | 242 | 177 | 0.654 | 0.721 | 0.686 |
+| Mask clamp + 16 px | ≥ 0.3 | 699 | 631 | 506 | 193 | 125 | 0.724 | 0.802 | 0.761 |
+| Pipeline (+ overlap filter) | ≥ 0.5 | 612 | 633 | 432 | 180 | 201 | 0.706 | 0.682 | 0.694 |
+| Pipeline (+ overlap filter) | ≥ 0.3 | 612 | 629 | 491 | 121 | 138 | 0.802 | 0.781 | 0.791 |
+
+From 0.5 to 0.3 the pipeline gains 59 TP (F1 0.694 → 0.791). Most of the misses at 0.5 are box extent, not missed balconies.
+
+Example, `cmp_x0010`: 4 GT boxes and 4 SAM3 boxes, all four balconies found, but only 2 pass at IoU 0.5.
+
+- The middle balcony's SAM3 box covers only the railing (y 374–444). The label runs down to y 503. IoU 0.48.
+- The roof balustrade's SAM3 box reaches the cornice (y 80). The label is a thin strip (y 6–42). IoU 0.44.
+- All four pass at IoU ≥ 0.4.
+
+Also tested, not adopted:
+
+- IoU ≥ 0.4: pipeline 466 TP, F1 0.750.
+- Center rule: horizontal center offset ≤ half the GT width plus IoU ≥ 0.4. Pipeline 465 TP, F1 0.748. The center test removes 1 TP compared with plain IoU 0.4, so it adds nothing. As a custom rule written after looking at errors, it is not used.
+
+Paper text (draft): "We match predicted and ground-truth balcony boxes one-to-one in descending IoU order and report results at IoU ≥ 0.5 and IoU ≥ 0.3, since CMP balcony annotations vary in extent (railing only vs. including the slab)."
+
+The IoU 0.3 rows come from `score_sam3_either_gt.score_image(..., iou=0.3)` on `extended_selected_sam3_stage_boxes.json`. To rerun without overwriting the cited json: `score_sam3_pipeline_stages.py --iou 0.3 --out runs/batch/_rows/extended_selected_sam3_pipeline_stages_iou30.json`.
+
+Same photos with label boxes as drawn (no grouping): raw 473/738 precision 0.641, 473/640 recall 0.739; pipeline 426/612 precision 0.696, 426/640 recall 0.666.
+
+Files:
+
+- Per-image sheet, one tab for pipeline boxes and one for raw: `runs/batch/_rows/extended_selected_sam3_pipeline_123.xlsx`.
+- Scores per stage and image: `runs/batch/_rows/extended_selected_sam3_pipeline_stages.json`. Boxes per stage, so rescoring skips SAM3: `runs/batch/_rows/extended_selected_sam3_stage_boxes.json`.
+- Raw boxes only, 125 photos: `runs/batch/_rows/extended_selected_sam3_either_gt.json` and `_either_gt_123.json` (`score_sam3_either_gt.py`, reads the box cache `extended_selected_sam3_boxes.json`).
+
+```
+C:\Users\hiroo\anaconda3\envs\glodon\python.exe balcony_pipeline/score_sam3_pipeline_stages.py --device cuda
+```
+
+Older scores, not cited:
+
+- 135 photos (only the first ten removed), raw boxes, label boxes as drawn, IoU 0.5: TP 488, precision 0.616, recall 0.701, F1 0.656 (`runs/batch/_rows/extended_selected_sam3_inside.json`).
+- 60%-of-the-prediction rule: a predicted box is a true positive when 60% of its area lies inside a label box, and several boxes can match one balcony. 135 photos: precision 564/792 = 0.712, recall 520/696 = 0.747. 125 photos: 0.727 / 0.772 (`_inside.xlsx`, `_inside_125.xlsx`). A box much smaller than the balcony passes, so it is not a detection score.
+- Cover of ground truth (box covers ≥ 60% of the balcony rectangle), 135 photos: recall 508/696, precision 507/792.
+
+Analysis strips: `runs/batch/_rows/extended_selected_sam3_analysis/<stem>.jpg`. Left is the CMP label map; right are SAM3 raw, mask clamp + 16 px, and the overlap filter. Photo | label pairs for all 145 stems: `runs/extended_selected_pairs/`.
+
+`balcony_pipeline/score_sam3_merged_gt.py` was rewritten by another session (its own iterative merge, label dir `data/extended`). Its `extended_selected_sam3_merged_gt.json` is not the score above.
+
+## Open-balcony structure (projecting / juliet)
+
+New label axis for open balconies: `projecting` (slab out from the wall), `juliet` (railing, almost no floor), `rooftop` (railing on the roof or setback below, which is the floor). Plan: label train crops → structure head on the railing classifier → pipeline vote → compiler geometry for juliet and rooftop → re-review cmp_x for rooftop and score once. Only labeling setup is done.
+
+- Train crops had no structure labels. cmp_x (`crops_ext_xml`, `crops_pipeline_ext`) is test; never train on it.
+- `label_store.py` now stores `"projecting"` explicitly. Null means not labeled. cmp_x files saved projecting as null, so cmp_x readers keep treating null as projecting.
+- Juliet has no floor: `floor_shape` is null on juliet rows (the 162 temporary `rectangle` labels were cleared on 2026-10-28, backup `runs/balcony_clf/labels.jsonl.bak_before_juliet_floor`). `label_ui.py` disables the floor row for juliet and `queue_stems` does not ask for a floor (`floor_required`). Training ignores a null floor.
+- 2026-10-28 structure head: `RailingClassifier.structure_head` (projecting / juliet / rooftop; samples are 7-tuples, `structure_target`). `train.py --extend-split --out checkpoints/railing_structure.pt` (all heads, 20 epochs; log `runs/balcony_clf/train_structure.log`). `--extend-split` keeps old folds by stem and splits only new rows, stratified with structure (old file `split.before_extend.json`); now train 830 / val 106 / test 105, structure train 72/130/3, val 9/16/2, test 9/16/1. Internal test fold (`evaluate.py --split test --include-synth`), railing_best -> railing_structure: kind 0.866 -> 0.856, material 0.859 -> 0.906, floor 0.941 -> 0.918, enclosure 0.390 -> 1.000, skin 0.875 -> 0.875; structure 0.808 (n=26: projecting 8/9, juliet 13/16, rooftop 0/1). Rooftop is not learned (3 train crops). `railing_best.pt` is unchanged and is still the pipeline default. `test_train_init.test_railing_best_has_no_skin_head` was already failing (railing_best has had a skin head since Oct 19).
+- 2026-10-29 rooftop removed from the structure vocabulary (user): `LABEL_STRUCTURES = ("projecting", "juliet")`. Rooftop is decided from the facade (no window above the balcony, see `no_window_above` in `balcony_pipeline/filter.py`), not by the classifier. The 6 rooftop rows in `labels.jsonl` were relabeled projecting (backup `labels.jsonl.bak_before_drop_rooftop`); the F key is gone from the label UIs. The 3-class model is kept as `checkpoints/railing_structure_rooftop.pt` (log `train_structure_rooftop.log`). `checkpoints/railing_structure.pt` is now 2-class, same folds (structure train 75/130, val 11/16, test 10/16). Internal test: kind 0.907, material 0.906, floor 0.953, enclosure 0.990, skin 0.875, structure 0.962 (25/26). On cmp_x XML crops (`crops_ext_xml`, 737, null structure = projecting): kind macro F1 0.482, material 0.884, floor 0.586, structure acc 0.783 / macro F1 0.737 (juliet precision 0.532). Provisional on pipeline crops (`crops_pipeline_ext`, 512 prefilled, not reviewed): kind 0.548, material 0.853, floor 0.680, structure acc 0.805 / macro F1 0.654. Scripts: scratchpad `eval_ext_xml.py`, `eval_pipeline_prefill.py` (not in the repo).
+- `balcony_train/export_train_pipeline_crops.py`: pipeline boxes (same as `export_pipeline_crops.py`) on 378 `data/base_jpg` photos, cache `runs/batch/_rows/base_jpg_sam3_stage_boxes.json`. Old cmp_b crops (any folder under `crops/`, `_Archive` included) are found in their photo by template match (921/923; the two misses are `cmp_b0004_type_00_unit_001/002`). 997 boxes: new 255 (70 photos), check 5, duplicate 737. Duplicates by best match: `_Archive` 435, `open_work` 242, `solid` 37, `surface_panel` 23. The 255 new crops were copied to `crops/unlabeled/<stem>_pbal_<NNN>.png`. The 5 checks were not (IoU 0.31–0.43, partial railing overlaps); see `runs/balcony_clf/crops_pipeline_train/dup_board.jpg` and pass `--commit --accept <names>` to add them.
+- Only `unlabeled/` and the kind folders are training data; `_Archive` (448 open cmp_b crops) is not. The active open cmp_b set is about 380 crops.
+- Label UI: `label_ui.py` has P/J/F structure (shown only for open; P is skin when enclosed). `--structure-pass` queues open `cmp_b*` crops without structure. `label_pipeline_crops_ui.py --train [--structure-pass]` is the same on the training crops, with the photo context from `crops_pipeline_train/context/` (new and old crops). `xml_label_ui.py` has F rooftop.
+- Next: label, check the rooftop count, then add the structure head (`--heads-only structure`, new checkpoint, keep `railing_best.pt`).
+
+## Open-balcony attributes on pipeline crops (test set, in progress)
+
+The earlier attribute score used crops cut from the CMP segmentation (`crops_ext_xml`). That isolates the classifier, but the pipeline never sees those crops. This test labels the crops the pipeline actually cuts.
+
+- `balcony_train/export_pipeline_crops.py`: pipeline boxes (SAM3 `balcony` ≥ 0.45, mask clamp, 16 px, `filter_balcony_boxes`), `photo.crop(box)` with no margin, as `run_balcony.py` feeds the classifier. All 145 photos of `data/extended_selected`, the 22 wrong-segmentation photos included, because hand labels do not depend on the segmentation.
+  - Cache: `runs/batch/_rows/extended_selected_sam3_stage_boxes_145.json`. It is the 123-photo cache plus SAM3 on the other 22. Re-filtering the cached `sized` boxes with the current `filter.py` matched the cached boxes on all 123 photos.
+  - Output in `runs/balcony_clf/crops_pipeline_ext/`: 710 crops in `unlabeled/` (612 on the 123 photos), `context/` (photo with the box drawn), `manifest.jsonl` (box and `filter.py` sha256).
+  - `prefill.jsonl`: 512 crops matched by IoU ≥ 0.3 to an earlier `crops_ext_xml` label (median IoU 0.52). These are starting values from human labels, never model output.
+- Labeling: `balcony_train/label_pipeline_crops_ui.py` (no flag: this test set). Its docstring holds the rules:
+  - Label the real balcony in the red box, not only what the crop shows.
+  - `X` = not a balcony, stored in `not_balcony.jsonl`. These are left out of attribute accuracy and counted separately.
+  - Every crop is reviewed. A crop counts as reviewed once it is saved to `labels.jsonl` or marked X.
+- Not started on 2026-10-29: no `labels.jsonl` yet, and the scorer `eval_pipeline_crops.py` is not written.
+- Scoring plan:
+  - Use the frozen `checkpoints/railing_best.pt` (record its sha256) and `predict_full` per crop.
+  - Report kind, material (open_work), floor (triangle counts as rectangle) and the `not_balcony` count, for 145 photos and the 123-photo subset.
+  - Report how many prefilled labels were changed in review.
+  - Score once, after every crop is reviewed.
+
+## Paper evaluation runs on the 61-photo dev set (2026-10-24)
+
+`balcony_train/paper_eval.py`, `paper_edit_demo.py`, `paper_figures.py`. Results are in `runs/paper_eval/results/quantitative.md` and `runs/paper_eval/figures/`. All numbers are dev (the old 61-photo set), not test.
+
+- Data:
+  - Balcony track and renders for all 61 photos: `runs/paper_eval/<stem>/`.
+  - Window-track ablations from saved SAM3 detections: control / nosym / boxonly in `runs/paper_eval_abl/`. control equals `runs/batch` on 60/61.
+- Pooled results (IoU ≥ 0.5 unless noted):
+
+  | Item | Precision | Recall | F1 |
+  |---|---:|---:|---:|
+  | Windows, DSL units | 0.792 | 0.496 | 0.610 |
+  | Windows, compiled 3D projected back onto the photo | 0.595 | 0.349 | 0.440 |
+  | Grid cells with an opening | 0.887 | 0.899 | 0.893 |
+  | Enclosure cells | 0.898 | 0.708 | 0.792 |
+
+  - Floor count exact 32/61, bay count exact 20/61.
+  - The compiled drop comes from a few photos where the grid breaks: `0054` has two buildings; `0128`, `0171` and `0011` have only 2–8 SAM3 windows.
+  - Symmetry repair and box-only clustering do not change geometric scores. They only change the type counts: 321 (control) / 335 (no symmetry) / 182 (box only).
+- Editing demo on `cmp_x0005`:
+
+  | Edit | DSL fields changed | Instances changed |
+  |---|---:|---:|
+  | Window type to arched | 3 | 10 |
+  | Railings to solid | 6 | 14 |
+  | Enclosure to punched, rectangle | 3 | 12 |
+- Fixed during the runs:
+  - `merge_dsl.py`: door partner ids such as `door_0` crashed `int()`.
+  - `facade_spec.py`: `columns_xy` was indexed by bay id instead of column.
+  - Recompiling all 183 outputs changed nothing else.
+
+## Threshold search on cmp_b, scored on dev (2026-10-21)
+
+`balcony_train/threshold_f1_search.py`, output in `runs/cell_clf/threshold_f1/`. Nine ways of choosing the cell thresholds were compared on cmp_b out-of-fold probabilities with nested CV: grids over t × gate, a coordinate search over all ten thresholds, relative t, a joint score, and a gmax × cmax gate.
+
+- None beat the hand-set t = 0.30 / gate = 0.10 on dev pooled F1 (0.792). A sweep on dev itself peaks at 0.795, so thresholds have almost no headroom.
+- Gate 0.10 sits in a gap of the dev set: none photos reach 0.09, enclosure photos start at 0.11. Train out-of-fold and dev gate distributions differ, so a gate chosen on cmp_b does not transfer.
+- Of the 40 dev FN, 23 are on four photos the gate blanks (`0028`, `0074`, `0081`, `0121`). Most of the rest have p_cell < 0.3 on labeled cells. The next gain has to come from the models or more labels, not from thresholds.
+
 ## Open items
 
 - Pipeline default is four cell rules + gate ≥ 0.10: 47/61 total, enclosure exact 16/26, detect 21/26, none 31/35. False positives left: `0073`, `0120`, `0173`, `0180`. The gate blanks `0074`, `0081`, and `0121`. `0006` is still short the gallery floor. Rule 4's extra cells on `0121`, `0073`, and `0134` are not in the labels. Switch back with `--enclosed-method sam3`.
@@ -372,3 +521,5 @@ Joint: rectangle × punched_window 54, circle × punched_window 16, rectangle ×
 - Rerun `cell_clf_search.py` on the swapped eval set if the search table is needed again.
 - Add labels for photos with enclosures; avoid buildings that appear in the eval set.
 - Open-balcony types still default to DINOv2 appearance. `--cluster-mode box` was compared visually on 15 of the first 20 `data/baseForBatch` photos (`runs/balcony_cluster_compare/`). It was not scored against railing labels. Same-size balconies with different railings collapse to one type.
+- 22 CMP balcony maps are wrong and are left out of the open-balcony box score: `0002`, `0003`, `0006`, `0008`, `0009`, `0011`, `0012`, `0014`, `0016`, `0021`, `0036`, `0043`, `0044`, `0047`, `0067`, `0107`, `0116`, `0127`, `0162`, `0173`, `0176`, `0227`. The labels were not redrawn. `data/baseForBatch` no longer contains the six of the first ten that used to be there.
+- The open-balcony score uses `filter.py` with its window rules disabled (uncommitted). If those rules come back, rerun `score_sam3_pipeline_stages.py`; the filter step needs the window grid, which the script does not load.

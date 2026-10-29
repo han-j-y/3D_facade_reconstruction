@@ -59,7 +59,7 @@ from balcony_train.enclosed_symmetry import SYM_GATE  # noqa: E402
 from balcony_train.evaluate_enclosed_grid import format_report, render_compare, summarize  # noqa: E402
 
 DEFAULT_OUT = ROOT / "runs" / "cell_clf" / "compare_clf_rules"
-DEFAULT_GATE_OUT = ROOT / "runs" / "cell_clf" / "compare_clf_rules_gate"
+DEFAULT_GATE_OUT = ROOT / "runs" / "cell_clf" / "compare_clf_rules_gate_ext_relabel"
 MIN_L = 0.015
 MIN_UPPER = 0.55
 MIN_COVER = 0.40

@@ -15,10 +15,12 @@ from balcony_train.labels import (
     FLOOR_IGNORE_INDEX,
     FLOOR_SHAPES,
     KIND_IGNORE_INDEX,
+    LABEL_STRUCTURES,
     LEGACY_FLOOR_SHAPES,
     MATERIAL_IGNORE_INDEX,
     MATERIALS,
     SKIN_IGNORE_INDEX,
+    STRUCTURE_IGNORE_INDEX,
     MultitaskSample,
     class_counts,
     enclosure_counts,
@@ -29,6 +31,8 @@ from balcony_train.labels import (
     sample_targets,
     skin_target,
     strat_key,
+    structure_counts,
+    structure_target,
 )
 from balcony_train.paths import DEFAULT_LABELS_JSONL
 
@@ -76,6 +80,9 @@ def stratified_split_indices(
         if len(row) >= 3:
             kind_idx, mat_idx, _floor_idx = sample_targets(row)
             key = strat_key(kind_idx, mat_idx, enclosure_target(row))
+            # Structure labels are few (juliet); give them their own strata.
+            if structure_target(row) >= 0:
+                key = f"{key}/{LABEL_STRUCTURES[structure_target(row)]}"
         else:
             key = CLASSES[int(row[1])]
         by_key.setdefault(key, []).append(idx)
@@ -123,6 +130,7 @@ def _row_payload(
     base: Path,
     enc_idx: int = ENCLOSURE_IGNORE_INDEX,
     skin_idx: int = SKIN_IGNORE_INDEX,
+    structure_idx: int = STRUCTURE_IGNORE_INDEX,
 ) -> dict[str, Any]:
     kind = CLASSES[int(kind_idx)] if int(kind_idx) >= 0 else None
     material = None
@@ -137,6 +145,7 @@ def _row_payload(
         "floor_shape": floor,
         "enclosure": ENCLOSURES[int(enc_idx)] if int(enc_idx) >= 0 else None,
         "skin": ENCLOSURE_SKINS[int(skin_idx)] if int(skin_idx) >= 0 else None,
+        "structure": LABEL_STRUCTURES[int(structure_idx)] if int(structure_idx) >= 0 else None,
     }
 
 
@@ -163,6 +172,7 @@ def build_split_record(
                 floor_idx,
                 enclosure_target(row),
                 skin_target(row),
+                structure_target(row),
             )
         )
 
@@ -170,8 +180,10 @@ def build_split_record(
     for name in ("train", "val", "test"):
         rows: list[dict[str, Any]] = []
         for idx in indices[name]:
-            path, kind_idx, mat_idx, floor_idx, enc_idx, skin_idx = normed[idx]
-            rows.append(_row_payload(path, kind_idx, mat_idx, floor_idx, base, enc_idx, skin_idx))
+            path, kind_idx, mat_idx, floor_idx, enc_idx, skin_idx, structure_idx = normed[idx]
+            rows.append(
+                _row_payload(path, kind_idx, mat_idx, floor_idx, base, enc_idx, skin_idx, structure_idx)
+            )
         splits[name] = rows
     return {
         "version": 2,
@@ -184,6 +196,11 @@ def build_split_record(
         "material_counts": material_counts(normed),
         "floor_counts": floor_counts(normed),
         "enclosure_counts": enclosure_counts(normed),
+        "structure_counts": structure_counts(normed),
+        "split_structure_counts": {
+            name: structure_counts([normed[i] for i in indices[name]])
+            for name in ("train", "val", "test")
+        },
         "split_enclosure_counts": {
             name: enclosure_counts([normed[i] for i in indices[name]])
             for name in ("train", "val", "test")
@@ -243,7 +260,13 @@ def samples_from_split_record(
         skin_idx = (
             ENCLOSURE_SKINS.index(str(skin_raw)) if skin_raw in ENCLOSURE_SKINS else SKIN_IGNORE_INDEX
         )
-        out.append((path, kind_idx, mat_idx, floor_idx, enc_idx, skin_idx))
+        structure_raw = row.get("structure")
+        structure_idx = (
+            LABEL_STRUCTURES.index(str(structure_raw))
+            if structure_raw in LABEL_STRUCTURES
+            else STRUCTURE_IGNORE_INDEX
+        )
+        out.append((path, kind_idx, mat_idx, floor_idx, enc_idx, skin_idx, structure_idx))
     return out
 
 
@@ -257,14 +280,45 @@ def make_or_load_split(
     val_frac: float = DEFAULT_VAL_FRAC,
     test_frac: float = DEFAULT_TEST_FRAC,
     refresh: bool = False,
+    extend: bool = False,
 ) -> tuple[dict[str, Any], list[MultitaskSample]]:
-    """Create stratified multitask split (or load existing)."""
+    """Create stratified multitask split (or load existing).
+
+    ``extend`` keeps every saved row in its fold (matched by file stem, so a
+    crop that moved folders keeps its fold) and splits only the new rows. The
+    old file is kept as ``<name>.before_extend.json``.
+    """
     data_dir = Path(data_dir)
     split_path = Path(split_path)
     jsonl = Path(labels_jsonl) if labels_jsonl else DEFAULT_LABELS_JSONL
     samples = iter_multitask_samples(data_dir, jsonl)
     if not samples:
         raise ValueError(f"no labeled images under {data_dir}")
+
+    if split_path.is_file() and extend and not refresh:
+        old = load_split(split_path)
+        indices = extend_split_indices(
+            old,
+            samples,
+            train_frac=train_frac,
+            val_frac=val_frac,
+            test_frac=test_frac,
+            seed=seed,
+        )
+        record = build_split_record(
+            samples,
+            indices,
+            data_dir=data_dir,
+            seed=seed,
+            train_frac=train_frac,
+            val_frac=val_frac,
+            test_frac=test_frac,
+        )
+        backup = split_path.with_name(f"{split_path.stem}.before_extend.json")
+        if not backup.exists():
+            backup.write_text(split_path.read_text(encoding="utf-8"), encoding="utf-8")
+        save_split(record, split_path)
+        return record, samples
 
     if split_path.is_file() and not refresh:
         record = load_split(split_path)
@@ -289,6 +343,41 @@ def make_or_load_split(
     )
     save_split(record, split_path)
     return record, samples
+
+
+def extend_split_indices(
+    record: dict[str, Any],
+    samples: list[MultitaskSample],
+    *,
+    train_frac: float = DEFAULT_TRAIN_FRAC,
+    val_frac: float = DEFAULT_VAL_FRAC,
+    test_frac: float = DEFAULT_TEST_FRAC,
+    seed: int = 42,
+) -> dict[SplitName, list[int]]:
+    """Saved rows keep their fold by stem; rows not in the record are split stratified."""
+    fold_of: dict[str, SplitName] = {}
+    for name in ("train", "val", "test"):
+        for row in record["splits"][name]:
+            fold_of[Path(row["path"]).stem] = name
+    out: dict[SplitName, list[int]] = {"train": [], "val": [], "test": []}
+    new_idx: list[int] = []
+    for i, row in enumerate(samples):
+        name = fold_of.get(Path(row[0]).stem)
+        if name is None:
+            new_idx.append(i)
+        else:
+            out[name].append(i)
+    if new_idx:
+        sub = stratified_split_indices(
+            [samples[i] for i in new_idx],
+            train_frac=train_frac,
+            val_frac=val_frac,
+            test_frac=test_frac,
+            seed=seed,
+        )
+        for name in ("train", "val", "test"):
+            out[name].extend(new_idx[j] for j in sub[name])
+    return out
 
 
 def indices_from_record(

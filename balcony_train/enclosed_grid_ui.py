@@ -4,9 +4,10 @@ Selected cells are the ground truth. Next marks the open photo done:
 painted cells are enclosed, and no cells means no enclosure. Skip leaves
 the photo unlabeled. Finish closes the window.
 
-The default queue is the held-out eval set: one facade per building in
-``labels_ext_eval_balanced.jsonl`` (about 100 balcony crops, fewer facades).
-A photo with no window grid yet is skipped until ``facade_dsl.json`` exists.
+The default queue is the 133-photo test set: labeled facades in
+``labels_ext_all.jsonl`` whose photo is in ``data/extended_selected``.
+Grid-failure rows are left out. A photo with no window grid yet is skipped
+until ``facade_dsl.json`` exists.
 
 Example::
 
@@ -49,6 +50,7 @@ from balcony_train.enclosed_grid_store import (  # noqa: E402
     find_photo,
     list_grid_stems,
     load_grid,
+    load_labels,
     load_records,
     record_for_save,
     write_records,
@@ -420,7 +422,7 @@ def parse_args() -> argparse.Namespace:
         "--crop-labels",
         type=Path,
         default=DEFAULT_EVAL_CROP_LABELS,
-        help="Balcony-crop labels. Facade id is the filename before _bal_.",
+        help="Balcony-crop labels, or the cell-label file. A cell-label file keeps photos in --in-dir that are not grid failures.",
     )
     ap.add_argument(
         "--all-photos",
@@ -440,7 +442,14 @@ def main() -> None:
     args = parse_args()
     stems = None
     if not args.all_photos:
-        stems = facade_stems_from_crop_labels(args.crop_labels)
+        if Path(args.crop_labels).resolve() == Path(args.labels).resolve():
+            stems = [
+                stem
+                for stem in sorted(load_labels(args.labels))
+                if find_photo(args.in_dir, stem) is not None
+            ]
+        else:
+            stems = facade_stems_from_crop_labels(args.crop_labels)
     ready, missing = list_grid_stems(args.in_dir, args.dsl_dir, stems=stems)
     plan = (
         args.plan

@@ -9,8 +9,9 @@ Pipeline (defaults)
   4. Cluster  — ``--cluster-mode gate``: z-scored box geometry (GMM), then the symmetry axis
                 (``scripts/symmetry_axis_ghost_continuous.py``, ``open balcony`` detections break ties), then
                 pane-tree structure splits inside each box group that keep mirror pairs together
-  5. Doors    — window+door+shop SAM3 fine-tune ``door`` >= 0.45; side facades (edge columns off the main
-                floors) and the doors beside them dropped
+  5. Doors    — ``facebook/sam3`` prompt ``door`` >= 0.45; side facades (edge columns off the main
+                floors) and the doors beside them dropped; then (gate) local symmetries let windows join a
+                mirror partner's type (``facade_recovery/local_sym.py``)
   6. Assetize — per-type crops; medoid exemplar
   7. Structure — predict window structure IR per unit; majority-vote within type
   8. DSL       — per-floor bays (``facade_recovery/floor_bays.py``) + type library (``facade_dsl.json``)
@@ -38,9 +39,12 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import pathlib
 import shutil
 import sys
+import types
 from collections import defaultdict
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -49,9 +53,11 @@ import torch
 from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parent
-EXP = ROOT.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+if sys.platform == "win32":
+    # The bundled scratch_bal_b checkpoint was saved on Linux and contains PosixPath.
+    pathlib.PosixPath = pathlib.WindowsPath
 
 from facade_recovery.box_cluster import (  # noqa: E402
     cluster_box_geometry_pipeline,
@@ -82,6 +88,7 @@ from facade_recovery.doors import (  # noqa: E402
     filter_door_boxes,
 )
 from facade_recovery.floor_bays import apply_floor_bays, drop_side_facades  # noqa: E402
+from facade_recovery.local_sym import OCCLUDER_PROMPTS, local_sym_vote  # noqa: E402
 from facade_recovery.sym_gate import gate_cluster, mirror_partners, refine_axis, two_tier  # noqa: E402
 from facade_recovery.paths import (  # noqa: E402
     default_structure_ckpt,
@@ -152,7 +159,7 @@ def parse_args() -> argparse.Namespace:
         "--train-up",
         type=Path,
         default=None,
-        help="directory of {id}.png façades (default: ../data/facades/train_up)",
+        help="directory of {id}.png façades (default: data/facades/train_up)",
     )
     ap.add_argument("--out-dir", type=Path, default=None)
     ap.add_argument("--from-index", type=Path, default=None, help="reuse SAM index.json")
@@ -229,9 +236,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--sam-model",
         default="facebook/sam3",
-        help="SAM3 model (HF id or directory) for window detection; default: the released model. The CMP window "
-        "fine-tune (../sam3_ft/hf/cmp_windows_ft_stable_ema19) detects stone ornaments as windows. "
-        "Doors: --door-sam-model; --exclude-prompts keep facebook/sam3",
+        help="SAM3 model (Hugging Face ID or directory) for window detection; default: facebook/sam3. "
+        "Doors: --door-sam-model; --exclude-prompts also use facebook/sam3",
     )
     ap.add_argument(
         "--min-side",
@@ -304,6 +310,19 @@ def parse_args() -> argparse.Namespace:
         help="drop window columns at the image edges that sit off the main facade's floors (neighbouring "
         "buildings, side walls), and doors outside the kept windows",
     )
+    ap.add_argument(
+        "--local-sym",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="gate: after the side filter, let windows join a mirror partner's type under local symmetries "
+        "(facade_recovery/local_sym.py; joins only, occluder-aware)",
+    )
+    ap.add_argument(
+        "--local-sym-occluders",
+        default=",".join(OCCLUDER_PROMPTS),
+        help="local symmetry: comma SAM3 prompts whose masks hide window sides ('' = border only)",
+    )
+    ap.add_argument("--local-sym-occluder-threshold", type=float, default=0.4)
     ap.add_argument(
         "--struct-split-thr",
         type=float,
@@ -387,14 +406,13 @@ def parse_args() -> argparse.Namespace:
         "--structure-adapter",
         type=Path,
         default=None,
-        help="real->synthetic feature adapter for a pane-tree --structure-ckpt "
-        "(e.g. ../window_ast_predictor/runs/tree_adapter_s3_noreallike/last.pt)",
+        help="optional real-to-synthetic feature adapter for a pane-tree --structure-ckpt",
     )
     ap.add_argument(
         "--tree-root",
         type=Path,
-        default=EXP / "window_ast_predictor",
-        help="window_ast_predictor checkout providing the pane-tree model code",
+        default=ROOT,
+        help=argparse.SUPPRESS,
     )
     ap.add_argument("--skip-structure", action="store_true")
     ap.add_argument(
@@ -404,13 +422,10 @@ def parse_args() -> argparse.Namespace:
         help="SAM-detect ground doors and add to façade DSL (default on)",
     )
     ap.add_argument("--door-prompt", type=str, default="door")
-    door_ft = EXP / "sam3_ft" / "hf" / "cmp_wds_ft_winit_ema20"
     ap.add_argument(
         "--door-sam-model",
-        default=str(door_ft) if door_ft.is_dir() else "facebook/sam3",
-        help="SAM3 model (HF id or directory) for door detection. Default is the window+door+shop CMP fine-tune "
-        "(door AP 0.56 on the CMP test split vs 0.30 for facebook/sam3) when that directory exists, "
-        "otherwise facebook/sam3",
+        default="facebook/sam3",
+        help="SAM3 model (Hugging Face ID or directory) for door detection; default: facebook/sam3",
     )
     ap.add_argument("--door-threshold", type=float, default=0.45)
     ap.add_argument(
@@ -558,6 +573,7 @@ def detect_windows(
     model_id: str = "facebook/sam3",
     sam=None,
     processor=None,
+    det_boxes_out: list[list[int]] | None = None,
 ) -> list[dict[str, Any]]:
     from transformers import Sam3Model, Sam3Processor
 
@@ -602,6 +618,8 @@ def detect_windows(
     n_clamped = 0
     for i, (box, sc) in enumerate(zip(boxes, scores)):
         det = [float(v) for v in box]
+        if det_boxes_out is not None:
+            det_boxes_out.append([int(v) for v in det])
         x0, y0, x1, y1 = det
         used_mask = False
         fill = None
@@ -1306,37 +1324,81 @@ def _binarize_panes(panes: dict[str, Any]) -> dict[str, Any]:
 
 
 class TreeStructurePredictor:
-    """Pane-tree model (+ optional feature adapter) from ``window_ast_predictor``.
+    """Bundled pane-tree model with an optional feature adapter.
 
     Crops are letterboxed onto the render background as in adapter training. Pane cut
     positions from the line-profile head are kept as ``at`` in the IR."""
 
     def __init__(self, ckpt_path: Path, device: torch.device, *, adapter_path: Path | None = None,
                  tree_root: Path, place_scale: float = 0.68) -> None:
+        from window_ast.dataset import make_eval_transform
+        from window_ast.pane_tree import NODE_CLASSES
+        from window_ast.pane_tree_model import PaneTreeModel
         from window_ast.structure import ir_to_structure_tokens, structure_tokens_to_ir
 
         self._tokens_of = ir_to_structure_tokens
         self._parse = structure_tokens_to_ir
-        self.pkgs = _ForeignPackages(tree_root)
+        self.pkgs = nullcontext()
         self.device = device
         self.place_scale = place_scale
-        with self.pkgs:
-            from scripts.generate_struct_synth import _child_id, canonical_panes
-            from scripts.train_pane_tree import load_tree_model
-            from scripts.train_tree_adapter import FeatureAdapter, attach_adapter, place
-            from window_ast.dataset import make_eval_transform
-            from window_ast.pane_tree import NODE_CLASSES
+        self._classes = NODE_CLASSES
+        self._child_id = lambda parent, i: ("" if parent == "root" else parent) + "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[i]
+        self._canonical = lambda rules, region: {"region": region, "root": "root", "rules": rules}
 
-            self._child_id, self._canonical, self._classes = _child_id, canonical_panes, NODE_CLASSES
-            self.place = place
-            ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-            self.model = load_tree_model(ckpt_path, device)
-            if adapter_path is not None:
-                adapter = FeatureAdapter(self.model.encoder.feat_dim).to(device)
-                adapter.load_state_dict(torch.load(adapter_path, map_location=device, weights_only=False)["adapter"])
-                attach_adapter(self.model, adapter.eval())
-            self.model.eval()
-            self.tfm = make_eval_transform(int(ck["args"].get("image_size", 336)))
+        def place(img: Image.Image, glass: list[float], scale: float) -> tuple[Image.Image, list[float]]:
+            canvas_size = 512
+            width, height = img.size
+            factor = scale * canvas_size / max(width, height)
+            new_width, new_height = max(1, round(width * factor)), max(1, round(height * factor))
+            x0, y0 = (canvas_size - new_width) / 2, (canvas_size - new_height) / 2
+            canvas = Image.new("RGB", (canvas_size, canvas_size), (186, 186, 186))
+            canvas.paste(img.resize((new_width, new_height), Image.BICUBIC), (round(x0), round(y0)))
+            mapped = [
+                (x0 + glass[0] * new_width) / canvas_size,
+                (y0 + glass[1] * new_height) / canvas_size,
+                (x0 + glass[2] * new_width) / canvas_size,
+                (y0 + glass[3] * new_height) / canvas_size,
+            ]
+            return canvas, mapped
+
+        self.place = place
+        ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        model_args = ck["args"]
+        self.model = PaneTreeModel(
+            ck["prefixes"],
+            d_model=model_args["d_model"],
+            roi=model_args["roi"],
+            pretrained=False,
+            global_feat=model_args.get("global_feat", "mean"),
+        ).to(device)
+        self.model.load_state_dict(ck["model"])
+        if adapter_path is not None:
+            channels = self.model.encoder.feat_dim
+            adapter = torch.nn.Sequential(
+                torch.nn.Conv2d(channels, 256, 1),
+                torch.nn.GELU(),
+                torch.nn.Conv2d(256, 256, 3, padding=1),
+                torch.nn.GELU(),
+                torch.nn.Conv2d(256, 256, 3, padding=1),
+                torch.nn.GELU(),
+                torch.nn.Conv2d(256, channels, 1),
+            ).to(device)
+            adapter_state = torch.load(adapter_path, map_location=device, weights_only=False)["adapter"]
+            adapter.load_state_dict({key.removeprefix("net."): value for key, value in adapter_state.items()})
+
+            def encode_with_adapter(model, images):
+                spatial = model.encoder.forward_spatial(images)
+                spatial = spatial + adapter(spatial)
+                global_features = model.glob(model._global_input(spatial, getattr(model.encoder, "last_cls", None)))
+                output = {
+                    "prefix": model.prefix_head(global_features),
+                    "root_box": torch.sigmoid(model.root_box_head(global_features)),
+                }
+                return model.reduce(spatial), global_features, output
+
+            self.model.encode = types.MethodType(encode_with_adapter, self.model)
+        self.model.eval()
+        self.tfm = make_eval_transform(int(ck["args"].get("image_size", 336)))
         print(f"structure: pane tree {ckpt_path}  adapter={adapter_path}")
 
     def _panes(self, region: str, nodes: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1358,16 +1420,14 @@ class TreeStructurePredictor:
                     build(ci, cid)
 
         build(0, "root")
-        with self.pkgs:
-            return self._canonical(rules, region)
+        return self._canonical(rules, region)
 
     def _input(self, crop_path: Path, glass: list[float] | None) -> torch.Tensor:
         canvas, _ = self.place(Image.open(crop_path).convert("RGB"), glass or [0, 0, 1, 1], self.place_scale)
         return self.tfm(canvas)
 
     def _result(self, toks: list[str], key: str, tree: list[dict[str, Any]]) -> dict[str, Any]:
-        with self.pkgs:
-            from window_ast.pane_tree import parse_prefix_key
+        from window_ast.pane_tree import parse_prefix_key
 
         prefix, region = parse_prefix_key(key)
         try:
@@ -1381,9 +1441,10 @@ class TreeStructurePredictor:
 
     @torch.no_grad()
     def predict(self, crop_path: Path, glass: list[float] | None = None) -> dict[str, Any]:
-        with self.pkgs:
-            toks, keys, trees = self.model.predict(self._input(crop_path, glass)[None].to(self.device),
-                                                   return_trees=True)
+        toks, keys, trees = self.model.predict(
+            self._input(crop_path, glass)[None].to(self.device),
+            return_trees=True,
+        )
         return self._result(toks[0], keys[0], trees[0])
 
     @torch.no_grad()
@@ -1394,8 +1455,7 @@ class TreeStructurePredictor:
         for i in range(0, len(crops), batch):
             x = torch.stack([self.tfm(self.place(c.convert("RGB"), [0, 0, 1, 1], self.place_scale)[0])
                              for c in crops[i:i + batch]]).to(self.device)
-            with self.pkgs:
-                out.append(self.model.describe(x)[feature].float().cpu().numpy())
+            out.append(self.model.describe(x)[feature].float().cpu().numpy())
         return np.concatenate(out) if out else np.zeros((0, 1), dtype=np.float32)
 
     @torch.no_grad()
@@ -1404,8 +1464,7 @@ class TreeStructurePredictor:
         """One structure for all crops: logits averaged over members at every tree node."""
         x = torch.stack([self._input(p, g) for p, g in zip(crop_paths, glasses)]).to(self.device)
         w = torch.tensor(weights, dtype=torch.float32) if weights is not None else None
-        with self.pkgs:
-            toks, key, tree = self.model.predict_joint(x, weights=w)
+        toks, key, tree = self.model.predict_joint(x, weights=w)
         return self._result(toks, key, tree)
 
 
@@ -1838,27 +1897,98 @@ def drop_units(clustered: dict[str, Any], keep: list[int]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _configure_blender(args: argparse.Namespace) -> None:
-    if not args.blender_render:
+def main() -> None:
+    args = parse_args()
+    device = torch.device(args.device)
+    if args.train_up is None:
+        args.train_up = default_train_up()
+    if args.structure_ckpt is None:
+        args.structure_ckpt = default_structure_ckpt()
+
+    if args.blender_render:
+        blender_bin = resolve_blender(args.blender)
+        compiler = resolve_compiler_root(args.compiler_root)
+        if blender_bin is None:
+            print(
+                "warn: --blender-render requested but Blender not found; "
+                "continuing without render. Set --blender or $BLENDER."
+            )
+            args.blender_render = False
+        elif compiler is None:
+            print(
+                "warn: --blender-render requested but window compiler not found; "
+                "set FACADE_COMPILER_ROOT or --compiler-root to a package with main.py. "
+                "Continuing without render."
+            )
+            args.blender_render = False
+        else:
+            args.blender = blender_bin
+            args.compiler_root = compiler
+
+    if args.image is not None and args.image_dir is not None:
+        raise SystemExit("use only one of --image or --image-dir")
+    if args.image_dir is not None and args.from_index is not None:
+        raise SystemExit("--image-dir cannot be used with --from-index")
+    if args.image_dir is not None and args.facade_id is not None:
+        raise SystemExit("--image-dir cannot be used with --facade-id")
+
+    if args.image_dir is not None:
+        image_dir = Path(args.image_dir)
+        if not image_dir.is_dir():
+            raise SystemExit(f"not a directory: {image_dir}")
+        images = iter_images_in_dir(image_dir)
+        if not images:
+            raise SystemExit(f"no images in {image_dir}")
+        batch_root = Path(args.out_dir) if args.out_dir else ROOT / "runs" / "batch"
+        batch_root.mkdir(parents=True, exist_ok=True)
+        print(f"=== batch: {len(images)} images → {batch_root}/{{stem}}/ ===")
+        failures: list[tuple[str, str]] = []
+        for i, img_path in enumerate(images, start=1):
+            stem = img_path.stem
+            one_dir = batch_root / stem
+            print(f"\n=== [{i}/{len(images)}] {img_path.name} → {one_dir} ===")
+            try:
+                run_one(
+                    args,
+                    device=device,
+                    facade_path=img_path,
+                    facade_id=stem,
+                    out_dir=one_dir,
+                )
+                copy_to_batch_summary(batch_root, stem, one_dir / "blender")
+            except SystemExit as exc:
+                msg = str(exc) or "failed"
+                failures.append((img_path.name, msg))
+                print(f"skip {img_path.name}: {msg}")
+        ok = len(images) - len(failures)
+        print(f"\n=== batch done: {ok}/{len(images)} ok ===")
+        if failures:
+            print("failures:")
+            for name, err in failures:
+                print(f"  {name}: {err}")
+            raise SystemExit(1)
         return
-    blender_bin = resolve_blender(args.blender)
-    compiler = resolve_compiler_root(args.compiler_root)
-    if blender_bin is None:
-        print(
-            "warn: --blender-render requested but Blender not found; "
-            "continuing without render. Set --blender or $BLENDER."
-        )
-        args.blender_render = False
-    elif compiler is None:
-        print(
-            "warn: --blender-render requested but window compiler not found; "
-            "set FACADE_COMPILER_ROOT or --compiler-root to a package with main.py. "
-            "Continuing without render."
-        )
-        args.blender_render = False
+
+    if args.image is not None:
+        facade_path = Path(args.image)
+        facade_id = args.facade_id or facade_path.stem
+    elif args.facade_id is not None:
+        facade_id = args.facade_id
+        facade_path = args.train_up / f"{facade_id}.png"
+    elif args.from_index is not None:
+        facade_id = "unknown"
+        facade_path = None
     else:
-        args.blender = blender_bin
-        args.compiler_root = compiler
+        raise SystemExit("provide --facade-id, --image, --image-dir, or --from-index")
+
+    out_dir = Path(args.out_dir) if args.out_dir else ROOT / "runs" / f"facade_e2e_{facade_id}"
+    run_one(
+        args,
+        device=device,
+        facade_path=facade_path,
+        facade_id=facade_id,
+        out_dir=out_dir,
+    )
 
 
 def run_one(
@@ -1983,7 +2113,7 @@ def run_one(
     )
 
     if len(raw_windows) < 2:
-        raise SystemExit(f"{facade_id}: need ≥2 windows")
+        raise SystemExit("need ≥2 windows")
 
     raw_boxes = [w["box_xyxy"] for w in raw_windows]
     for i, b in enumerate(raw_boxes):
@@ -2004,21 +2134,11 @@ def run_one(
     gate = args.cluster_mode == "gate"
     if args.cluster_mode in ("gate", "shape_then_struct", "struct"):
         kind = torch.load(args.structure_ckpt, map_location="cpu", weights_only=False).get("kind")
-        if kind != "pane_tree" and args.cluster_mode == "gate":
-            print(
-                "warn: --cluster-mode gate needs a pane-tree checkpoint "
-                f"({args.structure_ckpt}, kind={kind!r}). "
-                "Using shape_then_feat until "
-                "../window_ast_predictor/runs/scratch_bal_b/best.pt is present."
-            )
-            args.cluster_mode = "shape_then_feat"
-            gate = False
-        elif kind != "pane_tree":
+        if kind != "pane_tree":
             raise SystemExit(f"--cluster-mode {args.cluster_mode} needs a pane-tree --structure-ckpt")
-        else:
-            struct_predictor = TreeStructurePredictor(
-                args.structure_ckpt, device, adapter_path=args.structure_adapter, tree_root=args.tree_root
-            )
+        struct_predictor = TreeStructurePredictor(
+            args.structure_ckpt, device, adapter_path=args.structure_adapter, tree_root=args.tree_root
+        )
     clustered = cluster_units(
         facade,
         raw_boxes,
@@ -2139,6 +2259,28 @@ def run_one(
             kept_doors = inside
             print(f"side facades: dropped {len(side)} windows, {len(side_dropped) - len(side)} doors")
     clustered["side_dropped"] = side_dropped
+
+    local_sym_moves: list[list[int]] | None = None
+    if gate and args.local_sym:
+        prompts = [p.strip() for p in args.local_sym_occluders.split(",") if p.strip()]
+        occ_mask = detect_object_mask(
+            facade, prompts=prompts, threshold=args.local_sym_occluder_threshold, device=device
+        )
+        sym_feat = struct_predictor.describe(
+            [facade.crop(tuple(int(v) for v in b)) for b in merged_boxes], feature="heads"
+        )
+        voted, report = local_sym_vote(merged_boxes, labels, sym_feat, occ_mask, facade.size)
+        local_sym_moves = report["moves"]
+        (out_dir / "local_sym.json").write_text(
+            json.dumps({"before": labels.tolist(), "after": voted.tolist(), **report}, indent=1) + "\n",
+            encoding="utf-8",
+        )
+        labels = np.unique(voted, return_inverse=True)[1].astype(np.int32)
+        clustered["labels"] = labels
+        print(
+            f"local symmetry: {len(report['axes'])} axes, moved {len(local_sym_moves)} "
+            f"{[tuple(m) for m in local_sym_moves]} → {len(set(labels.tolist()))} types"
+        )
 
     medoids = pick_medoids(feats, labels)
 
@@ -2365,6 +2507,8 @@ def run_one(
     if axis_x is not None:
         dsl["meta"]["axis_x"] = round(axis_x, 1)
     dsl["meta"]["cluster_mode"] = clustered.get("cluster_mode")
+    if local_sym_moves is not None:
+        dsl["meta"]["local_sym_moves"] = local_sym_moves
     if side_dropped:
         dsl["meta"]["side_dropped"] = [[round(v, 1) for v in b] for b in side_dropped]
     if args.grid == "floor_bays":
@@ -2483,82 +2627,6 @@ def run_one(
         subprocess.run(cmd, check=True, env=env)
 
     print(f"wrote {out_dir}")
-
-
-def main() -> None:
-    args = parse_args()
-    device = torch.device(args.device)
-    if args.train_up is None:
-        args.train_up = default_train_up()
-    if args.structure_ckpt is None:
-        args.structure_ckpt = default_structure_ckpt()
-
-    _configure_blender(args)
-
-    if args.image is not None and args.image_dir is not None:
-        raise SystemExit("use only one of --image or --image-dir")
-    if args.image_dir is not None and args.from_index is not None:
-        raise SystemExit("--image-dir cannot be used with --from-index")
-    if args.image_dir is not None and args.facade_id is not None:
-        raise SystemExit("--image-dir cannot be used with --facade-id")
-
-    if args.image_dir is not None:
-        image_dir = Path(args.image_dir)
-        if not image_dir.is_dir():
-            raise SystemExit(f"not a directory: {image_dir}")
-        images = iter_images_in_dir(image_dir)
-        if not images:
-            raise SystemExit(f"no images in {image_dir}")
-        batch_root = Path(args.out_dir) if args.out_dir else ROOT / "runs" / "batch"
-        batch_root.mkdir(parents=True, exist_ok=True)
-        print(f"=== batch: {len(images)} images → {batch_root}/{{stem}}/ ===")
-        failures: list[tuple[str, str]] = []
-        for i, img_path in enumerate(images, start=1):
-            stem = img_path.stem
-            out_dir = batch_root / stem
-            print(f"\n=== [{i}/{len(images)}] {img_path.name} → {out_dir} ===")
-            try:
-                run_one(
-                    args,
-                    device=device,
-                    facade_path=img_path,
-                    facade_id=stem,
-                    out_dir=out_dir,
-                )
-                copy_to_batch_summary(batch_root, stem, out_dir / "blender")
-            except SystemExit as exc:
-                msg = str(exc) or "failed"
-                failures.append((img_path.name, msg))
-                print(f"skip {img_path.name}: {msg}")
-        ok = len(images) - len(failures)
-        print(f"\n=== batch done: {ok}/{len(images)} ok ===")
-        if failures:
-            print("failures:")
-            for name, err in failures:
-                print(f"  {name}: {err}")
-            raise SystemExit(1)
-        return
-
-    if args.image is not None:
-        facade_path = Path(args.image)
-        facade_id = args.facade_id or facade_path.stem
-    elif args.facade_id is not None:
-        facade_id = args.facade_id
-        facade_path = args.train_up / f"{facade_id}.png"
-    elif args.from_index is not None:
-        facade_id = "unknown"
-        facade_path = None
-    else:
-        raise SystemExit("provide --facade-id, --image, --image-dir, or --from-index")
-
-    out_dir = Path(args.out_dir) if args.out_dir else ROOT / "runs" / f"facade_e2e_{facade_id}"
-    run_one(
-        args,
-        device=device,
-        facade_path=facade_path,
-        facade_id=facade_id,
-        out_dir=out_dir,
-    )
 
 
 if __name__ == "__main__":

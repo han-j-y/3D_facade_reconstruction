@@ -37,10 +37,11 @@ for p in (ROOT, ROOT / "scripts", ROOT / "balcony_pipeline"):
     if str(p) not in sys.path:
         sys.path.insert(0, str(p))
 
-from balcony_train.enclosed_grid_store import DEFAULT_EVAL_PHOTO_DIR  # noqa: E402
 from render_facade import planned_windows, total_grid_size  # noqa: E402
 from snap import _bands_from_windows_dsl  # noqa: E402
 
+# CMP xml and label maps live next to these photos. The 133-photo test does not have them.
+CMP_PHOTO_DIR = ROOT / "runs" / "balcony_clf" / "crops_ext_eval" / "Before Crop"
 LABELS = ROOT / "runs" / "enclosed_grid" / "labels_eval.jsonl"
 BATCH = ROOT / "runs" / "batch"
 PAPER = ROOT / "runs" / "paper_eval"
@@ -65,7 +66,7 @@ def load_labels() -> dict[str, dict[str, Any]]:
 
 def xml_boxes(stem: str, size: tuple[int, int]) -> dict[int, list[Box]]:
     """CMP objects as pixel boxes, by label id."""
-    text = (DEFAULT_EVAL_PHOTO_DIR / f"{stem}.xml").read_bytes().decode("utf-8", "ignore")
+    text = (CMP_PHOTO_DIR / f"{stem}.xml").read_bytes().decode("utf-8", "ignore")
     w, h = size
     out: dict[int, list[Box]] = {}
     for obj in re.findall(r"<object>(.*?)</object>", text, flags=re.S):
@@ -81,7 +82,7 @@ def xml_boxes(stem: str, size: tuple[int, int]) -> dict[int, list[Box]]:
 
 
 def label_map(stem: str) -> np.ndarray:
-    return np.array(Image.open(DEFAULT_EVAL_PHOTO_DIR / f"{stem}.png"))
+    return np.array(Image.open(CMP_PHOTO_DIR / f"{stem}.png"))
 
 
 # ---------------------------------------------------------------- predictions
@@ -263,9 +264,17 @@ def vote_consistency(dsl: dict) -> tuple[int, int]:
 
 def enclosure_ablation() -> list[tuple[str, dict[str, list[dict]]]]:
     """Per-photo cell counts for each enclosure method on the eval set (cached eval probabilities)."""
+    from balcony_train.cell_clf_experiments import DEFAULT_CELLS
     from balcony_train.threshold_f1_search import DEFAULT_OUT as TF_OUT, Params, load_or_build
     from balcony_train.enclosed_grid_store import DEFAULT_DSL_DIR
 
+    cache = TF_OUT / "probs.npz"
+    if cache.is_file():
+        cached = int(np.load(cache)["ev_c"].shape[0])
+        live = int(np.load(DEFAULT_CELLS)["X"].shape[0])
+        if cached != live:
+            print(f"skip enclosure ablation: {cache} has {cached} cells, test features have {live}")
+            return []
     _sets, _folds, ev = load_or_build(TF_OUT, DEFAULT_DSL_DIR)
     data = ev.data
 
@@ -343,7 +352,7 @@ def main() -> None:
         per.setdefault(key, []).append(row)
 
     for s in stems:
-        photo = Image.open(DEFAULT_EVAL_PHOTO_DIR / f"{s}.jpg")
+        photo = Image.open(CMP_PHOTO_DIR / f"{s}.jpg")
         size = photo.size
         gt = xml_boxes(s, size)
         lm = label_map(s)
@@ -463,11 +472,15 @@ def main() -> None:
         ("open + enclosed @0.3", "bal@0.3/all"), ("open only @0.3", "bal@0.3/open")])
     section("Enclosure cells (pipeline output)", [("cell_clf + 4 rules + gate 0.10", "enc_cells")])
 
-    rows, exact = [], []
-    for name, prs in enclosure_ablation():
-        rows.append((name, pooled(prs), boot_ci(prs, "F1")))
-        exact.append(f"{name}: exact {sum(r['exact'] for r in prs)}/{len(prs)}")
-    L += ["## Enclosure ablation (eval cells, pooled)", ""] + table(rows) + [""] + exact + [""]
+    ablation = enclosure_ablation()
+    if not ablation:
+        L += ["## Enclosure ablation (eval cells, pooled)", "", "Skipped: the probability cache does not match the test features.", ""]
+    else:
+        rows, exact = [], []
+        for name, prs in ablation:
+            rows.append((name, pooled(prs), boot_ci(prs, "F1")))
+            exact.append(f"{name}: exact {sum(r['exact'] for r in prs)}/{len(prs)}")
+        L += ["## Enclosure ablation (eval cells, pooled)", ""] + table(rows) + [""] + exact + [""]
 
     abl = sorted({k.split("/")[1] for k in per if k.startswith("abl/")})
     if abl:

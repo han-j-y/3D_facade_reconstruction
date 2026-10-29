@@ -1,14 +1,21 @@
-"""Tkinter Label UI for railing kind, material, floor shape, enclosure, and skin.
+"""Tkinter Label UI for railing kind, material, floor shape, enclosure, skin, and structure.
 
 Usage::
 
     C:\\Users\\hiroo\\anaconda3\\envs\\glodon\\python.exe balcony_train/label_ui.py
     C:\\Users\\hiroo\\anaconda3\\envs\\glodon\\python.exe balcony_train/label_ui.py --crops-dir runs/balcony_clf/crops
+    C:\\Users\\hiroo\\anaconda3\\envs\\glodon\\python.exe balcony_train/label_ui.py --structure-pass
 
 Keys: 1/2/3 kind (0 = no railing, enclosed only), M/N material (open_work),
 R/T/C floor shape, O/A/E enclosure (open / half_enclosed / enclosed),
 P/G skin when enclosed (punched_window / curtain_wall),
-Enter save, S skip, Left previous, U undo, Q quit.
+P/J structure when open (projecting / juliet),
+Enter save, S skip, Left previous, U undo, Q quit. Juliet has no floor, so
+the floor row is disabled and saved as null.
+
+``--structure-pass`` shows open crops that have no structure yet, only names
+starting with ``--structure-prefix`` (default ``cmp_b``; flux2 and web crops
+stay unlabeled for structure).
 """
 
 from __future__ import annotations
@@ -28,6 +35,7 @@ if str(ROOT) not in sys.path:
 
 from balcony_train.label_store import (  # noqa: E402
     find_image,
+    floor_required,
     kind_optional,
     merge_label_sources,
     queue_stems,
@@ -39,6 +47,7 @@ from balcony_train.labels import (  # noqa: E402
     ENCLOSURE_SKINS,
     ENCLOSURES,
     FLOOR_SHAPES,
+    LABEL_STRUCTURES,
     MATERIALS,
     ensure_crop_dirs,
 )
@@ -49,6 +58,8 @@ ENCLOSURE_KEYS = {"o": "open", "a": "half_enclosed", "e": "enclosed"}
 MATERIAL_KEYS = {"m": "metal", "n": "masonry"}
 FLOOR_KEYS = {"r": "rectangle", "t": "triangle", "c": "circle"}
 SKIN_KEYS = {"p": "punched_window", "g": "curtain_wall"}
+# P is skin when enclosed and structure when open; only one row is shown.
+STRUCTURE_KEYS = {"p": "projecting", "j": "juliet"}
 # Fallback when the image pane has not been laid out yet.
 PREVIEW_FALLBACK = (900, 700)
 
@@ -76,6 +87,8 @@ class LabelApp:
         crops_dir: Path,
         labels_path: Path,
         review_all: bool = False,
+        structure_pass: bool = False,
+        structure_prefix: str = "cmp_b",
     ) -> None:
         self.root = root
         self.crops_dir = Path(crops_dir)
@@ -90,7 +103,10 @@ class LabelApp:
             need_floor_shape=True,
             need_enclosure=True,
             need_skin=True,
+            need_structure=structure_pass,
         )
+        if structure_pass:
+            self.queue = [s for s in self.queue if s.startswith(structure_prefix)]
         self.index = 0
         self.undo_stack: list[dict] = []
         self.back_stack: list[str] = []
@@ -99,6 +115,7 @@ class LabelApp:
         self.floor_var = tk.StringVar(value="")
         self.enclosure_var = tk.StringVar(value="")
         self.skin_var = tk.StringVar(value="")
+        self.structure_var = tk.StringVar(value="")
         self.status_var = tk.StringVar(value="")
         self.path_var = tk.StringVar(value="")
         self._photo: ImageTk.PhotoImage | None = None
@@ -106,6 +123,7 @@ class LabelApp:
         self._current_path: Path | None = None
         self._resize_after: str | None = None
         self._build()
+        self.structure_var.trace_add("write", lambda *_: self._sync_floor())
         self._bind_keys()
         self._show_current()
 
@@ -158,15 +176,15 @@ class LabelApp:
                 variable=self.material_var,
             ).pack(side=tk.LEFT, padx=8)
 
-        floor_fr = ttk.LabelFrame(
+        self.floor_fr = ttk.LabelFrame(
             self.root,
-            text="Floor shape — R rectangle / T triangle / C circle",
+            text="Floor shape — R rectangle / T triangle / C circle (none for juliet)",
             padding=8,
         )
-        floor_fr.pack(fill=tk.X, padx=8, pady=4)
+        self.floor_fr.pack(fill=tk.X, padx=8, pady=4)
         for name, key in zip(FLOOR_SHAPES, ("R", "T", "C")):
             ttk.Radiobutton(
-                floor_fr,
+                self.floor_fr,
                 text=f"{key}: {name}",
                 value=name,
                 variable=self.floor_var,
@@ -200,6 +218,22 @@ class LabelApp:
                 variable=self.skin_var,
             ).pack(side=tk.LEFT, padx=8)
 
+        # Always shown; disabled for enclosed / half_enclosed. Picking one sets open.
+        self.structure_fr = ttk.LabelFrame(
+            self.root,
+            text="Structure (open) — P projecting / J juliet",
+            padding=8,
+        )
+        self.structure_fr.pack(fill=tk.X, padx=8, pady=4)
+        for name, key in zip(LABEL_STRUCTURES, ("P", "J")):
+            ttk.Radiobutton(
+                self.structure_fr,
+                text=f"{key}: {name}",
+                value=name,
+                variable=self.structure_var,
+                command=self._on_structure_pick,
+            ).pack(side=tk.LEFT, padx=8)
+
         self.btns = ttk.Frame(self.root, padding=8)
         self.btns.pack(fill=tk.X)
         btns = self.btns
@@ -214,9 +248,9 @@ class LabelApp:
         )
 
         help_txt = (
-            "Material is required only for open_work. Floor shape and enclosure "
-            "are required. Kind may be none only for enclosed. "
-            "Skin is required only for enclosed. "
+            "Material is required only for open_work. Floor shape (except juliet) and "
+            "enclosure are required. Kind may be none only for enclosed. "
+            "Skin is required only for enclosed, structure only for open. "
             "Labels → labels.jsonl; images move into crops/{kind}/ (no kind: unlabeled/)."
         )
         ttk.Label(self.root, text=help_txt, padding=8).pack(anchor=tk.W)
@@ -256,7 +290,7 @@ class LabelApp:
         if ch in MATERIAL_KEYS and self.kind_var.get() == "open_work":
             self.material_var.set(MATERIAL_KEYS[ch])
             return
-        if ch in FLOOR_KEYS:
+        if ch in FLOOR_KEYS and floor_required(self.structure_var.get()):
             self.floor_var.set(FLOOR_KEYS[ch])
             return
         if ch in ENCLOSURE_KEYS:
@@ -265,6 +299,10 @@ class LabelApp:
             return
         if ch in SKIN_KEYS and self.enclosure_var.get() == "enclosed":
             self.skin_var.set(SKIN_KEYS[ch])
+            return
+        if ch in STRUCTURE_KEYS and self.enclosure_var.get() not in ("enclosed", "half_enclosed"):
+            self.structure_var.set(STRUCTURE_KEYS[ch])
+            self._on_structure_pick()
             return
         if keysym in ("Return", "KP_Enter"):
             self.save()
@@ -295,13 +333,35 @@ class LabelApp:
             self._set_material_enabled(False)
 
     def _sync_skin(self) -> None:
+        """Show the skin row for enclosed; enable the structure row unless enclosed."""
+        self._sync_structure()
         if self.enclosure_var.get() == "enclosed":
-            if not self.skin_fr.winfo_ismapped():
+            if not self.skin_fr.winfo_manager():
                 self.skin_fr.pack(fill=tk.X, padx=8, pady=4, before=self.btns)
             return
         self.skin_var.set("")
-        if self.skin_fr.winfo_ismapped():
+        if self.skin_fr.winfo_manager():
             self.skin_fr.pack_forget()
+
+    def _sync_structure(self) -> None:
+        enabled = self.enclosure_var.get() not in ("enclosed", "half_enclosed")
+        if not enabled:
+            self.structure_var.set("")
+        for child in self.structure_fr.winfo_children():
+            child.configure(state="normal" if enabled else "disabled")
+
+    def _sync_floor(self) -> None:
+        enabled = floor_required(self.structure_var.get())
+        if not enabled:
+            self.floor_var.set("")
+        for child in self.floor_fr.winfo_children():
+            child.configure(state="normal" if enabled else "disabled")
+
+    def _on_structure_pick(self) -> None:
+        """A structure is only for open balconies, so an unset enclosure becomes open."""
+        if self.enclosure_var.get() not in ENCLOSURES:
+            self.enclosure_var.set("open")
+            self._sync_skin()
 
     def _set_material_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
@@ -317,6 +377,7 @@ class LabelApp:
         n_floor = {name: 0 for name in FLOOR_SHAPES}
         n_enc = {name: 0 for name in ENCLOSURES}
         n_skin = {name: 0 for name in ENCLOSURE_SKINS}
+        n_structure = {name: 0 for name in LABEL_STRUCTURES}
         n_open_no_mat = 0
         for rec in self.labels.values():
             enc = rec.get("enclosure")
@@ -337,6 +398,9 @@ class LabelApp:
             skin = rec.get("skin")
             if skin in n_skin:
                 n_skin[skin] += 1
+            structure = rec.get("structure")
+            if structure in n_structure:
+                n_structure[structure] += 1
         parts = [f"{k}={n_kind[k]}" for k in CLASSES]
         parts.append(
             f"open_work materials metal={n_mat['metal']} masonry={n_mat['masonry']}"
@@ -345,6 +409,9 @@ class LabelApp:
         parts.append("floor " + " ".join(f"{name}={n_floor[name]}" for name in FLOOR_SHAPES))
         parts.append("enclosure " + " ".join(f"{name}={n_enc[name]}" for name in ENCLOSURES))
         parts.append("skin " + " ".join(f"{name}={n_skin[name]}" for name in ENCLOSURE_SKINS))
+        parts.append(
+            "structure " + " ".join(f"{name}={n_structure[name]}" for name in LABEL_STRUCTURES)
+        )
         return "  ".join(parts)
 
     def _show_current(self) -> None:
@@ -360,6 +427,7 @@ class LabelApp:
             self.floor_var.set("")
             self.enclosure_var.set("")
             self.skin_var.set("")
+            self.structure_var.set("")
             self._sync_skin()
             self._set_material_enabled(False)
             return
@@ -386,6 +454,8 @@ class LabelApp:
         skin = rec.get("skin") or ""
         self.skin_var.set(skin if skin in ENCLOSURE_SKINS else "")
         self._sync_skin()
+        structure = rec.get("structure") or ""
+        self.structure_var.set(structure if structure in LABEL_STRUCTURES else "")
 
         try:
             im = Image.open(path).convert("RGB")
@@ -437,8 +507,15 @@ class LabelApp:
                 "Enclosed needs a skin: punched_window (P) or curtain_wall (G).",
             )
             return
-        floor = self.floor_var.get()
-        if floor not in FLOOR_SHAPES:
+        structure = self.structure_var.get() if enclosure == "open" else ""
+        if enclosure == "open" and structure not in LABEL_STRUCTURES:
+            messagebox.showwarning(
+                "Structure required",
+                "Open needs a structure: projecting (P) or juliet (J).",
+            )
+            return
+        floor = self.floor_var.get() if floor_required(structure) else ""
+        if floor_required(structure) and floor not in FLOOR_SHAPES:
             messagebox.showwarning(
                 "Floor shape required",
                 "Select floor shape: rectangle (R), triangle (T), or circle (C).",
@@ -454,9 +531,10 @@ class LabelApp:
                 image_path=path,
                 kind=kind,
                 material=material,
-                floor_shape=floor,
+                floor_shape=floor or None,
                 enclosure=enclosure,
                 skin=skin or None,
+                structure=structure or None,
                 labels=self.labels,
             )
         except Exception as exc:
@@ -520,6 +598,7 @@ class LabelApp:
                 "floor_shape": prev.get("floor_shape"),
                 "enclosure": prev.get("enclosure"),
                 "skin": prev.get("skin"),
+                "structure": prev.get("structure"),
             }
         else:
             self.labels.pop(stem, None)
@@ -538,6 +617,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="include already complete labels (for editing)",
     )
+    ap.add_argument(
+        "--structure-pass",
+        action="store_true",
+        help="show open crops with no structure yet (names starting with --structure-prefix)",
+    )
+    ap.add_argument("--structure-prefix", default="cmp_b")
     return ap.parse_args()
 
 
@@ -549,6 +634,8 @@ def main() -> None:
         crops_dir=args.crops_dir,
         labels_path=args.labels,
         review_all=args.review_all,
+        structure_pass=args.structure_pass,
+        structure_prefix=args.structure_prefix,
     )
     root.mainloop()
 

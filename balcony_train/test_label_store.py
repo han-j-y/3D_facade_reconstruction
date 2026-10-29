@@ -39,12 +39,16 @@ class LabelStoreTests(unittest.TestCase):
         self.assertEqual(normalize_floor_shape("Hexagon"), "rectangle")
         self.assertEqual(normalize_floor_shape("trapezoid"), "rectangle")
         self.assertIsNone(normalize_floor_shape(None))
-        self.assertIsNone(normalize_structure("projecting"))
+        self.assertEqual(normalize_structure("projecting"), "projecting")
         self.assertEqual(normalize_structure("Juliet"), "juliet")
+        self.assertIsNone(normalize_structure(""))
+        self.assertIsNone(normalize_structure(None))
         with self.assertRaises(ValueError):
             normalize_floor_shape("pentagon")
         with self.assertRaises(ValueError):
             normalize_structure("inset")
+        with self.assertRaises(ValueError):
+            normalize_structure("rooftop")
 
     def test_save_open_work_requires_material(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -141,7 +145,7 @@ class LabelStoreTests(unittest.TestCase):
             )
             self.assertEqual(pending, ["plain"])
 
-    def test_juliet_roundtrip_and_projecting_stays_unset(self) -> None:
+    def test_structure_roundtrip_keeps_projecting(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             crops = root / "crops"
@@ -175,8 +179,54 @@ class LabelStoreTests(unittest.TestCase):
                 structure="projecting",
                 labels=labels,
             )
-            self.assertIsNone(labels["rail"]["structure"])
-            self.assertIsNone(load_labels(jsonl)["rail"]["structure"])
+            self.assertEqual(labels["rail"]["structure"], "projecting")
+            self.assertEqual(load_labels(jsonl)["rail"]["structure"], "projecting")
+
+            labels = save_annotation(
+                crops_dir=crops,
+                jsonl_path=jsonl,
+                image_path=placed,
+                kind="open_work",
+                material="metal",
+                floor_shape="rectangle",
+                enclosure="open",
+                structure="juliet",
+                labels=labels,
+            )
+            self.assertEqual(load_labels(jsonl)["rail"]["structure"], "juliet")
+
+    def test_juliet_needs_no_floor_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            crops = root / "crops"
+            jsonl = root / "labels.jsonl"
+            for stem in ("jul", "proj"):
+                _touch_png(crops / "unlabeled" / f"{stem}.png")
+            labels = {}
+            for stem, structure in (("jul", "juliet"), ("proj", "projecting")):
+                labels = save_annotation(
+                    crops_dir=crops,
+                    jsonl_path=jsonl,
+                    image_path=crops / "unlabeled" / f"{stem}.png",
+                    kind="open_work",
+                    material="metal",
+                    floor_shape=None,
+                    enclosure="open",
+                    structure=structure,
+                    labels=labels,
+                )
+            q = queue_stems(crops, labels, unlabeled_only=True, need_floor_shape=True)
+            self.assertEqual(q, ["proj"])
+
+    def test_missing_structure_loads_as_unlabeled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            jsonl = Path(tmp) / "labels.jsonl"
+            jsonl.write_text(
+                '{"path": "a.png", "kind": "solid", "material": null, '
+                '"floor_shape": "rectangle", "enclosure": "open", "skin": null}\n',
+                encoding="utf-8",
+            )
+            self.assertIsNone(load_labels(jsonl)["a"]["structure"])
 
 
 if __name__ == "__main__":

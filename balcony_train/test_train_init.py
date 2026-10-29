@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 
 from balcony_train.labels import CLASSES, ENCLOSURE_SKINS, FLOOR_SHAPES, MATERIALS
-from balcony_train.model import apply_skin_checkpoint
+from balcony_train.model import apply_skin_checkpoint, apply_structure_checkpoint
 from balcony_train.train import load_init_heads
 
 
@@ -79,6 +79,15 @@ class LoadInitHeadsTests(unittest.TestCase):
         )
         self.assertFalse(trained)
         self.assertFalse(model._skin_trained)
+
+    def test_old_checkpoint_has_no_structure_head(self) -> None:
+        ckpt_path = Path(__file__).resolve().parents[1] / "checkpoints" / "railing_best.pt"
+        if not ckpt_path.is_file():
+            self.skipTest("railing checkpoint missing")
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        model = _Stub()
+        self.assertFalse(apply_structure_checkpoint(model, ckpt))
+        self.assertFalse(model._structure_trained)
 
     def test_railing_best_has_no_skin_head(self) -> None:
         ckpt_path = Path(__file__).resolve().parents[1] / "checkpoints" / "railing_best.pt"

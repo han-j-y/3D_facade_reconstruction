@@ -47,7 +47,9 @@ from balcony_train.labels import (  # noqa: E402
     FLOOR_IGNORE_INDEX,
     FLOOR_SHAPES,
     KIND_IGNORE_INDEX,
+    LABEL_STRUCTURES,
     SKIN_IGNORE_INDEX,
+    STRUCTURE_IGNORE_INDEX,
     MATERIAL_IGNORE_INDEX,
     MATERIALS,
     MultitaskSample,
@@ -56,6 +58,7 @@ from balcony_train.labels import (  # noqa: E402
     floor_counts,
     material_counts,
     skin_counts,
+    structure_counts,
 )
 from balcony_train.model import load_classifier  # noqa: E402
 from balcony_train.paths import (  # noqa: E402
@@ -509,12 +512,16 @@ def main() -> None:
     floor_trained = bool(getattr(model, "_floor_trained", False))
     enc_trained = bool(getattr(model, "_enclosure_trained", False))
     skin_trained = bool(getattr(model, "_skin_trained", False))
+    structure_conf = torch.zeros((len(LABEL_STRUCTURES), len(LABEL_STRUCTURES)), dtype=torch.int64)
+    structure_trained = bool(getattr(model, "_structure_trained", False))
     scored: list[ScoredCrop] = []
     cursor = 0
     model.eval()
     with torch.no_grad():
-        for images, kind_y, mat_y, floor_y, enc_y, skin_y in loader:
-            kind_logits, mat_logits, floor_logits, enc_logits, skin_logits = model(images.to(device))
+        for images, kind_y, mat_y, floor_y, enc_y, skin_y, structure_y in loader:
+            kind_logits, mat_logits, floor_logits, enc_logits, skin_logits, structure_logits = model(
+                images.to(device)
+            )
             kind_pred = kind_logits.argmax(dim=1).cpu()
             mat_pred = mat_logits.argmax(dim=1).cpu()
             floor_pred = floor_logits.argmax(dim=1).cpu()
@@ -583,6 +590,12 @@ def main() -> None:
                     if int(t) == SKIN_IGNORE_INDEX:
                         continue
                     skin_conf[int(t), int(p)] += 1
+            if structure_trained:
+                structure_pred = structure_logits.argmax(dim=1).cpu()
+                for t, p in zip(structure_y.tolist(), structure_pred.tolist()):
+                    if int(t) == STRUCTURE_IGNORE_INDEX:
+                        continue
+                    structure_conf[int(t), int(p)] += 1
             cursor += len(kt_list)
 
     kind_total = int(kind_conf.sum().item())
@@ -649,6 +662,20 @@ def main() -> None:
             print(f"  {name:16s} {row}")
     else:
         print("skin head not in checkpoint")
+
+    if structure_trained:
+        structure_total = int(structure_conf.sum().item())
+        structure_correct = int(structure_conf.diag().sum().item())
+        print(
+            f"structure n={structure_total}  counts={structure_counts(subset)}  "
+            f"structure_acc={structure_correct / max(structure_total, 1):.3f}"
+        )
+        print("structure rows=true cols=pred  " + "  ".join(LABEL_STRUCTURES))
+        for i, name in enumerate(LABEL_STRUCTURES):
+            row = " ".join(f"{int(v):4d}" for v in structure_conf[i].tolist())
+            print(f"  {name:16s} {row}")
+    else:
+        print("structure head not in checkpoint")
 
     if args.errors_to is not None:
         copy_misclassified_images(scored, Path(args.errors_to))

@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import sys
 from collections import defaultdict
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -12,8 +10,6 @@ from PIL import Image
 
 from facade_recovery.box_cluster import cluster_box_geometry_pipeline
 from facade_recovery.door_types import door_type_token
-
-EXP_ROOT = Path(__file__).resolve().parents[2]
 
 
 def box_iou(a: list[int], b: list[int]) -> float:
@@ -136,26 +132,11 @@ def classify_door_shape(
     rise_thr: float = 0.08,
 ) -> dict[str, Any]:
     """Rectangle vs arch from crop (mask-free fallback)."""
-    metrics: dict[str, Any] = {
+    return {
         "shape": "rectangle",
         "rise_ratio": 0.0,
         "source": "default",
     }
-    try:
-        pred_root = str(EXP_ROOT / "window_ast_predictor")
-        if pred_root not in sys.path:
-            sys.path.insert(0, pred_root)
-        from window_ast.door_shape import classify_door_opening
-
-        crop = facade.crop(tuple(door_unit["box_xyxy"]))
-        metrics = classify_door_opening(
-            mask=door_unit.get("mask"),
-            crop=crop,
-            rise_thr=rise_thr,
-        )
-    except Exception:
-        pass
-    return metrics
 
 
 def cluster_door_units(

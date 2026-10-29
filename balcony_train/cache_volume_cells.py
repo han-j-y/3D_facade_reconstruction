@@ -35,7 +35,7 @@ from balcony_train.evaluate_enclosed_grid import (  # noqa: E402
     cells_from_boxes,
 )
 
-DEFAULT_OUT = ROOT / "runs" / "enclosed_grid" / "volume_cells.json"
+DEFAULT_OUT = ROOT / "runs" / "enclosed_grid" / "volume_cells_floor_bays.json"
 
 
 def main() -> None:

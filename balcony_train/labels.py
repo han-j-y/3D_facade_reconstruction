@@ -12,7 +12,9 @@ MATERIALS: tuple[str, ...] = ("metal", "masonry")
 FLOOR_SHAPES: tuple[str, ...] = ("rectangle", "triangle", "circle")
 # Retired plan names still found in older labels, splits, and IR files.
 LEGACY_FLOOR_SHAPES: dict[str, str] = {"hexagon": "rectangle", "trapezoid": "rectangle"}
-# Open-UI structure. Juliet is a railing with no walk-out slab.
+# Open-UI structure. Juliet is a railing with no walk-out slab. A rooftop
+# railing is not a label: it is a balcony with no window above, decided from
+# the facade, so rooftop crops are labeled projecting.
 # inset / composite / free_standing stay out of this label vocabulary.
 LABEL_STRUCTURES: tuple[str, ...] = ("projecting", "juliet")
 # Matches BDSL ``enclosure``.
@@ -29,13 +31,15 @@ KIND_IGNORE_INDEX = -100
 ENCLOSURE_IGNORE_INDEX = -100
 # Skin head ignored unless the enclosed crop has a skin label.
 SKIN_IGNORE_INDEX = -100
+# Structure head ignored unless the open crop has a structure label.
+STRUCTURE_IGNORE_INDEX = -100
 
 # Labeled crop image extensions (case-insensitive on Windows).
 LABELED_IMAGE_SUFFIXES: tuple[str, ...] = (".png", ".jpg", ".jpeg", ".webp")
 
-# (path, kind_idx, material_idx, floor_idx, enclosure_idx, skin_idx).
-# A 5-tuple is still readable: the skin index defaults to ignore.
-MultitaskSample = tuple[Path, int, int, int, int, int]
+# (path, kind_idx, material_idx, floor_idx, enclosure_idx, skin_idx, structure_idx).
+# Shorter tuples are still readable: missing indexes default to ignore.
+MultitaskSample = tuple[Path, int, int, int, int, int, int]
 
 
 def class_index(name: str) -> int:
@@ -74,6 +78,13 @@ def skin_index(name: str) -> int:
     return ENCLOSURE_SKINS.index(s)
 
 
+def structure_index(name: str) -> int:
+    s = str(name).strip().lower()
+    if s not in LABEL_STRUCTURES:
+        raise ValueError(f"unknown structure {name!r}; expected {LABEL_STRUCTURES}")
+    return LABEL_STRUCTURES.index(s)
+
+
 def sample_targets(row: tuple) -> tuple[int, int, int]:
     """Kind, material, floor indexes. Missing fields are ignore indexes."""
     kind_idx = int(row[1])
@@ -88,6 +99,10 @@ def enclosure_target(row: tuple) -> int:
 
 def skin_target(row: tuple) -> int:
     return int(row[5]) if len(row) >= 6 else SKIN_IGNORE_INDEX
+
+
+def structure_target(row: tuple) -> int:
+    return int(row[6]) if len(row) >= 7 else STRUCTURE_IGNORE_INDEX
 
 
 def iter_labeled_samples(crops_dir: Path) -> list[tuple[Path, int]]:
@@ -153,7 +168,12 @@ def iter_multitask_samples(
             skin_idx = skin_index(str(skin))
         else:
             skin_idx = SKIN_IGNORE_INDEX
-        rows.append((path, kind_idx, mat_idx, floor_idx, enc_idx, skin_idx))
+        structure = rec.get("structure")
+        if enclosure == "open" and structure in LABEL_STRUCTURES:
+            structure_idx = structure_index(str(structure))
+        else:
+            structure_idx = STRUCTURE_IGNORE_INDEX
+        rows.append((path, kind_idx, mat_idx, floor_idx, enc_idx, skin_idx, structure_idx))
     return rows
 
 
@@ -194,6 +214,15 @@ def skin_counts(samples: list[MultitaskSample] | list[tuple]) -> dict[str, int]:
         idx = skin_target(row)
         if idx >= 0:
             counts[ENCLOSURE_SKINS[idx]] += 1
+    return counts
+
+
+def structure_counts(samples: list[MultitaskSample] | list[tuple]) -> dict[str, int]:
+    counts = {name: 0 for name in LABEL_STRUCTURES}
+    for row in samples:
+        idx = structure_target(row)
+        if idx >= 0:
+            counts[LABEL_STRUCTURES[idx]] += 1
     return counts
 
 

@@ -1,17 +1,11 @@
 """Post-SAM3 filters for balcony boxes (wall-rail false positives).
 
-Drop a candidate if:
-  1. Railing-like: its top lies below the Y-shrunk overlapping window band
-     (windows: ~10% expanded in X/Y for overlap; Y shrunk ~10% for sill).
-     Skip this drop when the balcony is >=20% wider than an overlapping partner
-     window (real multi-bay / wide slab cue).
-  2. Window-inclusive: intersection with a raw partner window covers >=90% of
-     the balcony area (T1 window+box false positives).
-  3. Rooftop / top rail: drop when no window in the balcony's bay span has its
-     center higher than the balcony center (image Y up = smaller cy).
+A box below a window sill stays. A box with no window above it stays.
 
-Juliet balconies stay. A box whose width is close to its partner window is
-not dropped for that reason.
+Among the boxes, drop the smaller one when two balcony boxes overlap
+(intersection area > 0). The larger box stays. Equal areas both stay.
+
+Juliet balconies stay, including a box that sits mostly inside a window.
 """
 
 from __future__ import annotations
@@ -89,11 +83,6 @@ def _boxes_overlap_2d(
     )
 
 
-def _box_width(box: list[int] | list[float] | tuple[float, ...]) -> float:
-    x0, _, x1, _ = _as_box(list(box))
-    return max(1.0, x1 - x0)
-
-
 def _box_area(box: list[int] | list[float] | tuple[float, ...]) -> float:
     x0, y0, x1, y1 = _as_box(list(box))
     return max(1.0, (x1 - x0) * (y1 - y0))
@@ -110,67 +99,23 @@ def _intersection_area(
     return w * h
 
 
-def _partner_windows(
-    box: tuple[float, float, float, float],
-    window_boxes: list[list[int]],
-    *,
-    iw: int,
-    ih: int,
-    expand_frac: float,
-) -> list[tuple[float, float, float, float]]:
-    """Raw window boxes that 2D-overlap the candidate vs an expanded window."""
-    partners: list[tuple[float, float, float, float]] = []
-    for wb in window_boxes:
-        raw = _as_box(wb)
-        expanded = _expand_box(raw, frac=expand_frac, iw=float(iw), ih=float(ih))
-        if _boxes_overlap_2d(box, expanded):
-            partners.append(raw)
-    return partners
+def smaller_overlap_indices(boxes: list[list[int]]) -> set[int]:
+    """Indices of boxes that overlap a strictly larger box.
 
-
-def wider_than_partner_window(
-    box: list[int] | list[float],
-    window_boxes: list[list[int]],
-    *,
-    iw: int,
-    ih: int,
-    expand_frac: float = 0.10,
-    min_width_ratio: float = 1.20,
-) -> bool:
-    """True if balcony width is at least min_width_ratio times a partner window."""
-    b = _as_box(box)
-    bw = _box_width(b)
-    for raw in _partner_windows(
-        b, window_boxes, iw=iw, ih=ih, expand_frac=expand_frac
-    ):
-        if bw >= float(min_width_ratio) * _box_width(raw):
-            return True
-    return False
-
-
-def mostly_covered_by_partner_window(
-    box: list[int] | list[float],
-    window_boxes: list[list[int]],
-    *,
-    iw: int,
-    ih: int,
-    expand_frac: float = 0.10,
-    min_cover_frac: float = 0.90,
-) -> bool:
-    """True if a raw partner window covers most of the balcony box area.
-
-    Uses the same partner pairing as other decoration filters (10% expanded
-    window overlap). Intersection is computed against the raw window box.
+    Overlap is a positive intersection area. Touching edges stay. When two
+    boxes have the same area, both stay.
     """
-    b = _as_box(box)
-    area_b = _box_area(b)
-    threshold = float(min_cover_frac)
-    for raw in _partner_windows(
-        b, window_boxes, iw=iw, ih=ih, expand_frac=expand_frac
-    ):
-        if _intersection_area(b, raw) / area_b >= threshold:
-            return True
-    return False
+    areas = [_box_area(b) for b in boxes]
+    parsed = [_as_box(b) for b in boxes]
+    drop: set[int] = set()
+    for i in range(len(boxes)):
+        for j in range(len(boxes)):
+            if i == j or areas[j] <= areas[i]:
+                continue
+            if _intersection_area(parsed[i], parsed[j]) > 0:
+                drop.add(i)
+                break
+    return drop
 
 
 def clearly_below_windows(
@@ -284,63 +229,27 @@ def filter_balcony_boxes(
     boxes: list[list[int]],
     facade: Image.Image,
     window_instances: list[dict[str, Any]],
-    *,
-    shrink_frac: float = 0.10,
-    expand_frac: float = 0.10,
-    above_margin_frac: float = 0.0,
-    min_width_ratio: float = 1.20,
-    window_cover_frac: float = 0.90,
 ) -> tuple[list[list[int]], list[dict[str, Any]]]:
     """Return (kept_boxes, drop_log)."""
-    iw, ih = facade.size
-    win_boxes = [
-        [int(v) for v in (u.get("box_xyxy") or [])]
-        for u in window_instances
-        if u.get("box_xyxy")
-    ]
+    del facade, window_instances
+
+    preliminary: list[tuple[list[int], list[str], bool]] = []
+    for box in boxes:
+        b = [int(v) for v in box]
+        preliminary.append((b, [], True))
+
+    survivors = [i for i, (_b, _r, keep) in enumerate(preliminary) if keep]
+    overlap_drop = {
+        survivors[j]
+        for j in smaller_overlap_indices([preliminary[i][0] for i in survivors])
+    }
 
     kept: list[list[int]] = []
     log: list[dict[str, Any]] = []
-    for box in boxes:
-        b = [int(v) for v in box]
-        below_raw = clearly_below_windows(
-            b,
-            win_boxes,
-            iw=iw,
-            ih=ih,
-            shrink_frac=shrink_frac,
-            expand_frac=expand_frac,
-        )
-        wide_keep = below_raw and wider_than_partner_window(
-            b,
-            win_boxes,
-            iw=iw,
-            ih=ih,
-            expand_frac=expand_frac,
-            min_width_ratio=min_width_ratio,
-        )
-        below = below_raw and not wide_keep
-        window_cover = mostly_covered_by_partner_window(
-            b,
-            win_boxes,
-            iw=iw,
-            ih=ih,
-            expand_frac=expand_frac,
-            min_cover_frac=window_cover_frac,
-        )
-        rooftop = no_window_above(
-            b, window_instances, ih=ih, margin_frac=above_margin_frac
-        )
-        reasons: list[str] = []
-        if below:
-            reasons.append("below_windows")
-        if below_raw and wide_keep:
-            reasons.append("wide_vs_window")
-        if window_cover:
-            reasons.append("window_cover")
-        if rooftop:
-            reasons.append("no_window_above")
-        keep = (not below) and (not window_cover) and (not rooftop)
+    for i, (b, reasons, keep) in enumerate(preliminary):
+        if i in overlap_drop:
+            reasons = [*reasons, "smaller_overlap"]
+            keep = False
         log.append({"box": b, "keep": keep, "reasons": reasons})
         if keep:
             kept.append(b)

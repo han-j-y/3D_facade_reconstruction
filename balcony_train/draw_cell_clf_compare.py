@@ -49,7 +49,7 @@ from balcony_train.try_sam3_da3_volumes import _stage_font  # noqa: E402
 
 DEFAULT_RESULTS = ROOT / "runs" / "cell_clf" / "results_base.json"
 DEFAULT_OUT_DIR = ROOT / "runs" / "cell_clf" / "compare"
-DEFAULT_OP1 = ROOT / "runs" / "enclosed_grid" / "volume_cells.json"
+DEFAULT_OP1 = ROOT / "runs" / "enclosed_grid" / "volume_cells_floor_bays.json"
 CATEGORIES = ("exact", "wrong", "missed", "none_ok", "false_pos")
 TILE_H = 480
 BOARD_COLS = 4
@@ -103,7 +103,7 @@ def main() -> None:
     ap.add_argument("--dsl-dir", type=Path, default=DEFAULT_DSL_DIR)
     ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR)
     ap.add_argument("--name", default="OP3 cell classifier")
-    ap.add_argument("--op1", type=Path, default=DEFAULT_OP1, help="volume_cells.json with OP1 cells_6")
+    ap.add_argument("--op1", type=Path, default=DEFAULT_OP1, help="volume cache json with OP1 cells_6")
     args = ap.parse_args()
 
     res = json.loads(args.results.read_text(encoding="utf-8"))

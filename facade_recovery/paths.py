@@ -57,15 +57,8 @@ def resolve_compiler_root(explicit: str | Path | None = None) -> Path | None:
 
 
 def default_structure_ckpt() -> Path:
-    preferred = (
-        EXP_ROOT / "window_ast_predictor" / "runs" / "scratch_bal_b" / "best.pt",
-        PKG_ROOT / "checkpoints" / "structure_best.pt",
-        EXP_ROOT / "window_ast_predictor" / "runs" / "exp2_structure_dino_real_canny_ft2" / "best.pt",
-    )
-    for path in preferred:
-        if path.is_file() or path.is_symlink():
-            return path.resolve() if path.exists() else path
-    return preferred[0]
+    """Bundled pane-tree weights (the ``scratch_bal_b`` run, via Git LFS)."""
+    return PKG_ROOT / "checkpoints" / "structure_best.pt"
 
 
 def default_vocab() -> Path:

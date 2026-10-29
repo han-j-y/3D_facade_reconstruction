@@ -24,11 +24,16 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from balcony_train.enclosed_grid_store import DEFAULT_EVAL_PHOTO_DIR  # noqa: E402
+from balcony_train.enclosed_grid_store import (  # noqa: E402
+    DEFAULT_EVAL_LABELS_JSONL,
+    DEFAULT_EVAL_PHOTO_DIR,
+    find_photo,
+    load_labels,
+)
 
 PAPER = ROOT / "runs" / "paper_eval"
 BATCH = ROOT / "runs" / "batch"
-ENC = ROOT / "runs" / "cell_clf" / "compare_clf_rules_gate"
+ENC = ROOT / "runs" / "cell_clf" / "compare_clf_rules_gate_ext_relabel"
 OUT = PAPER / "figures"
 H = 420  # row height of every tile
 COLORS = [(230, 57, 70), (69, 123, 157), (42, 157, 143), (233, 196, 106), (155, 93, 229), (244, 162, 97),
@@ -216,9 +221,11 @@ def main() -> None:
         ("cmp_x0054", "two buildings: grid inferred wrong, compiled layout breaks"),
         ("cmp_x0128", "SAM3 finds 6 of ~90 windows"),
     ]), OUT / "fig_failures_pipeline.jpg")
-    stems = sorted(json.loads(line)["stem"] for line in
-                   (ROOT / "runs" / "enclosed_grid" / "labels_eval.jsonl").read_text(encoding="utf-8").splitlines()
-                   if line.strip())
+    stems = [
+        stem
+        for stem in sorted(load_labels(DEFAULT_EVAL_LABELS_JSONL))
+        if find_photo(DEFAULT_EVAL_PHOTO_DIR, stem) is not None
+    ]
     save(fig_all(stems), OUT / "fig_all_eval.jpg", max_w=4800)
 
 

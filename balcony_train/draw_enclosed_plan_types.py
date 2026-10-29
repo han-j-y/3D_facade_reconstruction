@@ -1,6 +1,6 @@
 """Draw the four enclosed plan types on eval photos that have predicted cells.
 
-Uses the official gate cells (``compare_clf_rules_gate/preds.json``). Each
+Uses the official gate cells (``compare_clf_rules_gate_ext_relabel/preds.json``). Each
 predicted cell is cropped and labeled by the railing checkpoint. Triangle
 counts as rectangle, and a missing skin is punched, so every box is one of:
 
@@ -48,7 +48,7 @@ from balcony_train.evaluate_enclosed_grid import (  # noqa: E402
 )
 from balcony_train.paths import DEFAULT_RAILING_CKPT  # noqa: E402
 
-DEFAULT_PREDS = ROOT / "runs" / "cell_clf" / "compare_clf_rules_gate" / "preds.json"
+DEFAULT_PREDS = ROOT / "runs" / "cell_clf" / "compare_clf_rules_gate_ext_relabel" / "preds.json"
 DEFAULT_OUT = ROOT / "runs" / "enclosed_grid" / "plan_types"
 
 

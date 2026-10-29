@@ -9,7 +9,9 @@ Each line::
 ``floor_shape`` is rectangle, triangle, or circle (legacy hexagon and
 trapezoid load as rectangle).
 ``enclosure`` is open, half_enclosed, or enclosed (BDSL ``enclosure``).
-``structure`` is ``juliet`` or null. Null means projecting (the open-UI default).
+``structure`` is projecting or juliet. Null means not labeled. The
+cmp_x sets (``crops_ext_xml``) saved projecting as null, so their readers treat
+null as projecting; training rows keep null as unlabeled.
 Folder layout under ``crops/`` (``open_work/`` etc.) stays in sync for the
 existing kind-only trainer. Records with an enclosure but no kind keep their
 image in ``unlabeled/``.
@@ -87,11 +89,11 @@ def normalize_skin(raw: Any) -> str | None:
 
 
 def normalize_structure(raw: Any) -> str | None:
-    """Open-UI structure. Empty and projecting stay unset. Unknown names raise."""
+    """Open-UI structure. Empty is unset (not labeled). Unknown names raise."""
     if raw is None:
         return None
     name = str(raw).strip().lower().replace("-", "_").replace(" ", "_")
-    if not name or name in ("null", "none", "projecting"):
+    if not name or name in ("null", "none"):
         return None
     if name not in LABEL_STRUCTURES:
         raise ValueError(f"unknown structure {raw!r}; expected {LABEL_STRUCTURES}")
@@ -301,6 +303,11 @@ def kind_optional(enclosure: str | None) -> bool:
     return enclosure == "enclosed"
 
 
+def floor_required(structure: str | None) -> bool:
+    """A juliet balcony has no floor, so it gets no floor shape."""
+    return structure != "juliet"
+
+
 def queue_stems(
     crops_dir: Path,
     labels: dict[str, dict[str, Any]],
@@ -310,6 +317,7 @@ def queue_stems(
     need_floor_shape: bool = False,
     need_enclosure: bool = False,
     need_skin: bool = False,
+    need_structure: bool = False,
 ) -> list[str]:
     """Stems to show in the UI, unlabeled / incomplete first."""
     images = {p.stem: p for p in iter_crop_images(crops_dir)}
@@ -322,14 +330,17 @@ def queue_stems(
         floor = rec.get("floor_shape") if rec else None
         enclosure = rec.get("enclosure") if rec else None
         skin = rec.get("skin") if rec else None
+        structure = rec.get("structure") if rec else None
         incomplete = kind is None and not kind_optional(enclosure)
         if need_material and kind == "open_work" and material is None:
             incomplete = True
-        if need_floor_shape and floor not in FLOOR_SHAPES:
+        if need_floor_shape and floor_required(structure) and floor not in FLOOR_SHAPES:
             incomplete = True
         if need_enclosure and enclosure not in ENCLOSURES:
             incomplete = True
         if need_skin and enclosure == "enclosed" and skin not in ENCLOSURE_SKINS:
+            incomplete = True
+        if need_structure and enclosure == "open" and structure not in LABEL_STRUCTURES:
             incomplete = True
         if incomplete:
             todo.append(stem)

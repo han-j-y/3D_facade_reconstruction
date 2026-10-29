@@ -32,11 +32,4 @@ def resolve_blender(explicit: str | Path | None = None) -> str | None:
 
 
 def default_structure_ckpt() -> Path:
-    preferred = (
-        ROOT / "checkpoints" / "structure_best.pt",
-        ROOT.parent / "window_ast_predictor" / "runs" / "exp2_structure_dino_real_canny_ft2" / "best.pt",
-    )
-    for path in preferred:
-        if path.exists():
-            return path.resolve()
-    return preferred[0]
+    return ROOT / "checkpoints" / "structure_best.pt"

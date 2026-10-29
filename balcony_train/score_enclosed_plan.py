@@ -7,7 +7,7 @@ enclosure, and enclosure photos that do not yet have both labels, are left
 out of the shape and skin rates. A photo with no predicted cells is left
 out of those rates too: floor and skin were never judged.
 
-``cmp_x`` labels stay in ``labels_eval.jsonl``. This script does not write
+``cmp_x`` labels stay in ``labels_ext_all.jsonl``. This script does not write
 the training set.
 
 Wrong photos are copied like the open-balcony eval: one folder per
@@ -53,7 +53,7 @@ from balcony_train.evaluate_enclosed_grid import (  # noqa: E402
 from balcony_train.labels import ENCLOSURE_SKINS, FLOOR_SHAPES  # noqa: E402
 from balcony_train.paths import DEFAULT_RAILING_CKPT  # noqa: E402
 
-DEFAULT_PREDS = ROOT / "runs" / "cell_clf" / "compare_clf_rules_gate" / "preds.json"
+DEFAULT_PREDS = ROOT / "runs" / "cell_clf" / "compare_clf_rules_gate_ext_relabel" / "preds.json"
 DEFAULT_ERRORS = ROOT / "runs" / "enclosed_grid" / "plan_wrong"
 
 

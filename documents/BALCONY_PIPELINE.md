@@ -52,7 +52,7 @@ Standalone track; does not edit window e2e internals.
 | `run_balcony.py` | CLI + `run()` |
 | `snap.py` | Snap boxes to **window** floors/bays |
 | `cluster.py` | DINOv2 ROI + spectral + Potts (balcony boxes only) |
-| `filter.py` | Drop decoration FPs (below shrunk sill; exempt if >=20% wider than partner window), window-inclusive boxes (partner window covers >=90% of balcony area), or top rail (no window above in the balcony's bay span). Juliet balconies are kept. |
+| `filter.py` | Among SAM3 balcony boxes, drop the smaller one when two boxes overlap. A box below a window sill stays. A box with no window above it stays. Juliet balconies, including a box mostly inside a window, are kept. |
 | `heuristic_ir.py` | Per-crop BDSL JSON IR + `balcony_view` fingerprint |
 | `../balcony_train/` | Optional solid/baluster classifier (`railing.kind` only) |
 | `recovery_profile.py` | Which axes to infer/vote (`railing_only` / `full`) |
@@ -77,7 +77,7 @@ opaque-run heuristic in `heuristic_ir.py` (kind only; material defaults to
 300×150 with front-full / side-trimmed rails, surface panel, solid parapet).
 All balcony slabs use **1.5 m** depth.
 
-Enclosed shells are a photo vote on top of that. `export_enclosed_crops.py` writes train volumes into `runs/balcony_clf/crops/unlabeled/`. `label_ui.py` sets floor shape and, for enclosed crops, skin (`P` punched_window, `G` curtain_wall). `--heads-only floor,skin` trains those linear heads on the frozen DINOv2. One skin per photo: curtain wall only on a strict majority, otherwise punched. Curtain wall sets `walls.curtain_wall` and the compiler drops windows in those bays. Punched sets `walls.infill = wall`, so the existing rule moves windows onto the front. An untrained skin head stays punched. Eval photos keep their own `floor_shape` and `skin` on `runs/enclosed_grid/labels_eval.jsonl` (one of each per enclosure photo) and are scored by `score_enclosed_plan.py` against the detector's cells. Those labels are not training data.
+Enclosed shells are a photo vote on top of that. `export_enclosed_crops.py` writes train volumes into `runs/balcony_clf/crops/unlabeled/`. `label_ui.py` sets floor shape and, for enclosed crops, skin (`P` punched_window, `G` curtain_wall). `--heads-only floor,skin` trains those linear heads on the frozen DINOv2. One skin per photo: curtain wall only on a strict majority, otherwise punched. Curtain wall sets `walls.curtain_wall` and the compiler drops windows in those bays. Punched sets `walls.infill = wall`, so the existing rule moves windows onto the front. An untrained skin head stays punched. Eval photos keep their own `floor_shape` and `skin` on `runs/enclosed_grid/labels_ext_all.jsonl` (one of each per enclosure photo) and are scored by `score_enclosed_plan.py` against the detector's cells. Those labels are not training data.
 
 ## How to run
 
