@@ -3,19 +3,25 @@
 1. Candidate axes: midpoints of similar window pairs (same floor band, w/h within 1.5x) and window centres.
 2. Each axis: every window's reflection is matched to its best window (IoU >= 0.3; itself counts). The axis's
    extent grows outward from the axis while >= 75% of the windows inside are matched; strength = summed match
-   IoU inside the extent (a pair counts twice, a self-symmetric window once).
-3. Pair weight w_ij = sum over axes pairing i and j of strength * IoU (normalised by the strongest axis), times
-   exp(-|cx_i - cx_j| / (decay * bay pitch)).
+   IoU inside the extent (a pair counts twice, a self-symmetric window once). A pair whose midpoint was folded
+   into that group, but which falls below 0.3 about the chosen axis, is restored at its own midpoint. One pair
+   is enough there: the same 0.3 test already accepted it.
+3. Continuous weights on those axes: inside each axis's extent every window pairs with its best other member by
+   reflection IoU, with no 0.3 cutoff; strength = Zhang et al.'s overlap curve at the axis over those members.
+   Pair weight w_ij = sum over axes pairing i and j of strength * IoU (normalised by the strongest axis).
 4. Weighted vote (ICM on a Potts energy): window i takes label L minimising
      alpha * D(i, L)  +  sum_j w_ij [L != L_j]
    with D = mean cosine distance of the pane-tree descriptor to label L's other members (``cut`` if none), over
    its own label and its mirror partners' labels (joins only; ``new_label`` also allows a type of its own).
    A window whose box size repeats (size-mates: w and h within ``mate_tol``) may only join a partner's type
-   holding one of its size-mates; a one-off box size (occluded / badly segmented) may join any partner's type,
-   unless it is self-symmetric about a strong axis (a central feature, not a bad box).
+   holding one of its size-mates; a one-off box size may join any partner's type, unless it is self-symmetric
+   about a strong axis (a central feature, not a bad box).
 Occlusion: a window side whose outside strip lies on an occluder mask (vehicles, fire escapes, trees, poles,
-people) or on the image border is hidden; the pair IoU clips the partner at hidden sides, and occluded windows
-have no size-mates. Windows lying on an occluder do not take part in the vote.
+people, balconies) or on the image border is hidden; the pair IoU clips the partner at hidden sides. A hidden side makes
+that axis a minimum for that window only: it may match a longer window, and the size tolerance rejects a
+candidate only when this box is already the longer one. The longer window does not gain the shorter occluded
+box as a size-mate. If no partner type meets the test, it stays. Windows lying on an occluder do not take part
+in the vote.
 """
 
 from __future__ import annotations
@@ -26,7 +32,7 @@ import numpy as np
 
 from facade_recovery.sym_gate import box_iou
 
-OCCLUDER_PROMPTS = ("car", "truck", "van", "fire escape", "tree", "street lamp", "traffic light", "person")
+OCCLUDER_PROMPTS = ("car", "truck", "van", "fire escape", "tree", "street lamp", "traffic light", "person", "balcony")
 MIRROR_SIDE = {0: 2, 1: 1, 2: 0, 3: 3}
 
 
@@ -90,24 +96,37 @@ def match(boxes: list[list[float]], occ: list[set[int]], c: float, min_iou: floa
     return out
 
 
+def _one_pair_axis(boxes: list[list[float]], cx: np.ndarray, i: int, j: int, mid: float, iou: float) -> dict[str, Any]:
+    """An axis that is only this pair, placed at the pair's own midpoint."""
+    key = (i, j) if i < j else (j, i)
+    ext = max(abs(cx[k] - mid) + 0.5 * (boxes[k][2] - boxes[k][0]) for k in key)
+    return dict(cx=float(mid), strength=2.0 * float(iou), extent=float(ext), members=sorted(key),
+                pairs={key: float(iou)}, selfs=[])
+
+
 def local_symmetries(
     boxes: list[list[float]], occ: list[set[int]], min_pairs: int = 2, cover: float = 0.75
 ) -> list[dict[str, Any]]:
     cx = np.array([0.5 * (b[0] + b[2]) for b in boxes])
     medw = float(np.median([b[2] - b[0] for b in boxes]))
-    cands = sorted([0.5 * (cx[i] + cx[j]) for i in range(len(boxes)) for j in range(i + 1, len(boxes))
-                    if similar(boxes[i], boxes[j])] + list(cx))
+    tagged: list[tuple[float, tuple[int, int] | None]] = [
+        (0.5 * (cx[i] + cx[j]), (i, j)) for i in range(len(boxes)) for j in range(i + 1, len(boxes))
+        if similar(boxes[i], boxes[j])]
+    tagged += [(float(c), None) for c in cx]
+    tagged.sort(key=lambda t: t[0])
     tol = 0.15 * medw
-    groups: list[list[float]] = []
-    for c in cands:
-        if groups and c - groups[-1][-1] <= tol:
-            groups[-1].append(c)
+    groups: list[list[tuple[float, tuple[int, int] | None]]] = []
+    for item in tagged:
+        if groups and item[0] - groups[-1][-1][0] <= tol:
+            groups[-1].append(item)
         else:
-            groups.append([c])
+            groups.append([item])
     syms = []
+    lost: list[tuple[int, int, float, float]] = []
     for g in groups:
+        xs = [t[0] for t in g]
         # position within the group's span (+-tol) with the largest summed match IoU
-        grid = np.arange(min(g) - tol, max(g) + tol + 0.5, 1.0)
+        grid = np.arange(min(xs) - tol, max(xs) + tol + 0.5, 1.0)
         c = float(max(grid, key=lambda x: sum(m[1] for m in match(boxes, occ, x))))
         m = match(boxes, occ, c)
         inside: list[int] = []
@@ -127,52 +146,114 @@ def local_symmetries(
         ext = float(max(abs(cx[i] - c) + 0.5 * (boxes[i][2] - boxes[i][0]) for i in best))
         syms.append(dict(cx=c, strength=strength, extent=ext, members=sorted(best), pairs=pairs,
                          selfs=[i for i in best if m[i][0] == i]))
+        seen: set[tuple[int, int]] = set()
+        for mid, pair in g:
+            if pair is None or pair in seen:
+                continue
+            seen.add(pair)
+            iou_own = pair_iou(boxes, occ, pair[0], pair[1], mid)
+            iou_here = pair_iou(boxes, occ, pair[0], pair[1], c)
+            if iou_own >= 0.3 and iou_here < 0.3:
+                lost.append((pair[0], pair[1], mid, iou_own))
     # neighbouring axes with the same windows: keep the strongest
     syms.sort(key=lambda s: -s["strength"])
     kept: list[dict[str, Any]] = []
     for s in syms:
         if not any(abs(s["cx"] - k["cx"]) <= tol for k in kept):
             kept.append(s)
-    return sorted(kept, key=lambda s: s["cx"])
+    # a folded pair the chosen axis no longer matches comes back at its own midpoint
+    restored: list[dict[str, Any]] = []
+    lost.sort(key=lambda t: -t[3])
+    for i, j, mid, iou in lost:
+        if any(pair_iou(boxes, occ, i, j, s["cx"]) >= 0.3 for s in kept):
+            continue
+        if any(abs(mid - r["cx"]) <= tol for r in restored):
+            continue
+        restored.append(_one_pair_axis(boxes, cx, i, j, mid, iou))
+    return sorted(kept + restored, key=lambda s: s["cx"])
 
 
-def bay_pitch(boxes: list[list[float]]) -> float:
-    """Median horizontal distance between neighbouring windows of the same floor band."""
-    cx = np.array([0.5 * (b[0] + b[2]) for b in boxes])
-    gaps = []
-    for i, b in enumerate(boxes):
-        d = [abs(cx[j] - cx[i]) for j, o in enumerate(boxes) if j != i
-             and min(b[3], o[3]) - max(b[1], o[1]) >= 0.5 * min(b[3] - b[1], o[3] - o[1])]
-        if d:
-            gaps.append(min(d))
-    return float(np.median(gaps)) if gaps else 1.0
+def iou_matrix(boxes: np.ndarray, occ: np.ndarray, c: float) -> np.ndarray:
+    """``pair_iou`` for all (i, j) at once; ``occ`` is (n, 4) bool hidden sides."""
+    a = np.broadcast_to(boxes[:, None, :], (len(boxes), len(boxes), 4)).copy()
+    ref = np.stack([2 * c - boxes[:, 2], boxes[:, 1], 2 * c - boxes[:, 0], boxes[:, 3]], 1)
+    r = np.broadcast_to(ref[None, :, :], a.shape).copy()
+    for s in range(4):
+        hid = occ[:, None, s]
+        r[..., s] = np.where(hid, np.maximum(r[..., s], a[..., s]) if s < 2 else np.minimum(r[..., s], a[..., s]),
+                             r[..., s])
+    for s in range(4):
+        hid = occ[None, :, MIRROR_SIDE[s]]
+        a[..., s] = np.where(hid, np.maximum(a[..., s], r[..., s]) if s < 2 else np.minimum(a[..., s], r[..., s]),
+                             a[..., s])
+    iw = np.clip(np.minimum(a[..., 2], r[..., 2]) - np.maximum(a[..., 0], r[..., 0]), 0, None)
+    ih = np.clip(np.minimum(a[..., 3], r[..., 3]) - np.maximum(a[..., 1], r[..., 1]), 0, None)
+    inter = iw * ih
+    union = (a[..., 2] - a[..., 0]) * (a[..., 3] - a[..., 1]) + (r[..., 2] - r[..., 0]) * (r[..., 3] - r[..., 1]) - inter
+    return inter / np.maximum(union, 1e-9)
 
 
-def pair_weights(boxes: list[list[float]], syms: list[dict[str, Any]], decay: float = 3.0) -> np.ndarray:
+def continuous_weights(boxes: list[list[float]], occ: list[set[int]], syms: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Same axes and extents, continuous weights: inside each axis's extent every window pairs with its best other
+    member by reflection IoU (no 0.3 cutoff); strength = the overlap curve at the axis over those members."""
+    b = np.asarray(boxes, dtype=np.float64)
+    o = np.array([[s in hidden for s in range(4)] for hidden in occ], dtype=bool)
+    out = []
+    for s in syms:
+        mem = np.array(sorted(set(s["members"]) | {i for key in s["pairs"] for i in key}))
+        m = iou_matrix(b[mem], o[mem], s["cx"])
+        np.fill_diagonal(m, 0.0)
+        pairs: dict[tuple[int, int], float] = {}
+        for a in range(len(mem)):
+            c = int(np.argmax(m[a]))
+            if m[a, c] > 0:
+                key = (int(mem[a]), int(mem[c])) if mem[a] < mem[c] else (int(mem[c]), int(mem[a]))
+                pairs[key] = max(pairs.get(key, 0.0), float(m[a, c]))
+        out.append(dict(s, pairs=pairs, strength=float(m.max(1).sum()) if len(mem) > 1 else 0.0))
+    return [s for s in out if s["pairs"]]
+
+
+def pair_weights(boxes: list[list[float]], syms: list[dict[str, Any]]) -> np.ndarray:
+    """w_ij = sum over axes pairing i and j of (axis strength / strongest) * match IoU."""
     n = len(boxes)
     w = np.zeros((n, n))
     top = max(s["strength"] for s in syms)
-    cx = np.array([0.5 * (b[0] + b[2]) for b in boxes])
-    scale = decay * bay_pitch(boxes)
     for s in syms:
         for (i, j), iou in s["pairs"].items():
-            loc = np.exp(-abs(cx[i] - cx[j]) / scale) if decay > 0 else 1.0
-            w[i, j] += s["strength"] / top * iou * loc
+            w[i, j] += s["strength"] / top * iou
             w[j, i] = w[i, j]
     return w
 
 
+def _axis_hidden(occ: set[int], axis: int) -> bool:
+    """Width (0) is a lower bound when the left or right side is hidden; height (1) when the top or bottom is."""
+    return bool(occ & ({0, 2} if axis == 0 else {1, 3}))
+
+
+def _can_be(a: float, b: float, a_min: bool, tol: float) -> bool:
+    """Can a window measured ``a`` be the same size as one measured ``b``? An exact window must agree within
+    ``tol``. A hidden axis is a minimum: ``tol`` rejects ``b`` only when ``a`` is already the longer one."""
+    if not a_min:
+        return abs(a - b) / max(a, b, 1e-6) <= tol
+    return a <= b * (1 + tol)
+
+
 def size_mates(boxes: list[list[float]], occ: list[set[int]], tol: float = 0.12) -> list[set[int]]:
-    """Per window: the other windows whose width and height both agree within ``tol`` (of the larger). Occluded
-    windows have no reliable size: no size-mates, and nobody's size-mate."""
-    wh = np.array([[b[2] - b[0], b[3] - b[1]] for b in boxes])
-    rel = np.abs(wh[:, None] - wh[None]) / np.maximum(wh[:, None], wh[None])
-    ok = (rel <= tol).all(-1)
-    np.fill_diagonal(ok, False)
-    for i, s in enumerate(occ):
-        if s:
-            ok[i, :] = ok[:, i] = False
-    return [set(np.where(r)[0].tolist()) for r in ok]
+    """Per window: others it could still be, given hidden sides. Not symmetric: a short occluded box may list a
+    longer window, and that longer window does not list it back."""
+    wh = np.array([[b[2] - b[0], b[3] - b[1]] for b in boxes], dtype=np.float64)
+    n = len(boxes)
+    mates = [set() for _ in range(n)]
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+            if all(
+                _can_be(wh[i, axis], wh[j, axis], _axis_hidden(occ[i], axis), tol)
+                for axis in (0, 1)
+            ):
+                mates[i].add(j)
+    return mates
 
 
 def vote(
@@ -180,12 +261,13 @@ def vote(
     w: np.ndarray,
     feat: np.ndarray,
     *,
-    alpha: float = 2.0,
+    alpha: float = 4.0,
     cut: float = 0.16,
     iters: int = 20,
     mates: list[set[int]] | None = None,
     new_label: bool = False,
     centred: set[int] = frozenset(),
+    bounded: set[int] = frozenset(),
     ids: list[int] | None = None,
 ) -> tuple[np.ndarray, list[str]]:
     """``ids``: window ids used in the log (default: row index)."""
@@ -198,6 +280,8 @@ def vote(
             part = {int(labels[j]) for j in np.where(w[i] > 0)[0]}
             if mates is not None and mates[i]:
                 part = {lab for lab in part if any(labels[k] == lab for k in mates[i])}
+            elif i in bounded:
+                part = set()
             elif i in centred:
                 part = set()
             labs = sorted({int(labels[i])} | ({int(labels.max()) + 1} if new_label else set()) | part)
@@ -224,9 +308,8 @@ def local_sym_vote(
     occluder_mask: np.ndarray | None,
     image_size: tuple[int, int],
     *,
-    alpha: float = 2.0,
+    alpha: float = 4.0,
     cut: float = 0.16,
-    decay: float = 3.0,
     mate_tol: float = 0.12,
     centred_min: float = 0.5,
     new_label: bool = False,
@@ -242,16 +325,17 @@ def local_sym_vote(
         return labels, report
     sub = [list(map(float, boxes[i])) for i in idx]
     occ = occluded_sides(sub, occluder_mask, iw, ih)
-    syms = local_symmetries(sub, occ)
+    syms = continuous_weights(sub, occ, local_symmetries(sub, occ))
     if not syms:
         return labels, report
     top = max(s["strength"] for s in syms)
-    w = pair_weights(sub, syms, decay=decay)
+    w = pair_weights(sub, syms)
     mates = size_mates(sub, occ, mate_tol) if mate_tol > 0 else None
     centred = {i for s in syms if s["strength"] >= centred_min * top for i in s["selfs"] if not occ[i]} \
         if centred_min > 0 else set()
+    bounded = {i for i, o in enumerate(occ) if o}
     new, log = vote(labels[idx], w, feat[idx], alpha=alpha, cut=cut, mates=mates, new_label=new_label,
-                    centred=centred, ids=idx)
+                    centred=centred, bounded=bounded, ids=idx)
     report["axes"] = [{"cx": round(s["cx"], 1), "strength": round(s["strength"] / top, 3),
                        "extent": round(s["extent"], 1), "pairs": [[idx[i], idx[j]] for i, j in s["pairs"]]}
                       for s in syms]

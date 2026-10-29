@@ -327,6 +327,9 @@ def normalize_facade_spec(
             "bottom_margin_ratio": 0.14,
             "recess": 0.01,
             "mirror_x": True,
+            "unify_type_size_across_spans": bool(
+                meta.get("unify_type_size_across_spans", False)
+            ),
         },
     }
 
@@ -669,7 +672,9 @@ def world_placement_in_cell(
     return ox, oz, ww, hh
 
 
-def unify_type_sizes(items: list[dict[str, Any]]) -> None:
+def unify_type_sizes(
+    items: list[dict[str, Any]], *, separate_spans: bool = True
+) -> None:
     """Give every window of a type the type's median size, keeping each center.
 
     ``items`` carry ``tok``, ``span``, ``ox``, ``oz``, ``ww``, ``hh`` (world) and
@@ -678,7 +683,8 @@ def unify_type_sizes(items: list[dict[str, Any]]) -> None:
     """
     groups: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for p in items:
-        groups.setdefault((p["tok"], int(p.get("span", 1))), []).append(p)
+        span = int(p.get("span", 1)) if separate_spans else 0
+        groups.setdefault((p["tok"], span), []).append(p)
     for members in groups.values():
         widths = sorted(float(p["ww"]) for p in members)
         heights = sorted(float(p["hh"]) for p in members)

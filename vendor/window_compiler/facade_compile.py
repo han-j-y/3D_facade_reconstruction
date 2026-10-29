@@ -327,7 +327,10 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
 
     planned_wins = [p for p in planned if p["kind"] == "window"]
     if bool(pp.get("unify_type_size", True)):
-        unify_type_sizes(planned_wins)
+        unify_type_sizes(
+            planned_wins,
+            separate_spans=not bool(pp.get("unify_type_size_across_spans", False)),
+        )
     if bool(pp.get("align_type_bottom", True)):
         align_type_bottoms(planned_wins)
 
