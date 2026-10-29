@@ -40,7 +40,7 @@ The defaults are the current pipeline:
 
 | Stage | Default |
 |------|---------|
-| Detect | `facebook/sam3` prompt `window`, two-tier: keep score ≥ `--anchor-score` 0.7, add boxes in [`--threshold` 0.5, 0.7) that overlap no kept box by `--fill-max-overlap` 0.2 of the smaller box; `--min-side 13`; boxes on `car` masks dropped |
+| Detect | `facebook/sam3` prompt `window`, two-tier: keep score ≥ `--anchor-score` 0.7, add boxes in [`--threshold` 0.5, 0.7) that overlap no kept box by `--fill-max-overlap` 0.2 of the smaller box; `--min-side 13`; boxes on `car` / `truck` / `van` masks dropped (`--exclude-prompts`) |
 | Unitize | `--merge-mode ast`, `--col-tol 0.045`, `--row-tol 0.055` |
 | Cluster | `--cluster-mode gate` (below) |
 | Doors | `facebook/sam3`, prompt `door` ≥ `--door-threshold` 0.45; override with any Hugging Face ID or model directory |
@@ -84,7 +84,7 @@ Outputs under `runs/facade_e2e_<id>/` (or `--out-dir`):
 
 | File | Description |
 |------|-------------|
-| `index_raw.json` | Window detections used (after car / two-tier filtering) |
+| `index_raw.json` | Window detections used (after vehicle / two-tier filtering) |
 | `raw_windows.png` | Raw SAM3/XML boxes before merge |
 | `axis/` | Symmetry-axis score curve, overlays, `summary.json` (gate mode) |
 | `local_sym.json` | Local-symmetry axes, mirror pairs and type moves (gate mode) |
@@ -105,6 +105,8 @@ python run.py --facade-id 8 --blender-render --device cuda
 ```
 
 If Blender is missing, the pipeline still writes `facade_dsl.json` and prints a warning.
+
+Every window of a type is rendered at the type's median size (centres kept) and snapped to the type's median sill on each floor. Set `meta.unify_type_size_across_spans` to `false` to unify single-bay and multi-bay placements of a type separately.
 
 ## Standalone symmetry axis + full-stack repair (older runs)
 

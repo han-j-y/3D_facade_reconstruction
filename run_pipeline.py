@@ -160,7 +160,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument(
         "--exclude-prompts",
         type=str,
-        default="car",
+        default="car,truck,van",
         help="comma SAM3 prompts for non-façade objects; windows/doors on them are dropped ('' = off)",
     )
     ap.add_argument("--exclude-threshold", type=float, default=0.5)

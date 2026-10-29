@@ -277,7 +277,7 @@ def planned_windows(facade: dict) -> list[dict]:
     if bool(pp.get("unify_type_size", True)):
         unify_type_sizes(
             wins,
-            separate_spans=not bool(pp.get("unify_type_size_across_spans", False)),
+            separate_spans=not bool(pp.get("unify_type_size_across_spans", True)),
         )
     if bool(pp.get("align_type_bottom", True)):
         align_type_bottoms(wins, row_key="row")

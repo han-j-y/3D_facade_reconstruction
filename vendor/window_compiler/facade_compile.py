@@ -329,7 +329,7 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
     if bool(pp.get("unify_type_size", True)):
         unify_type_sizes(
             planned_wins,
-            separate_spans=not bool(pp.get("unify_type_size_across_spans", False)),
+            separate_spans=not bool(pp.get("unify_type_size_across_spans", True)),
         )
     if bool(pp.get("align_type_bottom", True)):
         align_type_bottoms(planned_wins)

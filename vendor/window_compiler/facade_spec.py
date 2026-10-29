@@ -328,7 +328,7 @@ def normalize_facade_spec(
             "recess": 0.01,
             "mirror_x": True,
             "unify_type_size_across_spans": bool(
-                meta.get("unify_type_size_across_spans", False)
+                meta.get("unify_type_size_across_spans", True)
             ),
         },
     }
@@ -673,13 +673,13 @@ def world_placement_in_cell(
 
 
 def unify_type_sizes(
-    items: list[dict[str, Any]], *, separate_spans: bool = True
+    items: list[dict[str, Any]], *, separate_spans: bool = False
 ) -> None:
     """Give every window of a type the type's median size, keeping each center.
 
     ``items`` carry ``tok``, ``span``, ``ox``, ``oz``, ``ww``, ``hh`` (world) and
-    are updated in place. Single-cell and spanning placements of one type are
-    unified separately so a colspan window is not shrunk to single-bay width.
+    are updated in place. ``separate_spans`` unifies single-cell and spanning
+    placements of one type separately instead.
     """
     groups: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for p in items:
