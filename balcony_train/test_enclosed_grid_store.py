@@ -16,12 +16,16 @@ if str(ROOT) not in sys.path:
 from balcony_train.enclosed_grid_store import (  # noqa: E402
     GRID_FAILURE,
     GridRecord,
+    bay_cells,
     cell_at,
     facade_stems_from_crop_labels,
     list_grid_stems,
+    load_floor_bays,
+    load_ignore,
     load_labels,
     load_records,
     normalize_cells,
+    partial_bays,
     record_for_save,
     write_labels,
     write_records,
@@ -184,6 +188,47 @@ class EnclosedGridStoreTests(unittest.TestCase):
             write_labels(path, {"cmp_b0007": [(1, 0)]})
             row = json.loads(path.read_text(encoding="utf-8").strip())
             self.assertEqual(set(row), {"stem", "cells"})
+
+    def test_ignore_cells_roundtrip_apart_from_cells(self) -> None:
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / "labels.jsonl"
+            rec = record_for_save(
+                {(1, 2)}, "rectangle", "punched_window", plan=True, ignore={(1, 3), (0, 0)}
+            )
+            empty = record_for_save(set(), ignore={(2, 2)})
+            plain = record_for_save({(0, 1)}, "circle", "curtain_wall", plan=True)
+            write_records(path, {"a": rec, "b": empty, "c": plain})
+            rows = [json.loads(x) for x in path.read_text(encoding="utf-8").splitlines()]
+            loaded = load_records(path)
+            labels = load_labels(path)
+            ignore = load_ignore(path)
+        self.assertEqual(loaded["a"].cells, [(1, 2)])
+        self.assertEqual(loaded["a"].ignore, [(0, 0), (1, 3)])
+        self.assertEqual(loaded["b"].cells, [])
+        self.assertEqual(loaded["b"].ignore, [(2, 2)])
+        self.assertNotIn("ignore", rows[2])
+        self.assertEqual(labels["b"], [])
+        self.assertEqual(ignore, {"a": [(0, 0), (1, 3)], "b": [(2, 2)]})
+
+    def test_floor_bays_group_union_columns(self) -> None:
+        floor_y = {0: (0, 10), 1: (10, 20)}
+        bay_x = {0: (0, 10), 1: (10, 20), 2: (20, 30)}
+        meta = {"floor_bays": [
+            [{"c0": 0, "c1": 1}, {"c0": 1, "c1": 3}],
+            [{"c0": 0, "c1": 2}, {"c0": 2, "c1": 3}],
+        ]}
+        with TemporaryDirectory() as tmp:
+            dsl = Path(tmp) / "facade_dsl.json"
+            dsl.write_text(json.dumps({"meta": meta}), encoding="utf-8")
+            fb = load_floor_bays(dsl, floor_y, bay_x)
+            dsl.write_text(json.dumps({"meta": {}}), encoding="utf-8")
+            plain = load_floor_bays(dsl, floor_y, bay_x)
+        self.assertEqual(fb, {0: [(0, 1), (1, 3)], 1: [(0, 2), (2, 3)]})
+        self.assertEqual(plain[0], [(0, 1), (1, 2), (2, 3)])
+        self.assertEqual(bay_cells((0, 2), fb), [(0, 1), (0, 2)])
+        self.assertEqual(bay_cells((1, 0), fb), [(1, 0), (1, 1)])
+        self.assertEqual(partial_bays({(0, 1), (1, 0), (1, 1)}, fb), [(0, 1, 3)])
+        self.assertEqual(partial_bays({(0, 1), (0, 2)}, fb), [])
 
 
 if __name__ == "__main__":

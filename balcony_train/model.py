@@ -17,7 +17,7 @@ from balcony_train.labels import (
     LABEL_STRUCTURES,
     MATERIALS,
 )
-from balcony_train.paths import DEFAULT_RAILING_CKPT
+from balcony_train.paths import DEFAULT_RAILING_CKPT, DEFAULT_STRUCTURE_CKPT
 
 BACKBONE = "dinov2_vits14"
 FEAT_DIM = 384
@@ -205,10 +205,19 @@ def load_classifier(
 class RailingPredictor:
     """One-shot crop → railing kind (+ material when open_work)."""
 
-    def __init__(self, ckpt_path: Path, device: torch.device) -> None:
+    def __init__(
+        self,
+        ckpt_path: Path,
+        device: torch.device,
+        *,
+        structure_ckpt: Path | None = None,
+    ) -> None:
         self.ckpt_path = Path(ckpt_path)
         self.device = device
         self.model = load_classifier(self.ckpt_path, device)
+        self.structure_ckpt: Path | None = None
+        if structure_ckpt is not None and not getattr(self.model, "_structure_trained", False):
+            self.structure_ckpt = load_structure_head(self.model, Path(structure_ckpt), device)
         self.tfm = make_transform()
 
     @torch.no_grad()
@@ -252,16 +261,39 @@ class RailingPredictor:
         return self.predict(crop)
 
 
+def load_structure_head(
+    model: RailingClassifier,
+    ckpt_path: Path,
+    device: torch.device,
+) -> Path | None:
+    """Copy a trained structure head from another checkpoint onto ``model``.
+
+    Every checkpoint shares the frozen DINOv2 backbone, so one head can move
+    between them. Returns the path when the head loaded, else None.
+    """
+    if not ckpt_path.is_file():
+        return None
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    if not apply_structure_checkpoint(model, ckpt):
+        return None
+    model.structure_head.to(device)
+    return ckpt_path
+
+
 def try_load_predictor(
     ckpt_path: Path | None,
     device: torch.device,
     *,
     force_off: bool = False,
+    structure_ckpt: Path | None = DEFAULT_STRUCTURE_CKPT,
 ) -> RailingPredictor | None:
-    """Return a predictor if ckpt exists; None → caller uses the heuristic."""
+    """Return a predictor if ckpt exists; None → caller uses the heuristic.
+
+    ``structure_ckpt`` supplies the structure head when ``ckpt_path`` has none.
+    """
     if force_off:
         return None
     path = Path(ckpt_path) if ckpt_path else DEFAULT_RAILING_CKPT
     if not path.is_file():
         return None
-    return RailingPredictor(path, device)
+    return RailingPredictor(path, device, structure_ckpt=structure_ckpt)

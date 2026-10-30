@@ -42,6 +42,15 @@ class ParseRailKindTests(unittest.TestCase):
         )
         self.assertEqual(ir["floor"]["shape"], "triangle")
 
+    def test_juliet_and_rooftop_structures(self) -> None:
+        for name in ("juliet", "rooftop"):
+            ir = parse_bdsl(
+                "balcony rectangle(width=2.0, depth=1.5)\n"
+                f"structure {name}\n"
+                "railing solid\n"
+            )
+            self.assertEqual(ir["structure"], name)
+
     def test_retired_floor_shapes_rejected(self) -> None:
         for name in ("hexagon", "trapezoid"):
             with self.assertRaises(ValueError):

@@ -41,6 +41,7 @@ from balcony_train.enclosed_grid_store import (  # noqa: E402
     DEFAULT_EVAL_LABELS_JSONL,
     DEFAULT_EVAL_PHOTO_DIR,
     find_photo,
+    load_floor_bays,
     load_grid,
     load_labels,
 )
@@ -125,6 +126,7 @@ def main() -> None:
             skipped.append(f"{stem} (no photo or grid)")
             continue
         floor_y, bay_x = load_grid(dsl)
+        floor_bays = load_floor_bays(dsl, floor_y, bay_x)
         gt = {tuple(c) for c in labels[stem]}
         pred = preds[stem]
         cat = category(gt, pred)
@@ -132,7 +134,7 @@ def main() -> None:
         g = f"  gate {gate[stem]:.2f}" if stem in gate else ""
         image = Image.open(photo).convert("RGB")
         panel = titled(
-            render_compare(image, floor_y, bay_x, gt, pred),
+            render_compare(image, floor_y, bay_x, gt, pred, floor_bays),
             f"{stem}  {cat}  tp{tp} fp{fp} fn{fn}{g}",
         )
         panel.save(args.out_dir / f"{cat}__{stem}.jpg", quality=90)

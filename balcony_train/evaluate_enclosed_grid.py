@@ -46,6 +46,7 @@ from balcony_train.enclosed_grid_store import (  # noqa: E402
     DEFAULT_EVAL_PHOTO_DIR,
     GRID_FAILURE,
     Cell,
+    FloorBays,
     find_photo,
     load_grid,
     load_labels,
@@ -331,12 +332,20 @@ def render_compare(
     bay_x: dict[int, tuple[int, int]],
     gt_cells: list[Cell] | set[Cell],
     pred_cells: set[Cell],
+    floor_bays: FloorBays | None = None,
 ) -> Any:
-    """Grid overlay: blue = label only, red = prediction only, purple = both."""
+    """Grid overlay: blue = label only, red = prediction only, purple = both.
+
+    With ``floor_bays`` each floor bay is outlined and named once (``f1 b2-4``);
+    cells are still filled per union column, with thin lines between them.
+    Without it every column is its own bay.
+    """
     from PIL import Image, ImageDraw, ImageFont
 
     gt = set(gt_cells)
     pred = set(pred_cells)
+    if floor_bays is None:
+        floor_bays = {f: [(b, b + 1) for b in sorted(bay_x)] for f in floor_y}
     base = photo.convert("RGBA")
     layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
@@ -346,25 +355,35 @@ def render_compare(
         if Path(path).is_file():
             font = ImageFont.truetype(path, max(13, base.width // 52))
             break
+    styles = {
+        "both": ((170, 70, 220, 130), (190, 90, 240, 255)),
+        "gt": ((40, 110, 255, 130), (80, 150, 255, 255)),
+        "pred": ((255, 40, 40, 130), (255, 80, 80, 255)),
+        "none": (None, (40, 220, 120, 180)),
+    }
+
+    def state(cell: Cell) -> str:
+        if cell in gt:
+            return "both" if cell in pred else "gt"
+        return "pred" if cell in pred else "none"
+
     for fid, (y0, y1) in sorted(floor_y.items()):
-        for bid, (x0, x1) in sorted(bay_x.items()):
-            cell = (int(fid), int(bid))
-            hit_gt = cell in gt
-            hit_pred = cell in pred
-            if hit_gt and hit_pred:
-                fill = (170, 70, 220, 130)
-                outline = (190, 90, 240, 255)
-            elif hit_gt:
-                fill = (40, 110, 255, 130)
-                outline = (80, 150, 255, 255)
-            elif hit_pred:
-                fill = (255, 40, 40, 130)
-                outline = (255, 80, 80, 255)
-            else:
-                fill = None
-                outline = (40, 220, 120, 180)
-            draw.rectangle((x0, y0, x1, y1), fill=fill, outline=outline, width=line)
-            draw.text((x0 + 4, y0 + 2), f"f{fid} b{bid}", fill=(255, 255, 255, 235), font=font)
+        for c0, c1 in floor_bays.get(fid, []):
+            span = [b for b in range(c0, c1) if b in bay_x]
+            if not span:
+                continue
+            states = [state((int(fid), b)) for b in span]
+            for b, st in zip(span, states):
+                fill = styles[st][0]
+                if fill is not None:
+                    draw.rectangle((bay_x[b][0], y0, bay_x[b][1], y1), fill=fill)
+            for b in span[1:]:
+                draw.line((bay_x[b][0], y0, bay_x[b][0], y1), fill=(40, 220, 120, 110), width=1)
+            x0, x1 = bay_x[span[0]][0], bay_x[span[-1]][1]
+            outline = styles[states[0]][1] if len(set(states)) == 1 else (255, 255, 255, 220)
+            draw.rectangle((x0, y0, x1, y1), outline=outline, width=line)
+            name = f"b{c0}" if c1 - c0 == 1 else f"b{c0}-{c1 - 1}"
+            draw.text((x0 + 4, y0 + 2), f"f{fid} {name}", fill=(255, 255, 255, 235), font=font)
     return Image.alpha_composite(base, layer).convert("RGB")
 
 

@@ -274,8 +274,7 @@ def vote_enclosed_floor_shape(shapes: list[str | None]) -> tuple[str, dict[str, 
     """One plan: circle only wins a strict majority.
 
     ``triangle`` and any other label count as ``rectangle``. A tie is
-    ``rectangle``. Open-balcony clusters use the same rule, separately from
-    the railing vote.
+    ``rectangle``. Open-balcony clusters use ``vote_open_floor_shape``.
     """
     counts = {"rectangle": 0, "circle": 0}
     for raw in shapes:
@@ -285,12 +284,48 @@ def vote_enclosed_floor_shape(shapes: list[str | None]) -> tuple[str, dict[str, 
     return winner, counts
 
 
+def vote_open_floor_shape(shapes: list[str | None]) -> tuple[str, dict[str, int]]:
+    """One plan for an open-balcony type, triangle kept as its own shape.
+
+    A circle or a triangle wins only with more votes than each of the other
+    two shapes. Every other outcome, ties included, is ``rectangle``. Unknown
+    labels count as ``rectangle``; ``None`` (no plan, e.g. juliet) is skipped.
+    """
+    counts = {"rectangle": 0, "circle": 0, "triangle": 0}
+    for raw in shapes:
+        if raw is None:
+            continue
+        kind = str(raw).strip().lower()
+        counts[kind if kind in counts else "rectangle"] += 1
+    for shape in ("circle", "triangle"):
+        if all(counts[shape] > counts[o] for o in counts if o != shape):
+            return shape, counts
+    return "rectangle", counts
+
+
+def vote_structure(structures: list[str | None]) -> tuple[str, dict[str, int]]:
+    """Structure of an open-balcony type: juliet on a strict majority.
+
+    Only projecting / juliet are voted. Rooftop is a placement flag set from
+    the window grid, so it is not a vote option here (a ``rooftop`` label
+    counts as projecting). ``None`` (untrained head) is skipped.
+    """
+    counts = {"projecting": 0, "juliet": 0}
+    for raw in structures:
+        s = str(raw or "").strip().lower()
+        if not s:
+            continue
+        counts["juliet" if s == "juliet" else "projecting"] += 1
+    winner = "juliet" if counts["juliet"] > counts["projecting"] else "projecting"
+    return winner, counts
+
+
 def apply_floor_majority(
     ir: dict[str, Any] | None,
     shapes: list[str | None],
 ) -> tuple[dict[str, Any] | None, str, dict[str, int]]:
     """Copy ``ir`` and set its floor to the majority plan. The input is unchanged."""
-    shape, counts = vote_enclosed_floor_shape(shapes)
+    shape, counts = vote_open_floor_shape(shapes)
     if not isinstance(ir, dict):
         return ir, shape, counts
     out = copy.deepcopy(ir)

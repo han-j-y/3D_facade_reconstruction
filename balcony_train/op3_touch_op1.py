@@ -44,6 +44,7 @@ from balcony_train.enclosed_grid_store import (  # noqa: E402
     DEFAULT_EVAL_LABELS_JSONL,
     DEFAULT_EVAL_PHOTO_DIR,
     find_photo,
+    load_floor_bays,
     load_grid,
 )
 from balcony_train.evaluate_enclosed_grid import format_report, render_compare, summarize  # noqa: E402
@@ -189,10 +190,12 @@ def main() -> None:
             f"added: {added_txt}",
             f"classifier exact={int(op3 == gt)} IoU={iou(op3, gt):.2f}   OP1 exact={int(op1 == gt)} IoU={iou(op1, gt):.2f}",
         ]
-        floor_y, bay_x = load_grid(args.dsl_dir / s / "facade_dsl.json")
+        dsl = args.dsl_dir / s / "facade_dsl.json"
+        floor_y, bay_x = load_grid(dsl)
+        floor_bays = load_floor_bays(dsl, floor_y, bay_x)
         photo = Image.open(find_photo(args.in_dir, s)).convert("RGB")
-        img = render_compare(photo, floor_y, bay_x, gt, pred)
-        img = draw_probs(img, floor_y, bay_x, {test.cells[i]: float(p_cell[i]) for i in ii}, args.t)
+        img = render_compare(photo, floor_y, bay_x, gt, pred, floor_bays)
+        img = draw_probs(img, floor_y, bay_x, {test.cells[i]: float(p_cell[i]) for i in ii}, args.t, floor_bays)
         panel = add_header(img, lines)
         panel.save(args.out_dir / f"{cat}__{s}.jpg", quality=92)
         tiles[cat].append(panel)

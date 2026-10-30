@@ -121,6 +121,7 @@ compiled_balcony = "{", '"row": ', json_int,             (* grid row, 0 = top fl
                      [ ',"bay_cx_norm": ', json_number ],
                      [ ',"bays": [', json_int, { ",", json_int }, "]" ],
                      [ ',"bays_center": [', json_int, { ",", json_int }, "]" ],
+                     [ ',"structure": "rooftop"' ],             (* overrides the type's structure *)
                 "}" ;
 (* Copied from B by normalize_facade_spec (§4). row/col0/col1 are grid indices,
    not layout floor/bay ids. *)
@@ -228,6 +229,7 @@ balcony_instance = "{", '"floor": ', json_int,                 (* layout.floors[
                      [ ',"bay_cx_norm": ', json_number ],      (* center mode bay, and enclosed volumes *)
                      [ ',"window_cx_norm": ', json_number ],   (* center mode window *)
                      [ ',"partner_window_unit_ids": [', json_int, { ",", json_int }, "]" ],
+                     [ ',"structure": "rooftop"' ],             (* top floor, no window above in its bays *)
                 "}" ;
 (* One record per placed balcony. type must name a balcony_types entry or
    normalize_facade_spec drops it. Window placement tokens do not name balcony types. *)
@@ -257,7 +259,8 @@ balcony_instance = "{", '"floor": ', json_int,                 (* layout.floors[
     Each layout.balconies record whose type is in that library becomes one
     balcony_placement: row = index of the floor id, col0/col1 = column indices
     of bay_start and bay_end (swapped if reversed). width_norm, cx_norm,
-    window_cx_norm, bay_cx_norm, bays, and bays_center are copied when present.
+    window_cx_norm, bay_cx_norm, bays, bays_center, and structure are copied
+    when present; a placement structure overrides its type's structure.
     partner_window_unit_ids stays on B.
   Fits
     For each instance: cell = columns_xy[bay .. bay+colspan−1] × floors_y[row]

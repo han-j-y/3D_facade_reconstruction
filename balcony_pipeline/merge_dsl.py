@@ -163,6 +163,9 @@ def merge_balcony_into_windows_dsl(
         }
         if not volume:
             rec["width_norm"] = round(w_norm, 6)
+            if u.get("rooftop"):
+                # Per placement, not per type: the balcony keeps its type.
+                rec["structure"] = "rooftop"
 
         if volume:
             bay_cx = _mean_bay_center_norm(span_bays, bay_x, iw)

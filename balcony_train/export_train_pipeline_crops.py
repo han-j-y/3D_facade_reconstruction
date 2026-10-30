@@ -295,12 +295,13 @@ def commit(args: argparse.Namespace) -> None:
     picked = [r for r in rows if r["result"] == "new" or Path(r["crop"]).stem in accept or r["crop"] in accept]
     dest_dir = CROPS_DIR / "unlabeled"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    clash = [r["crop"] for r in picked if (dest_dir / r["crop"]).exists()]
-    if clash:
-        raise SystemExit(f"{len(clash)} crops already exist in {dest_dir}: {clash[:5]}")
+    # A crop committed earlier may since have moved to a kind folder; skip it anywhere under crops/.
+    present = {p.name for p in CROPS_DIR.rglob("cmp_b*_pbal_*")}
+    skipped = [r for r in picked if r["crop"] in present]
+    picked = [r for r in picked if r["crop"] not in present]
     for r in picked:
         shutil.copy2(args.out_dir / "crops" / r["crop"], dest_dir / r["crop"])
-    print(f"copied {len(picked)} crops -> {dest_dir}  (accepted checks: {len(accept)})")
+    print(f"copied {len(picked)} crops -> {dest_dir}  (accepted: {len(accept)}, already present: {len(skipped)})")
 
 
 def main() -> None:

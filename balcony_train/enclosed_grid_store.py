@@ -4,13 +4,21 @@ A saved photo with an empty cell list has no enclosure. A photo that is not
 in the file is still unlabeled. ``status`` ``grid_failure`` is a photo whose
 window grid cannot be labeled, so it is not a cell label and not "no
 enclosure". Cells are ``(floor_id, bay_id)`` from the window facade DSL.
+
+``bay_id`` is a column of the union grid (``layout.bays``). With the per-floor
+layout (``meta.floor_bays``) one floor bay spans one or more of these columns.
+
+``ignore`` lists cells whose label is ambiguous from the photo (the grid line
+cuts through the oriel, or the cell mixes it with a neighbouring building).
+It does not change ``cells``: the main score counts every cell, and only a
+supplementary score drops the ignore cells from TP, FP and FN.
 """
 
 from __future__ import annotations
 
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +44,8 @@ DEFAULT_EVAL_LABELS_JSONL = ROOT / "runs" / "enclosed_grid" / "labels_ext_all.js
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".webp")
 Cell = tuple[int, int]
 Bands = dict[int, tuple[int, int]]
+# floor id -> that floor's bays as union-column spans [c0, c1)
+FloorBays = dict[int, list[tuple[int, int]]]
 GRID_FAILURE = "grid_failure"
 
 
@@ -45,15 +55,17 @@ class GridRecord:
 
     ``status`` is ``grid_failure`` when the window grid cannot be labeled.
     That row has no cells. It is not a photo with no enclosure.
+    ``ignore`` holds the ambiguous cells, oriel or not.
     """
 
     cells: list[Cell]
     floor_shape: str | None = None
     skin: str | None = None
     status: str | None = None
+    ignore: list[Cell] = field(default_factory=list)
 
     def copy(self) -> GridRecord:
-        return GridRecord(list(self.cells), self.floor_shape, self.skin, self.status)
+        return GridRecord(list(self.cells), self.floor_shape, self.skin, self.status, list(self.ignore))
 
 
 def _plan_name(raw: Any, allowed: tuple[str, ...], field: str) -> str | None:
@@ -93,29 +105,33 @@ def record_for_save(
     *,
     plan: bool = False,
     previous: GridRecord | None = None,
+    ignore: Any = None,
 ) -> GridRecord:
-    """Cells plus one floor shape and one skin.
+    """Cells plus one floor shape and one skin, and the ignore cells.
 
     An empty cell list is a photo with no enclosure, so shape and skin are
-    cleared. A previous grid failure stays a grid failure until cells are
-    chosen. With ``plan`` off, an existing shape and skin are kept.
+    cleared. A previous grid failure stays a grid failure until cells or
+    ignore cells are chosen. With ``plan`` off, an existing shape and skin are
+    kept.
     """
     norm = normalize_cells(cells)
+    skip = normalize_cells(ignore)
     if not norm:
-        if previous is not None and previous.status == GRID_FAILURE:
+        if previous is not None and previous.status == GRID_FAILURE and not skip:
             return GridRecord([], status=GRID_FAILURE)
-        return GridRecord([])
+        return GridRecord([], ignore=skip)
     if not plan:
         return GridRecord(
             norm,
             previous.floor_shape if previous is not None else None,
             previous.skin if previous is not None else None,
+            ignore=skip,
         )
     floor = normalize_floor_shape(shape)
     shell = normalize_skin(skin)
     if floor is None or shell is None:
         raise ValueError("enclosed photo needs floor_shape and skin")
-    return GridRecord(norm, floor, shell)
+    return GridRecord(norm, floor, shell, ignore=skip)
 
 
 def normalize_cells(raw: Any) -> list[Cell]:
@@ -154,18 +170,20 @@ def load_records(path: Path) -> dict[str, GridRecord]:
             raise ValueError(f"label row missing stem: {line}")
         status = _status_name(rec.get("status"))
         cells = normalize_cells(rec.get("cells"))
+        skip = normalize_cells(rec.get("ignore"))
         if status == GRID_FAILURE:
-            if cells:
+            if cells or skip:
                 raise ValueError(f"{stem} is a grid failure, so it cannot list cells")
             out[stem] = GridRecord([], status=GRID_FAILURE)
             continue
         if not cells:
-            out[stem] = GridRecord([])
+            out[stem] = GridRecord([], ignore=skip)
             continue
         out[stem] = GridRecord(
             cells,
             normalize_floor_shape(rec.get("floor_shape")),
             normalize_skin(rec.get("skin")),
+            ignore=skip,
         )
     return out
 
@@ -180,6 +198,11 @@ def load_labels(path: Path) -> dict[str, list[Cell]]:
         for stem, rec in load_records(path).items()
         if rec.status != GRID_FAILURE
     }
+
+
+def load_ignore(path: Path) -> dict[str, list[Cell]]:
+    """Stem → ignore cells, for photos that have any."""
+    return {stem: list(rec.ignore) for stem, rec in load_records(path).items() if rec.ignore}
 
 
 def write_records(path: Path, records: dict[str, GridRecord]) -> None:
@@ -203,6 +226,9 @@ def write_records(path: Path, records: dict[str, GridRecord]) -> None:
                 row["floor_shape"] = floor
             if skin is not None:
                 row["skin"] = skin
+        skip = normalize_cells(rec.ignore)
+        if skip:
+            row["ignore"] = [list(cell) for cell in skip]
         lines.append(json.dumps(row, ensure_ascii=False))
     text = ("\n".join(lines) + "\n") if lines else ""
     path.write_text(text, encoding="utf-8")
@@ -322,3 +348,38 @@ def cell_at(
     if floor is None or bay is None:
         return None
     return (floor, bay)
+
+
+def load_floor_bays(dsl_path: Path, floor_y: Bands, bay_x: Bands) -> FloorBays:
+    """Per-floor bays from ``meta.floor_bays``; one bay per column without it."""
+    dsl = json.loads(Path(dsl_path).read_text(encoding="utf-8"))
+    rows = (dsl.get("meta") or {}).get("floor_bays")
+    singles = [(c, c + 1) for c in sorted(bay_x)]
+    if not rows or len(rows) != len(floor_y):
+        return {f: list(singles) for f in floor_y}
+    out: FloorBays = {}
+    for f, row in zip(sorted(floor_y), rows):
+        spans = [(int(b["c0"]), int(b["c1"])) for b in row if int(b["c1"]) > int(b["c0"])]
+        out[f] = spans or list(singles)
+    return out
+
+
+def bay_cells(cell: Cell, floor_bays: FloorBays) -> list[Cell]:
+    """Every cell of the floor bay that holds ``cell``."""
+    floor, col = cell
+    for c0, c1 in floor_bays.get(floor, []):
+        if c0 <= col < c1:
+            return [(floor, c) for c in range(c0, c1)]
+    return [cell]
+
+
+def partial_bays(cells: set[Cell] | list[Cell], floor_bays: FloorBays) -> list[tuple[int, int, int]]:
+    """Floor bays ``(floor, c0, c1)`` with some but not all of their cells labeled."""
+    chosen = set(cells)
+    out = []
+    for floor, spans in sorted(floor_bays.items()):
+        for c0, c1 in spans:
+            hit = sum((floor, c) in chosen for c in range(c0, c1))
+            if 0 < hit < c1 - c0:
+                out.append((floor, c0, c1))
+    return out

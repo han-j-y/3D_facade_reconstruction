@@ -53,6 +53,7 @@ from balcony_train.enclosed_grid_store import (  # noqa: E402
     DEFAULT_EVAL_LABELS_JSONL,
     DEFAULT_EVAL_PHOTO_DIR,
     find_photo,
+    load_floor_bays,
     load_grid,
 )
 from balcony_train.enclosed_symmetry import SYM_GATE  # noqa: E402
@@ -213,7 +214,9 @@ def main() -> None:
         gt = set(test.gt[s])
         clf = rect_decode(test, s, p_cell, args.t, mir)
         pure[s] = clf
-        floor_y, bay_x = load_grid(args.dsl_dir / s / "facade_dsl.json")
+        dsl = args.dsl_dir / s / "facade_dsl.json"
+        floor_y, bay_x = load_grid(dsl)
+        floor_bays = load_floor_bays(dsl, floor_y, bay_x)
         rules, dropped_top, dropped_low, added, added_up = apply_rules(
             test, s, clf, p_cell, floor_y
         )
@@ -244,8 +247,8 @@ def main() -> None:
             + (f"   blanked {_cells(rules)}" if gated_off else ""),
         ]
         photo = Image.open(find_photo(args.in_dir, s)).convert("RGB")
-        img = render_compare(photo, floor_y, bay_x, gt, pred)
-        img = draw_probs(img, floor_y, bay_x, {test.cells[i]: float(p_cell[i]) for i in ii}, args.t)
+        img = render_compare(photo, floor_y, bay_x, gt, pred, floor_bays)
+        img = draw_probs(img, floor_y, bay_x, {test.cells[i]: float(p_cell[i]) for i in ii}, args.t, floor_bays)
         panel = add_header(img, lines)
         panel.save(args.out_dir / f"{cat}__{s}.jpg", quality=92)
         tiles[cat].append(panel)

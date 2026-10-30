@@ -9,6 +9,9 @@ DEFAULT_CROPS_DIR = ROOT / "runs" / "balcony_clf" / "crops"
 DEFAULT_LABELS_JSONL = ROOT / "runs" / "balcony_clf" / "labels.jsonl"
 DEFAULT_SPLIT_JSON = ROOT / "runs" / "balcony_clf" / "split.json"
 DEFAULT_RAILING_CKPT = ROOT / "checkpoints" / "railing_best.pt"
+# Structure head (projecting / juliet) on the same frozen DINOv2. The pipeline
+# loads only this head from it, so railing_best.pt keeps the other attributes.
+DEFAULT_STRUCTURE_CKPT = ROOT / "checkpoints" / "railing_structure.pt"
 BATCH_RUNS_DIR = ROOT / "runs" / "batch"
 # CMP extended (cmp_x) balcony boxes cut from the official XML, for labeling.
 EXT_PHOTO_DIR = ROOT / "data" / "extended"

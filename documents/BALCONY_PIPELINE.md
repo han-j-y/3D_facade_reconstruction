@@ -69,6 +69,8 @@ Legacy `glass` fingerprints map to `surface_panel`; `baluster` / bare `metal` â†
 `open_work`. Disabled axes use fixed defaults (`projecting` / `open` /
 `rectangle` / supports 0). Use `--recovery-profile full` to restore other axes.
 
+Floor shape and structure are voted inside each type, separately from that key. Floor: circle or triangle only with more votes than each other shape, else rectangle. Structure: the type votes projecting / juliet from the classifier (head copied from `checkpoints/railing_structure.pt`), juliet on a strict majority. Rooftop is not a type value: a balcony on the top floor with no window above it in its bays gets `"structure": "rooftop"` on its `layout.balconies` record, which the compiler applies to that placement only (`--no-structure` turns both off).
+
 `railing.kind` / `railing.material` use `checkpoints/railing_best.pt` when present
 (frozen DINOv2 + multitask heads; see `balcony_train/README.md`). Otherwise the
 opaque-run heuristic in `heuristic_ir.py` (kind only; material defaults to

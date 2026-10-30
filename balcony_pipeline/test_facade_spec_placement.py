@@ -123,6 +123,14 @@ class FacadeSpecPlacementTests(unittest.TestCase):
         self.assertIn("balc_type_00", facade["balconies"])
         self.assertEqual(facade["meta"].get("columns_xy")[0], [0, 100])
 
+    def test_placement_structure_is_copied(self) -> None:
+        dsl = self._dsl()
+        dsl["layout"]["balconies"][0]["structure"] = "rooftop"
+        facade = normalize_facade_spec(dsl)
+        self.assertEqual(facade["balcony_placement"][0]["structure"], "rooftop")
+        plain = normalize_facade_spec(self._dsl())
+        self.assertNotIn("structure", plain["balcony_placement"][0])
+
     def test_enclosed_omits_width_norm_keeps_column_span(self) -> None:
         dsl = self._dsl()
         dsl["balcony_types"] = [

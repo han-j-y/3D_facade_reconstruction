@@ -27,6 +27,8 @@ from enclosed import (  # noqa: E402
     place_enclosed_volumes,
     vote_enclosed_floor_shape,
     vote_enclosed_skin,
+    vote_open_floor_shape,
+    vote_structure,
     slice_volume,
     snap_columns,
 )
@@ -164,13 +166,40 @@ class EnclosedPlaceTests(unittest.TestCase):
         }
         out, shape, counts = apply_floor_majority(ir, ["circle", "rectangle"])
         self.assertEqual(shape, "rectangle")
-        self.assertEqual(counts, {"rectangle": 1, "circle": 1})
+        self.assertEqual(counts, {"rectangle": 1, "circle": 1, "triangle": 0})
         self.assertEqual(out["floor"]["shape"], "rectangle")
         self.assertEqual(out["railing"]["material"], "metal")
         self.assertEqual(ir["floor"]["shape"], "circle")
         out, shape, _counts = apply_floor_majority(ir, ["circle", "circle", "triangle"])
         self.assertEqual(shape, "circle")
         self.assertEqual(out["floor"]["shape"], "circle")
+
+    def test_open_floor_vote_keeps_triangle(self) -> None:
+        winner, counts = vote_open_floor_shape(["triangle", "triangle", "rectangle"])
+        self.assertEqual(winner, "triangle")
+        self.assertEqual(counts, {"rectangle": 1, "circle": 0, "triangle": 2})
+        # Circle and triangle together outnumber rectangle, but neither wins alone.
+        winner, _counts = vote_open_floor_shape(["triangle", "circle", "rectangle"])
+        self.assertEqual(winner, "rectangle")
+        winner, _counts = vote_open_floor_shape(["triangle", "triangle", "circle", "circle"])
+        self.assertEqual(winner, "rectangle")
+        winner, counts = vote_open_floor_shape([None, "circle", "hexagon"])
+        self.assertEqual(winner, "rectangle")
+        self.assertEqual(counts, {"rectangle": 1, "circle": 1, "triangle": 0})
+        winner, _counts = vote_open_floor_shape([None, "circle"])
+        self.assertEqual(winner, "circle")
+
+    def test_structure_vote_is_projecting_or_juliet(self) -> None:
+        winner, counts = vote_structure(["juliet", "juliet", "projecting"])
+        self.assertEqual(winner, "juliet")
+        self.assertEqual(counts, {"projecting": 1, "juliet": 2})
+        winner, _counts = vote_structure(["juliet", "projecting"])
+        self.assertEqual(winner, "projecting")
+        winner, counts = vote_structure(["rooftop", "juliet", None])
+        self.assertEqual(winner, "projecting")
+        self.assertEqual(counts, {"projecting": 1, "juliet": 1})
+        winner, _counts = vote_structure([])
+        self.assertEqual(winner, "projecting")
 
     def test_enclosed_floor_vote_maps_triangle_and_ties_to_rectangle(self) -> None:
         winner, counts = vote_enclosed_floor_shape(["circle", "triangle"])

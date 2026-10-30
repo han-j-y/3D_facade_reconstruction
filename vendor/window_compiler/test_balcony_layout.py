@@ -20,10 +20,15 @@ from balcony_layout import (  # noqa: E402
 from facade_spec import get_cell  # noqa: E402
 
 
-def _ir(enclosure: str, shape: str = "rectangle", width: float = 2.0) -> dict:
+def _ir(
+    enclosure: str,
+    shape: str = "rectangle",
+    width: float = 2.0,
+    structure: str = "projecting",
+) -> dict:
     return {
         "type": "balcony",
-        "structure": "projecting",
+        "structure": structure,
         "enclosure": enclosure,
         "floor": {"shape": shape, "params": {"width": width, "depth": 1.0}},
         "railing": {"kind": "open_work", "height": 1.1},
@@ -92,6 +97,26 @@ class StackTests(unittest.TestCase):
         lower, other = balcony_frames(spec)
         self.assertEqual(lower["roof"], "own")
         self.assertFalse(other["aligned"])
+
+    def test_juliet_has_no_slab_to_share(self) -> None:
+        self.lib["jul"] = _ir("open", structure="juliet")
+        spec = _spec([_at(3, 1, "enc"), _at(2, 1, "jul")], self.lib)
+        lower, upper = balcony_frames(spec)
+        self.assertIsNone(upper["outline"])
+        self.assertEqual(lower["roof"], "own")
+        self.assertFalse(upper["carries_stack"])
+
+    def test_rooftop_on_a_stack_carries_its_roof(self) -> None:
+        def roof_at(row: int, col: int) -> dict:
+            return {**_at(row, col, "open"), "structure": "rooftop"}
+
+        spec = _spec([_at(3, 1, "enc"), roof_at(2, 1), roof_at(1, 0)], self.lib)
+        lower, on_stack, alone = balcony_frames(spec)
+        self.assertEqual(lower["roof"], "shared")
+        self.assertEqual(on_stack["structure"], "rooftop")
+        self.assertTrue(on_stack["carries_stack"])
+        self.assertFalse(alone["carries_stack"])
+        self.assertEqual(self.lib["open"]["structure"], "projecting")
 
     def test_upper_takes_lower_plan_shape(self) -> None:
         spec = _spec([_at(3, 1, "circ"), _at(2, 1, "open")], self.lib)

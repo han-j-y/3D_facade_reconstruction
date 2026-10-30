@@ -179,7 +179,8 @@ def _frame(
     floor = ir.get("floor") or {}
     params = floor.get("params") or {}
     shape = str(floor.get("shape") or "rectangle").lower()
-    structure = str(ir.get("structure") or "projecting")
+    # A placement may override its type's structure (rooftop is per balcony).
+    structure = str(rec.get("structure") or ir.get("structure") or "projecting")
     enclosure = str(ir.get("enclosure") or "open")
     thick = float((ir.get("output") or {}).get("slab_thickness") or 0.12)
     depth = float(DEFAULT_SLAB_DEPTH_M)
@@ -202,7 +203,8 @@ def _frame(
         # Rectangle railings size from span_w * 0.98; keep them on this slab.
         span_w = (bx1 - bx0) / 0.98
 
-    stacks = structure not in ("inset", "composite")
+    # A juliet railing has no slab, so nothing can stack on or under it.
+    stacks = structure not in ("inset", "composite", "juliet")
     outline = (
         slab_outline(
             shape if shape in OUTLINE_SHAPES else "rectangle",
@@ -243,6 +245,7 @@ def _frame(
         "roof": None,
         "above": None,
         "top_z": None,
+        "carries_stack": False,
     }
 
 
@@ -303,6 +306,7 @@ def link_stacks(
             f["roof"] = "shared"
             f["above"] = best["index"]
             f["top_z"] = best["sill_z"]
+            best["carries_stack"] = True
             _align_to(best, f)
         else:
             f["roof"] = "own"

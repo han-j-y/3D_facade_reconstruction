@@ -88,6 +88,8 @@ def _cube(
 
 SOLID_PARAPET_M = 0.20
 GLASS_PANEL_M = 0.01
+# Juliet railing: outer face this far in front of the wall, no slab.
+JULIET_PROJECTION_M = 0.15
 
 
 def _rail_thickness(ir: dict[str, Any], kind: str) -> float:
@@ -711,6 +713,63 @@ def _add_open_work_guard(
     )
 
 
+def _add_front_railing(
+    *,
+    prefix: str,
+    kind: str,
+    material: str,
+    x0: float,
+    x1: float,
+    y_front: float,
+    y_wall: float,
+    z_lo: float,
+    rail_h: float,
+    rail_t: float,
+    mat_key: str,
+    parent: bpy.types.Collection,
+) -> None:
+    """One straight railing from ``x0`` to ``x1`` whose outer face is at ``y_front``."""
+    if kind == "open_work":
+        _add_open_work_guard(
+            prefix=prefix,
+            outline=[(x0, y_front), (x1, y_front)],
+            y_wall=y_wall,
+            z_slab_top=z_lo,
+            rail_h=rail_h,
+            parent=parent,
+            material=material,
+            mat_key=mat_key,
+            front_only=True,
+        )
+    elif kind == "surface_panel":
+        _add_surface_panel_guard(
+            prefix=prefix,
+            cx=0.5 * (x0 + x1),
+            x0=x0,
+            x1=x1,
+            y_wall=y_front - MULLION_WIDTH_M,
+            depth=MULLION_WIDTH_M,
+            z_lo=z_lo,
+            rail_h=rail_h,
+            parent=parent,
+            mat_key=mat_key,
+            panel_t=rail_t,
+            front_only=True,
+        )
+    else:
+        _cube(
+            name=f"{prefix}_rail_f",
+            cx=0.5 * (x0 + x1),
+            cy=y_front - rail_t / 2.0,
+            cz=z_lo + rail_h / 2.0,
+            sx=x1 - x0,
+            sy=rail_t,
+            sz=rail_h,
+            mat_key=mat_key,
+            parent=parent,
+        )
+
+
 def _add_surface_panel_guard(
     *,
     prefix: str,
@@ -1026,6 +1085,34 @@ def add_balcony_meshes(
                     mat_key=rail_mat,
                     parent=balc_coll,
                 )
+            n += 1
+            continue
+
+        if structure == "juliet" or (
+            structure == "rooftop" and not frame.get("carries_stack")
+        ):
+            # No slab. Juliet: railing just in front of the window opening.
+            # Rooftop: railing on the top edge of its storey, its back face on
+            # the wall plane (a coplanar front face would z-fight the wall).
+            sx_rail = span_w * 0.98
+            if structure == "juliet":
+                y_rail, z_lo = front_y + JULIET_PROJECTION_M, sill_z
+            else:
+                y_rail, z_lo = front_y + rail_t, frame["z1"]
+            _add_front_railing(
+                prefix=prefix,
+                kind=kind,
+                material=rail_material,
+                x0=cx - sx_rail / 2.0,
+                x1=cx + sx_rail / 2.0,
+                y_front=y_rail,
+                y_wall=front_y,
+                z_lo=z_lo,
+                rail_h=rail_h,
+                rail_t=rail_t,
+                mat_key=rail_mat,
+                parent=balc_coll,
+            )
             n += 1
             continue
 

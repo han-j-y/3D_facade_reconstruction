@@ -62,13 +62,27 @@ string          = '"', { ? any char except '"' ? }, '"'
 (* ——— structure: how the slab meets the wall ——— *)
 
 structure_line  = "structure", ws, struct_name ;
-struct_name     = "projecting" | "inset" | "composite" | "free_standing" ;
+struct_name     = "projecting" | "inset" | "composite" | "free_standing"
+                | "juliet" | "rooftop" ;
 (* default: projecting
    projecting     — cantilever in front of the wall
    inset          — loggia: void into the volume, inner side walls + ceiling,
                     railing on the front lip only
    composite      — inset loggia (no lip rail) + projecting slab and 3-sided rail
    free_standing  — posts at slab corners (rectangle: 4) from grade to soffit
+   juliet         — no slab: a front railing 0.15 m in front of the wall, from
+                    the sill of the window opening. Floor shape is ignored.
+   rooftop        — no slab of its own: the floor is the roof or setback below.
+                    A front railing stands on the top edge of its storey, its
+                    back face on the wall plane. When an enclosed stack below shares this
+                    balcony's slab as its roof (link_stacks), it compiles as
+                    projecting on that slab instead.
+
+   Photo recovery: the type votes projecting / juliet from the railing
+   classifier's structure head (juliet on a strict majority). rooftop is not
+   a type value in recovery: a balcony on the top floor with no window in its
+   bays above it gets "structure": "rooftop" on its layout.balconies record
+   (FDSL), which overrides its type's structure for that placement only.
 *)
 
 (* ——— enclosure ——— *)
@@ -192,16 +206,19 @@ output_block    = "output:", nl, { ws, ident, ws, scalar, nl } ;
   BDSL is a subset of this JSON. Photo majority-vote uses a discrete
   fingerprint selected by recovery_profile (default railing_only:
   railing.kind in {open_work, surface_panel, solid}; for open_work also
-  railing.material in {metal, masonry}). Disabled axes use fixed
-  (structure=projecting, enclosure=open, floor=rectangle, supports=0)
-  and are omitted from the vote key — flip the profile to bring them back.
+  railing.material in {metal, masonry}). Floor shape and structure are
+  voted separately inside the type: a circle or a triangle needs more
+  votes than each other shape (else rectangle; juliet members do not
+  vote), and structure is projecting / juliet with juliet on a strict
+  majority (rooftop is per placement, see structure_line). Other disabled axes use fixed
+  (enclosure=open, supports=0) and are omitted from the vote key.
   Floor×bay and wall window/door come from the window FDSL grid.
   Floats (width, depth, height, thicknesses) and opening are dropped.
 
   {
     "type": "balcony",
     "debug": bool,
-    "structure": "projecting"|"inset"|"composite"|"free_standing",
+    "structure": "projecting"|"inset"|"composite"|"free_standing"|"juliet"|"rooftop",
     "enclosure": "open"|"half_enclosed"|"enclosed",
     "columns"?: { "count": int, "width": <scalar>, "style": "square"|"round" },
     "walls"?: { "infill": "glass"|"wall", "curtain_wall"?: bool },

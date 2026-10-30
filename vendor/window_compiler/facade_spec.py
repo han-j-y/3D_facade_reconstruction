@@ -349,6 +349,11 @@ def normalize_facade_spec(
                     if rec.get("bays_center")
                     else {}
                 ),
+                **(
+                    {"structure": str(rec["structure"])}
+                    if rec.get("structure")
+                    else {}
+                ),
             }
         )
 

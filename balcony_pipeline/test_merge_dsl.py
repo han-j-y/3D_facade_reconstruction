@@ -53,6 +53,31 @@ class PhotoNormTests(unittest.TestCase):
         self.assertAlmostEqual(b["cx_norm"], 0.2)
         self.assertEqual(b["bay_start"], 0)
         self.assertEqual(b["bay_end"], 2)
+        self.assertNotIn("structure", b)
+
+    def test_merge_marks_rooftop_on_the_placement(self) -> None:
+        dsl = {
+            "schema": "facade_recovery_dsl_v1",
+            "meta": {"image_size": [1000, 800]},
+            "layout": {"floors": [], "bays": [], "placement": []},
+            "window_types": [],
+            "instances": [],
+        }
+        base = {"type_id": 0, "floor": 0, "bay_start": 0, "bay_end": 0, "bay": 0}
+        units = [
+            {**base, "unit_id": 0, "box_xyxy": [100, 10, 300, 80], "rooftop": True},
+            {**base, "unit_id": 1, "floor": 1, "box_xyxy": [100, 210, 300, 280]},
+        ]
+        out = merge_balcony_into_windows_dsl(
+            dsl,
+            balcony_types=[{"type_id": 0, "name": "balc_type_00", "structure_ir": {}}],
+            units=units,
+            center_mode="photo",
+        )
+        roof, below = out["layout"]["balconies"]
+        self.assertEqual(roof["type"], below["type"])
+        self.assertEqual(roof["structure"], "rooftop")
+        self.assertNotIn("structure", below)
 
     def test_merge_bay_center_omits_cx_norm(self) -> None:
         dsl = {

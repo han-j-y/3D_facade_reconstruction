@@ -47,6 +47,7 @@ from enclosed import (  # noqa: E402
     place_enclosed_volumes,
     vote_enclosed_floor_shape,
     vote_enclosed_skin,
+    vote_structure,
 )
 from cluster import cluster_balcony_boxes  # noqa: E402
 from draw import (  # noqa: E402
@@ -56,7 +57,7 @@ from draw import (  # noqa: E402
     draw_vote,
     save,
 )
-from filter import filter_balcony_boxes  # noqa: E402
+from filter import filter_balcony_boxes, no_window_above  # noqa: E402
 from heuristic_ir import (  # noqa: E402
     balcony_type_token,
     enclosure_from_ir,
@@ -65,6 +66,7 @@ from heuristic_ir import (  # noqa: E402
     ir_to_tokens,
     railing_kind_from_ir,
     railing_material_from_ir,
+    structure_from_ir,
 )
 from merge_dsl import merge_balcony_into_windows_dsl  # noqa: E402
 from recovery_profile import DEFAULT_PROFILE, PROFILES, resolve_profile  # noqa: E402
@@ -72,7 +74,7 @@ from snap import _bands_from_windows_dsl, snap_units  # noqa: E402
 from vote import vote_cluster_ir  # noqa: E402
 
 from balcony_train.model import try_load_predictor  # noqa: E402
-from balcony_train.paths import DEFAULT_RAILING_CKPT  # noqa: E402
+from balcony_train.paths import DEFAULT_RAILING_CKPT, DEFAULT_STRUCTURE_CKPT  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -173,6 +175,20 @@ def parse_args() -> argparse.Namespace:
         help="force the opaque-run heuristic even if railing_best.pt exists",
     )
     ap.add_argument(
+        "--structure-ckpt",
+        type=Path,
+        default=DEFAULT_STRUCTURE_CKPT,
+        help=(
+            "checkpoint whose structure head (projecting / juliet) is loaded onto the "
+            "railing classifier when that one has none (default: railing_structure.pt)"
+        ),
+    )
+    ap.add_argument(
+        "--no-structure",
+        action="store_true",
+        help="every open balcony stays projecting (no structure head, no rooftop rule)",
+    )
+    ap.add_argument(
         "--balcony-center",
         choices=("window", "bay", "photo"),
         default="window",
@@ -251,9 +267,19 @@ def resolve_railing_predictor(args: argparse.Namespace, device: torch.device):
     """Classifier if ckpt exists; None → opaque-run heuristic in infer_balcony_ir."""
     force_off = bool(getattr(args, "no_railing_ckpt", False))
     ckpt = getattr(args, "railing_ckpt", None)
-    predictor = try_load_predictor(ckpt, device, force_off=force_off)
+    structure_ckpt = None if getattr(args, "no_structure", False) else getattr(
+        args, "structure_ckpt", DEFAULT_STRUCTURE_CKPT
+    )
+    predictor = try_load_predictor(
+        ckpt, device, force_off=force_off, structure_ckpt=structure_ckpt
+    )
     if predictor is not None:
         print(f"railing classifier {predictor.ckpt_path}")
+        if getattr(predictor.model, "_structure_trained", False):
+            src = predictor.structure_ckpt or predictor.ckpt_path
+            print(f"structure head {src}")
+        else:
+            print("structure head missing; open balconies stay projecting")
     elif force_off:
         print("railing classifier off (--no-railing-ckpt); using heuristic")
     else:
@@ -397,19 +423,23 @@ def infer_unit_ir(
 ) -> dict:
     """Railing IR for one open-balcony crop.
 
-    Kind, material, and floor shape still come from the railing classifier.
-    Enclosure does not: every railing crop stays ``open``. Enclosed cells are
-    only those from the cell detector.
+    Kind, material, floor shape, and structure (projecting / juliet) come from
+    the railing classifier. Rooftop is not a type attribute: it rides on the
+    placement (``unit["rooftop"]``, see ``mark_rooftop_units``). Enclosure does not come from the
+    classifier: every railing crop stays ``open``. Enclosed cells are only
+    those from the cell detector.
     """
     kind_override = None
     material_override = None
     floor_override = None
+    structure_override = None
     if predictor is not None:
         if hasattr(predictor, "predict_full"):
             pred = predictor.predict_full(crop)
             kind_override = pred.get("kind")
             material_override = pred.get("material")
             floor_override = pred.get("floor_shape")
+            structure_override = pred.get("structure")
         else:
             kind_override = predictor.predict(crop)
     ir = infer_balcony_ir(
@@ -420,9 +450,33 @@ def infer_unit_ir(
         rail_kind_override=kind_override,
         rail_material_override=material_override,
         floor_shape_override=floor_override,
+        structure_override=structure_override,
     )
     ir["enclosure"] = "open"
     return ir
+
+
+def mark_rooftop_units(
+    units: list[dict],
+    windows_dsl: dict,
+    *,
+    image_height: int,
+) -> None:
+    """Set ``unit["rooftop"]`` on the top floor when no window in its bays lies above it.
+
+    The floor of such a balcony is the roof below it. It is set from the
+    window grid, not from the crop, and only on the placement: the balcony
+    keeps its type, and the type vote stays projecting / juliet.
+    """
+    instances = windows_dsl.get("instances") or []
+    floor_y, _bay_x = _bands_from_windows_dsl(windows_dsl)
+    top = min(floor_y, key=lambda f: floor_y[f][0]) if floor_y else None
+    for u in units:
+        u["rooftop"] = bool(
+            top is not None
+            and int(u["floor"]) == int(top)
+            and no_window_above(u["box_xyxy"], instances, ih=int(image_height))
+        )
 
 
 def _with_unit_floor(voted_ir: dict | None, member_ir: dict) -> dict:
@@ -610,6 +664,10 @@ def run(args: argparse.Namespace) -> Path | None:
             force=True,
         )
         print(f"  {len(filtered_boxes)} filtered -> {len(snapped)} units (mode=balcony)")
+        if not getattr(args, "no_structure", False):
+            mark_rooftop_units(snapped, windows_dsl, image_height=facade.height)
+            n_roof = sum(1 for u in snapped if u.get("rooftop"))
+            print(f"  rooftop (top floor, no window above in its bays): {n_roof}/{len(snapped)}")
     if snapped:
         save(
             draw_snap(
@@ -815,6 +873,17 @@ def run(args: argparse.Namespace) -> Path | None:
                     member_preds, prefer_unit_id=med_i, profile_name=profile_name
                 )
                 vote = voted["vote"]
+                structure, structure_counts = vote_structure(
+                    [
+                        structure_from_ir(u["structure_ir_member"])
+                        for u in member_units
+                    ]
+                )
+                if isinstance(voted["structure_ir"], dict):
+                    voted["structure_ir"] = copy.deepcopy(voted["structure_ir"])
+                    voted["structure_ir"]["structure"] = structure
+                vote["structure"] = structure
+                vote["structure_counts"] = structure_counts
                 if not per_unit_floor:
                     voted_ir, floor_shape, floor_counts = apply_floor_majority(
                         voted["structure_ir"],
@@ -822,6 +891,7 @@ def run(args: argparse.Namespace) -> Path | None:
                             floor_shape_from_ir(p["ir"])
                             for p in member_preds
                             if isinstance(p.get("ir"), dict)
+                            and structure_from_ir(p["ir"]) != "juliet"
                         ],
                     )
                     voted["structure_ir"] = voted_ir
@@ -829,23 +899,29 @@ def run(args: argparse.Namespace) -> Path | None:
                     vote["floor_counts"] = floor_counts
                 for u in member_units:
                     if per_unit_floor:
-                        u["structure_ir"] = _with_unit_floor(
+                        ir_u = _with_unit_floor(
                             voted["structure_ir"], u["structure_ir_member"]
                         )
                     else:
-                        u["structure_ir"] = copy.deepcopy(voted["structure_ir"])
+                        ir_u = copy.deepcopy(voted["structure_ir"])
+                    u["structure_ir"] = ir_u
                 floor_s = ""
                 if not per_unit_floor:
                     counts = vote.get("floor_counts") or {}
                     floor_s = (
                         f"  floor={vote.get('floor_shape')} "
+                        f"rectangle={counts.get('rectangle', 0)} "
                         f"circle={counts.get('circle', 0)} "
-                        f"rectangle={counts.get('rectangle', 0)}"
+                        f"triangle={counts.get('triangle', 0)}"
                     )
                 print(
                     f"  type_{tid:02d}: vote "
                     f"{vote.get('winner_count', 0)}/{vote.get('n_valid', 0)} "
-                    f"unique={vote.get('n_unique', 0)}{floor_s}"
+                    f"unique={vote.get('n_unique', 0)}{floor_s}  "
+                    f"structure={structure} "
+                    f"projecting={structure_counts['projecting']} "
+                    f"juliet={structure_counts['juliet']} "
+                    f"rooftop={sum(1 for u in member_units if u.get('rooftop'))}"
                 )
                 if not per_unit_floor:
                     types_out.append(

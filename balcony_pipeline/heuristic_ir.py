@@ -39,6 +39,16 @@ def railing_material_from_ir(ir: dict[str, Any]) -> str | None:
 
 _FLOOR_SHAPES = ("rectangle", "triangle", "circle")
 _ENCLOSURES = ("open", "half_enclosed", "enclosed")
+# Recovery structures. projecting / juliet come from the classifier; rooftop
+# is set from the window grid (no window above the balcony in its bays).
+RECOVERY_STRUCTURES = ("projecting", "juliet", "rooftop")
+_STRUCTURES = ("projecting", "inset", "composite", "free_standing", "juliet", "rooftop")
+
+
+def structure_from_ir(ir: dict[str, Any]) -> str:
+    """BDSL structure on an IR. Unknown values become projecting."""
+    s = str(ir.get("structure") or "projecting").strip().lower()
+    return s if s in _STRUCTURES else "projecting"
 
 
 def floor_shape_from_ir(ir: dict[str, Any]) -> str:
@@ -62,6 +72,9 @@ def balcony_type_token(ir: dict[str, Any], *, include_floor: bool = False) -> st
         token = kind
     if include_floor:
         token = f"{token}_{floor_shape_from_ir(ir)}"
+    structure = structure_from_ir(ir)
+    if structure != "projecting":
+        token = f"{token}_{structure}"
     enclosure = enclosure_from_ir(ir)
     if enclosure != "open":
         token = f"{token}_{enclosure}"
@@ -315,6 +328,7 @@ def infer_balcony_ir(
     rail_material_override: str | None = None,
     floor_shape_override: str | None = None,
     enclosure_override: str | None = None,
+    structure_override: str | None = None,
 ) -> dict[str, Any]:
     """Appearance cues → BDSL IR. Disabled axes use FIXED_DEFAULTS.
 
@@ -323,6 +337,8 @@ def infer_balcony_ir(
     ``open_work`` (default ``metal``). ``floor_shape_override`` replaces the
     aspect heuristic when the classifier labeled a plan, and
     ``enclosure_override`` does the same for open / half_enclosed / enclosed.
+    ``structure_override`` (projecting / juliet / rooftop) wins over the
+    profile, so structure is recovered under ``railing_only`` too.
     """
     p = resolve_profile(profile_name)
     arr = _to_np(crop)
@@ -347,7 +363,10 @@ def infer_balcony_ir(
     else:
         enclosure = str(FIXED_DEFAULTS["enclosure"])
 
-    if p.get("structure"):
+    s_override = str(structure_override or "").strip().lower()
+    if s_override in RECOVERY_STRUCTURES:
+        structure = s_override
+    elif p.get("structure"):
         if aspect > 3.2:
             structure = "projecting"
         elif aspect < 0.85 and bh / ih > 0.18:

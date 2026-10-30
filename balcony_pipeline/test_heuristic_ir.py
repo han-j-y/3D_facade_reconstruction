@@ -26,6 +26,7 @@ from heuristic_ir import (  # noqa: E402
     floor_shape_from_ir,
     infer_balcony_ir,
     ir_to_tokens,
+    structure_from_ir,
 )
 from recovery_profile import FIXED_DEFAULTS, resolve_profile  # noqa: E402
 
@@ -63,6 +64,37 @@ class RailingOnlyProfileTests(unittest.TestCase):
             "open_work_metal_triangle_half_enclosed",
         )
         self.assertEqual(balcony_type_token({**ir, "enclosure": "open"}), "open_work_metal")
+
+    def test_type_token_names_non_projecting_structure(self) -> None:
+        ir = {"railing": {"kind": "solid"}, "structure": "juliet"}
+        self.assertEqual(balcony_type_token(ir), "solid_juliet")
+        ir["structure"] = "rooftop"
+        self.assertEqual(balcony_type_token(ir), "solid_rooftop")
+        ir["structure"] = "projecting"
+        self.assertEqual(balcony_type_token(ir), "solid")
+        self.assertEqual(structure_from_ir({"structure": "nope"}), "projecting")
+
+    def test_structure_override_under_railing_only(self) -> None:
+        crop = Image.new("RGB", (60, 30), (128, 128, 128))
+        for name in ("juliet", "rooftop", "projecting"):
+            ir = infer_balcony_ir(
+                crop,
+                box=[0, 0, 60, 30],
+                image_size=(600, 800),
+                profile_name="railing_only",
+                rail_kind_override="solid",
+                structure_override=name,
+            )
+            self.assertEqual(ir["structure"], name)
+        ir = infer_balcony_ir(
+            crop,
+            box=[0, 0, 60, 30],
+            image_size=(600, 800),
+            profile_name="railing_only",
+            rail_kind_override="solid",
+            structure_override=None,
+        )
+        self.assertEqual(ir["structure"], FIXED_DEFAULTS["structure"])
 
     def test_enclosure_override_from_classifier(self) -> None:
         crop = Image.new("RGB", (64, 48), (120, 120, 120))

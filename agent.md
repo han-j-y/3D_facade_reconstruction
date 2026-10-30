@@ -23,6 +23,9 @@ The default test is the 133-photo row. `paper_eval.py` still reads `runs/balcony
 - The eval set is never used for training or for choosing parameters.
 - Label UI:
   `balcony_train/enclosed_grid_ui.py --in-dir data/base_jpg --all-photos --labels runs/enclosed_grid/labels_train.jsonl`
+  - 2026-10-29: the UI draws the per-floor bays (`meta.floor_bays`). Click toggles a whole floor bay; Shift+click toggles one union column. Labels are still stored per union column `(floor, column)`, so the scorers and old labels are unchanged. A red outline marks a half-labeled bay. `--review-partial` queues only those photos (test: 16, train: 7); `--stems` queues named photos. Before this the UI drew only the union columns. Some half-labeled bays are deliberate (an oriel narrower than its floor bay, e.g. `cmp_x0078` f2–f3 b5–6).
+  - 2026-10-29: ignore cells. Right-click (Shift+right-click: one column) or Ignore mode (I) marks a cell whose label is ambiguous from the photo (the grid line cuts through the oriel, or the cell mixes it with a neighbouring building). Saved as `"ignore": [[f, c], ...]` next to `cells`, without changing `cells`, so the main per-column score is unchanged. `score_enclosed_bays.py` adds supplementary rows that drop ignore cells from TP / FP / FN and prints how many cells were ignored. Mark ignore from the photo only, never from the prediction boards.
+  - Test DSLs `cmp_x0020`, `0094`, `0121`, `0224` (and `0005`, still exact) were rebuilt on Oct 28, after `labels_ext_all.jsonl` was saved on Oct 27. Their cell labels need a check in the UI.
 - Train labels hold 29 enclosure photos, 37 balconies (4-connected cell groups), 110 cells. `labels_train.jsonl` still has all 29.
 - Shared SAM3 masks: `balcony_train/export_enclosed_masks.py` writes `runs/enclosed_grid/gt_masks/`. One white-on-black PNG per balcony, same size as the photo. The white region is the window-cell rectangle, not the balcony outline. `check/` is a color overlay for looking; do not train on it.
 - Left out of the share because the window grid does not cover the enclosure: `cmp_b0291`, `cmp_b0304`, `cmp_b0305`. Shared set is 26 photos, 33 balconies, 103 cells. `0291` mixes an open railing and windows in one cell. `0304` and `0305` only have window boxes, so the oriel body is not a cell.
@@ -140,6 +143,22 @@ cells tp=97 fp=11 fn=40  recall=0.708  precision=0.898
 
 Groups: exact 16, wrong 6, missed 4, none_ok 31, false_pos 4. The 16 exact enclosure photos are unchanged. Six no-enclosure photos become correct: `0009`, `0046`, `0077`, `0134`, `0186`, `0191`. The four false positives left on purpose (gate 0.23 and above) are `0073`, `0120`, `0173`, `0180`. Four enclosure photos that were wrong become missed: `0028` (already IoU 0), `0074`, `0081`, `0121`. Detect falls by the three that had overlapped the label.
 
+**2026-10-29 rescore on the 133-photo test set, current grids.** The old test cache (`cells_ext_no0227.npz`, 6,754 cells) was built on old grids for 10 photos and made the scorer crash. Rebuilt: `cache_volume_cells.py --out runs/enclosed_grid/volume_cells_floor_bays_20261029.json`, then `cell_features_build.py --volume-cache <that> --out runs/cell_clf/cells_ext_20261029.npz` (7,009 cells), then `clf_three_rules.py --gate 0.10 --eval-cells <that> --out-dir runs/cell_clf/compare_clf_rules_gate_ext_20261029`. Train cache unchanged (all 375 photos match their grids). Labels: `labels_ext_all.jsonl` as of this date, before the half-labeled-bay review. Pooled cells:
+
+| set | photos | TP | FP | FN | P | R | F1 | IoU | exact photos |
+|---|---|---|---|---|---|---|---|---|---|
+| test, all | 133 (56 with oriels) | 262 | 160 | 266 | 0.621 | 0.496 | 0.552 | 0.381 | 74/133 |
+
+Groups: exact 7, wrong 38, missed 11, none_ok 67, false_pos 10. Without the gate, the four rules give 272 / 210 / 256.
+
+Compare images (`render_compare`, `draw_probs`) now draw the per-floor bays when given `floor_bays` (`clf_three_rules.py`, `op3_touch_op1.py`, `draw_clf_compare.py`, `draw_cell_clf_compare.py` pass it). Cells are still colored per union column; each floor bay gets one outline, one name (`f1 b2-4`) and one probability, the highest among its columns. A white outline marks a bay whose columns differ. Scores are unchanged.
+
+Supplementary, per floor bay (`balcony_train/score_enclosed_bays.py --preds runs/cell_clf/compare_clf_rules_gate_ext_20261029/preds.json`). Each floor bay counts once however many union columns it spans; it is labeled / predicted when any of its columns is. Same predictions and labels as the per-column table above:
+
+| set | photos | floor bays | TP | FP | FN | P | R | F1 | IoU | exact photos |
+|---|---|---|---|---|---|---|---|---|---|---|
+| test, all | 133 | 4656 | 208 | 112 | 208 | 0.650 | 0.500 | 0.565 | 0.394 | 77/133 |
+
 ### Pipeline default
 
 `balcony_train/enclosed_detect.py`, called from `balcony_pipeline/run_balcony.py` and from `run_pipeline.py --with-balconies`. Default `--enclosed-method cell_clf`. `--enclosed-method sam3` restores the previous SAM3+DA3 volumes (`detect_enclosed_volume_boxes`).
@@ -152,7 +171,7 @@ Enclosed skin is the same vote on a separate head (`punched_window` / `curtain_w
 
 Railing crops stay `open`. `infer_unit_ir` does not read the railing classifier's enclosure head, so a handrail is never `half_enclosed` or `enclosed`. Enclosed units come only from the cell detector.
 
-Open-balcony floor shape is a separate majority inside each appearance cluster (`apply_floor_majority`), using the same rule: circle only on a strict majority, otherwise rectangle. The railing vote (kind and material) is unchanged, and the winning railing IR receives that floor. `--no-floor-shape-vote` and `--no-railing-vote` keep each unit's own floor. The cluster vote record stores `floor_shape` and `floor_counts`.
+Open-balcony floor shape is a separate majority inside each appearance cluster (`apply_floor_majority` → `vote_open_floor_shape`). Since 2026-10-29 triangle is its own shape there: a circle or a triangle wins only with more votes than each of the other two shapes, otherwise rectangle; juliet members do not vote. The enclosed photo vote above still maps triangle to rectangle. The railing vote (kind and material) is unchanged, and the winning railing IR receives that floor. `--no-floor-shape-vote` and `--no-railing-vote` keep each unit's own floor. The cluster vote record stores `floor_shape` and `floor_counts`.
 
 A curtain-wall circle is one semicircular drum. Touching cells (same floor, neighboring bays, or the floor above in overlapping bays) fuse in `fuse_curtain_circles`: width is the union of the bays, depth is half that width, glass runs from the lowest sill to the top of the stack. Each storey gets a floor slab on that outline. A horizontal mullion sits 2100 mm above each slab top (`CURTAIN_TRANSOM_ABOVE_FLOOR_M`) and the glass splits there; a storey shorter than that gets no transom. A rectangle curtain wall already has a slab per floor and only gains the same transom. Punched enclosures are unchanged.
 
@@ -451,8 +470,20 @@ New label axis for open balconies: `projecting` (slab out from the wall), `julie
 - 2026-10-29 rooftop removed from the structure vocabulary (user): `LABEL_STRUCTURES = ("projecting", "juliet")`. Rooftop is decided from the facade (no window above the balcony, see `no_window_above` in `balcony_pipeline/filter.py`), not by the classifier. The 6 rooftop rows in `labels.jsonl` were relabeled projecting (backup `labels.jsonl.bak_before_drop_rooftop`); the F key is gone from the label UIs. The 3-class model is kept as `checkpoints/railing_structure_rooftop.pt` (log `train_structure_rooftop.log`). `checkpoints/railing_structure.pt` is now 2-class, same folds (structure train 75/130, val 11/16, test 10/16). Internal test: kind 0.907, material 0.906, floor 0.953, enclosure 0.990, skin 0.875, structure 0.962 (25/26). On cmp_x XML crops (`crops_ext_xml`, 737, null structure = projecting): kind macro F1 0.482, material 0.884, floor 0.586, structure acc 0.783 / macro F1 0.737 (juliet precision 0.532). Provisional on pipeline crops (`crops_pipeline_ext`, 512 prefilled, not reviewed): kind 0.548, material 0.853, floor 0.680, structure acc 0.805 / macro F1 0.654. Scripts: scratchpad `eval_ext_xml.py`, `eval_pipeline_prefill.py` (not in the repo).
 - `balcony_train/export_train_pipeline_crops.py`: pipeline boxes (same as `export_pipeline_crops.py`) on 378 `data/base_jpg` photos, cache `runs/batch/_rows/base_jpg_sam3_stage_boxes.json`. Old cmp_b crops (any folder under `crops/`, `_Archive` included) are found in their photo by template match (921/923; the two misses are `cmp_b0004_type_00_unit_001/002`). 997 boxes: new 255 (70 photos), check 5, duplicate 737. Duplicates by best match: `_Archive` 435, `open_work` 242, `solid` 37, `surface_panel` 23. The 255 new crops were copied to `crops/unlabeled/<stem>_pbal_<NNN>.png`. The 5 checks were not (IoU 0.31–0.43, partial railing overlaps); see `runs/balcony_clf/crops_pipeline_train/dup_board.jpg` and pass `--commit --accept <names>` to add them.
 - Only `unlabeled/` and the kind folders are training data; `_Archive` (448 open cmp_b crops) is not. The active open cmp_b set is about 380 crops.
+- 2026-10-30 more juliet candidates (user: pipeline crops over label-map crops).
+  - Box detection is unchanged since the dry run: same SAM3 cache, and the manifest's `filter_sha256` equals today's `filter.py`. Rerunning the pipeline on data/base adds no boxes.
+  - Took the 435 dry-run "duplicate" pipeline boxes whose best match is an `_Archive` crop (all IoU ≥ 0.5). Each was re-checked by template match against every active cmp_b crop (kind folders + `unlabeled`, all located).
+  - 23 have an active twin at IoU ≥ 0.3 (0.93–0.99) and were dropped. The other 412 were copied to `crops/unlabeled/<stem>_pbal_<NNN>.png` with `--commit --accept`.
+  - Selection script and board: session scratchpad `select_archive_dups.py`, `archive_dups/keep_board.jpg`. Not in the repo.
+  - `commit()` now skips crops already present anywhere under `crops/` instead of raising.
+  - Labels:
+    - 375 of the 412 were prefilled from their archived twin: open_work + material (326 metal / 49 masonry), enclosure open, floor and structure empty. These now train kind and material.
+    - The other 37 have unlabeled twins.
+    - Backup: `labels.before_archive_pbal.jsonl`.
+  - After the copy, the cmp_b structure queue (`label_ui.py --structure-pass`) is 491. Real kind (no flux2, no LSAA) is open_work 890 / solid 68 / surface 30.
 - Label UI: `label_ui.py` has P/J/F structure (shown only for open; P is skin when enclosed). `--structure-pass` queues open `cmp_b*` crops without structure. `label_pipeline_crops_ui.py --train [--structure-pass]` is the same on the training crops, with the photo context from `crops_pipeline_train/context/` (new and old crops). `xml_label_ui.py` has F rooftop.
 - Next: label, check the rooftop count, then add the structure head (`--heads-only structure`, new checkpoint, keep `railing_best.pt`).
+- 2026-10-29 structure in the pipeline (user asked the code to match the paper text). `run_balcony.py` loads `railing_best.pt` as before and copies only the structure head from `checkpoints/railing_structure.pt` (`--structure-ckpt`; `--no-structure` keeps every open balcony projecting). Per type, `vote_structure` votes projecting / juliet only, juliet on a strict majority. Rooftop is a placement flag, not a type value (user, 2026-10-29): a balcony on the top floor of the window grid with no window above it in its bays (`no_window_above` from `filter.py`, `mark_rooftop_units`) gets `"structure": "rooftop"` on its `layout.balconies` record; `normalize_facade_spec` copies it to `balcony_placement` and `balcony_layout._frame` uses it over the type's structure. The balcony keeps its type. Two earlier same-day versions (rooftop split into its own type; rooftop as a third vote option) were removed. BDSL `structure` gains `juliet` and `rooftop`. Compiler: juliet = front railing 0.15 m in front of the wall from the sill, no slab, no stacking; rooftop = front railing on the top edge of its storey (back face on the wall plane), no slab, except when an enclosed stack below shares its slab as roof (`carries_stack`), where it compiles as projecting. `cmp_x0005` smoke run: 2/24 open units rooftop (the railings on top of the corner oriel towers, which carry the stack), no juliet; a forced juliet/rooftop copy rendered as expected (scratchpad, not cited). Not scored: no structure or floor numbers changed in the cited tables.
 
 ## Open-balcony attributes on pipeline crops (test set, in progress)
 
@@ -512,7 +543,26 @@ The earlier attribute score used crops cut from the CMP segmentation (`crops_ext
 - Gate 0.10 sits in a gap of the dev set: none photos reach 0.09, enclosure photos start at 0.11. Train out-of-fold and dev gate distributions differ, so a gate chosen on cmp_b does not transfer.
 - Of the 40 dev FN, 23 are on four photos the gate blanks (`0028`, `0074`, `0081`, `0121`). Most of the rest have p_cell < 0.3 on labeled cells. The next gain has to come from the models or more labels, not from thresholds.
 
+## Paper draft decisions (2026-10-29)
+
+CVPR 2027 draft. Section 3.3.3 (Oriels) is now separate from 3.3.2 (Balconies).
+
+- Table 2:
+  - Balcony columns are Railing, Material, Floor, Struct., LPIPS. Enclosed is dropped because enclosure comes from the oriel track, not the railing classifier.
+  - New Oriel group: Cell F1 (TP / FP / FN pooled over all photos), Plan, Skin, LPIPS. Plan and skin come from `score_enclosed_plan.py`.
+  - Facade-level Mask IoU stays window / door / balcony. CMP label maps have no oriel class, and a mask built from our cells would repeat Cell F1. If a reviewer asks about oriel location, add cell IoU to the Oriel group.
+  - Curtain-wall oriels drop the windows in their bays. CMP still labels those pixels as window, so Window Mask IoU can drop on those photos.
+- 3.4 Implementation Details lists:
+  - balcony SAM3 ≥ 0.45 and < 16 px dropped; enclosure prompts ≥ 0.15;
+  - classifier heads: kind, material, floor, structure, oriel plan, oriel skin;
+  - spectral clustering, PCA 32;
+  - oriel: HistGradientBoosting, crop context 25 %, PCA 16, t = 0.3, γ = 0.10;
+  - compiled geometry: slab 1.5 m, railing 1.1 m, juliet railing 0.15 m in front of the wall at the sill, rooftop railing on the top edge of the storey.
+- The paper says the heads are "trained jointly", but the structure head is copied from `railing_structure.pt`, a separate run on the same frozen backbone.
+- The Depth Anything 3 bib key is `depthanything3` (arXiv:2511.10647).
+
 ## Open items
+
 
 - Pipeline default is four cell rules + gate ≥ 0.10: 47/61 total, enclosure exact 16/26, detect 21/26, none 31/35. False positives left: `0073`, `0120`, `0173`, `0180`. The gate blanks `0074`, `0081`, and `0121`. `0006` is still short the gallery floor. Rule 4's extra cells on `0121`, `0073`, and `0134` are not in the labels. Switch back with `--enclosed-method sam3`.
 - The fold-0 SAM3 fine-tune was scored once on cmp_x (raw boxes, 33/61, cells TP 104 / FP 54 / FN 33). It is not wired into `--enclosed-method`. The stage strips under `runs/sam3_ft_fold0/cmp_x/stages/` were not scored as cells.

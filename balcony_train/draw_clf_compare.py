@@ -36,6 +36,7 @@ from balcony_train.enclosed_grid_store import (  # noqa: E402
     DEFAULT_EVAL_LABELS_JSONL,
     DEFAULT_EVAL_PHOTO_DIR,
     find_photo,
+    load_floor_bays,
     load_grid,
 )
 from balcony_train.evaluate_enclosed_grid import render_compare  # noqa: E402
@@ -54,11 +55,18 @@ def iou(a: set, b: set) -> float:
     return 1.0 if not (a | b) else len(a & b) / len(a | b)
 
 
-def draw_probs(image: Image.Image, floor_y, bay_x, probs: dict, t: float) -> Image.Image:
+def draw_probs(image: Image.Image, floor_y, bay_x, probs: dict, t: float, floor_bays=None) -> Image.Image:
+    """Classifier probability per cell; with ``floor_bays`` one per floor bay (its highest column)."""
     draw = ImageDraw.Draw(image)
     font = _font(max(14, image.width // 40))
+    spans: dict = {}
     for (f, b), p in probs.items():
-        x0, x1 = bay_x[b]
+        c0, c1 = next(((a, z) for a, z in (floor_bays or {}).get(f, []) if a <= b < z), (b, b + 1))
+        key = (f, c0, c1)
+        spans[key] = max(p, spans.get(key, p))
+    for (f, c0, c1), p in spans.items():
+        cols = [c for c in range(c0, c1) if c in bay_x]
+        x0, x1 = bay_x[cols[0]][0], bay_x[cols[-1]][1]
         y0, y1 = floor_y[f]
         text = f"{p:.2f}"
         tw, th = draw.textbbox((0, 0), text, font=font)[2:]
@@ -116,10 +124,12 @@ def main() -> None:
             f"classifier: exact={int(clf == gt)}  IoU={iou(clf, gt):.2f}  cells={len(clf)}",
             f"OP1:        exact={int(op1 == gt)}  IoU={iou(op1, gt):.2f}  cells={len(op1)}",
         ]
-        floor_y, bay_x = load_grid(args.dsl_dir / s / "facade_dsl.json")
+        dsl = args.dsl_dir / s / "facade_dsl.json"
+        floor_y, bay_x = load_grid(dsl)
+        floor_bays = load_floor_bays(dsl, floor_y, bay_x)
         photo = Image.open(find_photo(args.in_dir, s)).convert("RGB")
-        img = render_compare(photo, floor_y, bay_x, gt, clf)
-        img = draw_probs(img, floor_y, bay_x, {test.cells[i]: float(p_cell[i]) for i in ii}, args.t)
+        img = render_compare(photo, floor_y, bay_x, gt, clf, floor_bays)
+        img = draw_probs(img, floor_y, bay_x, {test.cells[i]: float(p_cell[i]) for i in ii}, args.t, floor_bays)
         panel = add_header(img, lines)
         panel.save(args.out_dir / f"{cat}__{s}.jpg", quality=92)
         tiles[cat].append(panel)

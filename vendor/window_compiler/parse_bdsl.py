@@ -25,7 +25,9 @@ _EPS_RULE = re.compile(r"^(\w+)\s+eps\s*$", re.I)
 _PANE_WRAP = re.compile(r"^pane\((.+)\)$", re.I)
 
 FLOOR_SHAPES = frozenset({"rectangle", "circle", "triangle"})
-STRUCTURES = frozenset({"projecting", "inset", "composite", "free_standing"})
+STRUCTURES = frozenset(
+    {"projecting", "inset", "composite", "free_standing", "juliet", "rooftop"}
+)
 ENCLOSURES = frozenset({"open", "half_enclosed", "enclosed"})
 COLUMN_STYLES = frozenset({"square", "round"})
 WALL_INFILLS = frozenset({"glass", "wall"})
