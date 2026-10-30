@@ -1,8 +1,9 @@
 """Per-floor bay grid and side-facade filter.
 
-Every floor keeps its own bays (one per window / door, split at gap midpoints). Split lines that match across
-floors become shared lines; a floor's empty stretches (missing windows) inherit shared lines from the nearest
-floor with similar window height. The Blender compiler reads one floors x columns grid, so
+Every floor keeps its own bays (one per window / door). The gaps between neighbouring items are x-ranges; gaps
+of different floors that share an x-range become one line at the centre of the shared range, so floors whose
+windows line up get the same line. Every floor then takes all other floors' lines that cut none of its items.
+The Blender compiler reads one floors x columns grid, so
 :func:`apply_floor_bays` makes the columns the union of all floors' lines and every floor bay a span over them.
 """
 
@@ -48,13 +49,11 @@ def build_floor_bays(
     *,
     doors: list = (),
     row_tol: float = 0.055,
-    tol_frac: float = 0.4,
-    min_piece: float = 0.6,
 ) -> dict[str, Any]:
     """Per-floor bay lines for window ``boxes`` and ``doors`` (xyxy px).
 
     Returns ``floor`` (per item, windows then doors, floors ranked top -> bottom), ``nf``, ``lines`` (per floor
-    ``(x, kind)``, kind own | shared | inherited), ``bays`` (per floor ``{x0, x1, win}``, ``win`` = item indices),
+    ``(x, kind)``, kind own | shared | adopted), ``bays`` (per floor ``{x0, x1, win}``, ``win`` = item indices),
     ``shared``, ``B`` (all items) and ``is_door``."""
     W = np.asarray(boxes, float).reshape(-1, 4)
     D = np.asarray(doors, float).reshape(-1, 4)
@@ -67,88 +66,43 @@ def build_floor_bays(
     rank = {f: k for k, f in enumerate(sorted(set(floor.tolist()), key=lambda f: cy[floor == f].mean()))}
     floor = np.array([rank[f] for f in floor], dtype=np.int32)
     nf = int(floor.max()) + 1
-    w = B[:, 2] - B[:, 0]
-    tol = max(6.0, tol_frac * float(np.median(w[~is_door])))
     rows = [sorted(np.where(floor == f)[0], key=lambda i: B[i, 0] + B[i, 2]) for f in range(nf)]
 
-    h = B[:, 3] - B[:, 1]
-    # door-only floors have no window height to compare: they accept lines from any floor
-    med_h = [float(np.median(h[[i for i in r if not is_door[i]]])) if any(not is_door[i] for i in r) else None
-             for r in rows]
-
-    def cuts(x: float, f: int) -> bool:
-        return any(B[i, 0] + 0.2 * w[i] < x < B[i, 2] - 0.2 * w[i] for i in rows[f])
-
-    # 1) each floor: one bay per window, lines at gap midpoints
-    cands = sorted((0.5 * (B[a, 2] + B[b, 0]), f) for f in range(nf) for a, b in zip(rows[f], rows[f][1:]))
-    # 2) lines from different floors that match become one shared line
-    clusters: list[list[tuple[float, int]]] = []
-    for x, f in cands:
-        if clusters and x - np.mean([c[0] for c in clusters[-1]]) <= tol:
-            clusters[-1].append((x, f))
-        else:
-            clusters.append([(x, f)])
+    # 1) each floor's gaps between neighbouring items are x-ranges (overlapping items: a zero-width gap at the
+    #    middle of the overlap); gaps of different floors with a common x-range form one line at the centre of
+    #    that range, swept by gap centre with each floor at most once per line
+    gaps = []
+    for f in range(nf):
+        for a, b in zip(rows[f], rows[f][1:]):
+            g0, g1 = B[a, 2], B[b, 0]
+            if g1 <= g0:
+                g0 = g1 = 0.5 * (g0 + g1)
+            gaps.append((g0, g1, f))
+    gaps.sort(key=lambda g: g[0] + g[1])
+    groups: list[tuple[float, float, set[int]]] = []
+    for g0, g1, f in gaps:
+        if groups:
+            lo, hi, fl = groups[-1]
+            if f not in fl and max(lo, g0) < min(hi, g1):
+                groups[-1] = (max(lo, g0), min(hi, g1), fl | {f})
+                continue
+        groups.append((g0, g1, {f}))
     shared = []
     lines: list[list[tuple[float, str]]] = [[] for _ in range(nf)]
-    for cl in clusters:
-        pos = float(np.median([c[0] for c in cl]))
-        fl = {c[1] for c in cl}
+    for lo, hi, fl in groups:
+        x = 0.5 * (lo + hi)
         if len(fl) >= 2:
-            shared.append(dict(x=pos, floors=fl))
-        for x, f in cl:
-            if len(fl) >= 2 and not cuts(pos, f):
-                lines[f].append((pos, "shared"))
-            else:
-                lines[f].append((x, "own"))
-
-    # 3) empty stretches of a floor (missing windows) take shared lines from the nearest floor with similar
-    #    window height; spacing is judged by the source floor's pitch (this floor's own pitch is inflated
-    #    exactly when windows are missing, cmp_b0198 mezzanine), and a farther floor only fills the part
-    #    of the stretch a nearer floor left uncovered
-    def row_pitch(r: list[int]) -> float | None:
-        p = [0.5 * (B[b, 0] + B[b, 2] - B[a, 0] - B[a, 2]) for a, b in zip(r, r[1:])]
-        return float(np.median(p)) if p else None
-
-    all_p = [p for p in map(row_pitch, rows) if p]
-    pitch_glob = float(np.median(all_p)) if all_p else float(iw)
-    src = [list(l) for l in lines]
+            shared.append(dict(x=x, floors=fl))
+        for f in fl:
+            lines[f].append((x, "shared" if len(fl) >= 2 else "own"))
+    # 2) a floor also takes every other floor's line that cuts none of its windows / doors (this also fills
+    #    empty stretches), so an item spans several columns only where a line runs through it
+    union = sorted({0.5 * (lo + hi) for lo, hi, _ in groups})
     for f in range(nf):
-        edges = [0.0] + [v for i in rows[f] for v in (B[i, 0], B[i, 2])] + [float(iw)]
-        for g0, g1 in zip(edges[::2], edges[1::2]):
-            own, added, covered = None, 0, []
-            for g in sorted((g for g in range(nf) if g != f), key=lambda g: (abs(g - f), g)):
-                if med_h[g] and med_h[f] and not 0.5 <= med_h[g] / med_h[f] <= 2.0:
-                    continue
-                pg = row_pitch(rows[g]) or pitch_glob
-                S = [x for x, kind in src[g] if kind != "own" and g0 < x < g1
-                     and not any(c0 <= x <= c1 for c0, c1 in covered)]
-                if not S:
-                    continue
-                mine = [l for l in lines[f] if l[1] == "shared" and g0 < l[0] < g1]
-                if all(any(abs(x - l[0]) <= tol for l in mine) for x in S):
-                    covered.append((min(S) - 0.5 * pg, max(S) + 0.5 * pg))
-                    continue
-                if own is None:
-                    # this floor's own gap-midpoint line gives way to the nearest floor's lines
-                    own = [l for l in lines[f] if l[1] != "inherited" and g0 < l[0] < g1]
-                    for l in own:
-                        lines[f].remove(l)
-                    keep = [l for l in own if l[1] == "shared" and any(abs(x - l[0]) <= tol for x in S)]
-                    lines[f].extend(keep)
-                    own = [l for l in own if l not in keep]
-                    S = [x for x in S if not any(abs(x - l[0]) <= tol for l in keep)]
-                acc = []
-                for x in S:
-                    near_win = (g0 > 0 and x - g0 < 0.1 * pg) or (g1 < iw and g1 - x < 0.1 * pg)
-                    pieces_ok = all(abs(x - x2) >= min_piece * pg for x2, _ in lines[f] if g0 < x2 < g1)
-                    if pieces_ok and not near_win:
-                        lines[f].append((x, "inherited"))
-                        acc.append(x)
-                if acc:
-                    covered.append((min(acc) - 0.5 * pg, max(acc) + 0.5 * pg))
-                    added += len(acc)
-            if own and not added:
-                lines[f].extend(own)
+        for x in union:
+            if any(abs(x - y) <= 2.0 for y, _ in lines[f]) or any(B[i, 0] - 1 < x < B[i, 2] + 1 for i in rows[f]):
+                continue
+            lines[f].append((x, "adopted"))
     bays = []
     for f in range(nf):
         lines[f].sort()

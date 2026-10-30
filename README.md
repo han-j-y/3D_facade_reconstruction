@@ -66,7 +66,7 @@ The axis is used during clustering, so the separate symmetry repair (below) is n
 
 The moves go to `meta.local_sym_moves` and `local_sym.json` (axes, pairs, vote costs). `--no-local-sym` gives plain gate clustering.
 
-**Per-floor bays** (`facade_recovery/floor_bays.py`): every floor gets its own bays, one per window or door, split at gap midpoints. Lines that match across floors become shared lines, and a floor's empty stretches inherit lines from the nearest floor with a similar window height. The DSL columns are the union of all floors' lines, and every floor bay spans its columns (`placement_spans`). Floors and bays carry `h_m` / `w_m` so the compiler keeps them as they are. `meta.floor_bays` lists the per-floor bays. `--grid columns` keeps the older single column grid (`--layout-mode`).
+**Per-floor bays** (`facade_recovery/floor_bays.py`): every floor gets its own bays, one per window or door. The gaps between neighbouring items are x-ranges, and gaps of different floors that share an x-range become one line at the centre of the shared range, so floors whose windows line up get the same line. Every floor then also takes all other floors' lines that run through none of its windows or doors (this also fills empty stretches), so an item spans several columns only where a line crosses it. The DSL columns are the union of all floors' lines, and every floor bay spans its columns (`placement_spans`). Floors and bays carry `h_m` / `w_m` so the compiler keeps them as they are. `meta.floor_bays` lists the per-floor bays. `--grid columns` keeps the older single column grid (`--layout-mode`).
 
 Older settings remain available, e.g. CMP XML boxes with box-only clustering:
 
