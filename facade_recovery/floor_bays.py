@@ -174,47 +174,21 @@ def drop_side_facades(
     typical window and either its centre is within 0.3 x that height of the floor's centre or it overlaps the
     floor vertically by >= 0.7 of the shorter height (balcony doors reach lower than the windows). Columns:
     windows chained by x-overlap. From each edge inward, a column is a side facade unless more than
-    ``min_aligned`` of its windows sit on a main floor or it is attached (one window per main floor)."""
+    ``min_aligned`` of its windows sit on a main floor or it is attached (one window per main floor).
+    The main floors are then rebuilt from the kept windows and the doors within their x-extent and the walk is
+    repeated until it no longer changes, so rows the core misses (an attic offset from the central dormer,
+    cmp_x0120) count once part of them is kept."""
     if len(boxes) < 4:
         return []
     B = np.asarray(boxes, float)
-    A = np.concatenate([B, np.asarray(doors, float).reshape(-1, 4)])
+    D = np.asarray(doors, float).reshape(-1, 4)
+    A = np.concatenate([B, D])
     cx = 0.5 * (B[:, 0] + B[:, 2])
-    acx, acy = 0.5 * (A[:, 0] + A[:, 2]), 0.5 * (A[:, 1] + A[:, 3])
-    inner = np.where((acx >= core[0] * iw) & (acx <= core[1] * iw))[0]
+    acx = 0.5 * (A[:, 0] + A[:, 2])
+    inner = A[(acx >= core[0] * iw) & (acx <= core[1] * iw)]
     if len(inner) < 3:
         return []
-    fl = assign_floors(acy[inner] / ih, 0.055)
-    bands = [(float(np.median(A[inner[fl == f], 1])), float(np.median(A[inner[fl == f], 3])))
-             for f in set(fl.tolist())]
-
-    def on_floor(b: np.ndarray) -> bool:
-        h, c = b[3] - b[1], 0.5 * (b[1] + b[3])
-        for y0, y1 in bands:
-            hb = y1 - y0
-            level = abs(c - 0.5 * (y0 + y1)) <= 0.3 * hb or min(b[3], y1) - max(b[1], y0) >= 0.7 * min(h, hb)
-            if level and 0.5 <= h / hb <= 2.0:
-                return True
-        return False
-
-    aligned = np.array([on_floor(b) for b in B])
     med_w = float(np.median(B[:, 2] - B[:, 0]))
-
-    def attached(seq: list[list[int]], k: int) -> bool:
-        """Part of the same building though its floors are offset (cmp_b0215 corner tower): a single outermost
-        column next to a main-facade column, >= 3 windows each on a different main floor (overlap >= 0.25,
-        median >= 0.5), not foreshortened like a side wall seen at an angle."""
-        c = seq[k]
-        if k != 0 or len(seq) < 2 or aligned[seq[1]].mean() <= min_aligned:
-            return False
-        if len(c) < 3 or np.median(B[c, 2] - B[c, 0]) < 0.85 * med_w:
-            return False
-        hit, best = [], []
-        for b in B[c]:
-            ov = [(min(b[3], y1) - max(b[1], y0)) / min(b[3] - b[1], y1 - y0) for y0, y1 in bands]
-            hit.append(int(np.argmax(ov)))
-            best.append(max(ov))
-        return min(best) >= 0.25 and np.median(best) >= 0.5 and len(set(hit)) == len(hit)
 
     cols: list[list[int]] = []
     for i in np.argsort(cx):
@@ -224,13 +198,59 @@ def drop_side_facades(
                 cols[-1].append(int(i))
                 continue
         cols.append([int(i)])
-    side: set[int] = set()
-    for seq in (cols, cols[::-1]):
-        for k, c in enumerate(seq):
-            if aligned[c].mean() > min_aligned or core[0] * iw <= cx[c].mean() <= core[1] * iw or attached(seq, k):
-                break
-            side.update(c)
-    return sorted(side)
+
+    def floor_bands(items: np.ndarray) -> list[tuple[float, float]]:
+        fl = assign_floors(0.5 * (items[:, 1] + items[:, 3]) / ih, 0.055)
+        return [(float(np.median(items[fl == f, 1])), float(np.median(items[fl == f, 3]))) for f in set(fl.tolist())]
+
+    def walk(bands: list[tuple[float, float]]) -> list[int]:
+        def on_floor(b: np.ndarray) -> bool:
+            h, c = b[3] - b[1], 0.5 * (b[1] + b[3])
+            for y0, y1 in bands:
+                hb = y1 - y0
+                level = abs(c - 0.5 * (y0 + y1)) <= 0.3 * hb or min(b[3], y1) - max(b[1], y0) >= 0.7 * min(h, hb)
+                if level and 0.5 <= h / hb <= 2.0:
+                    return True
+            return False
+
+        aligned = np.array([on_floor(b) for b in B])
+
+        def attached(seq: list[list[int]], k: int) -> bool:
+            """Part of the same building though its floors are offset (cmp_b0215 corner tower): a single outermost
+            column next to a main-facade column, >= 3 windows each on a different main floor (overlap >= 0.25,
+            median >= 0.5), not foreshortened like a side wall seen at an angle."""
+            c = seq[k]
+            if k != 0 or len(seq) < 2 or aligned[seq[1]].mean() <= min_aligned:
+                return False
+            if len(c) < 3 or np.median(B[c, 2] - B[c, 0]) < 0.85 * med_w:
+                return False
+            hit, best = [], []
+            for b in B[c]:
+                ov = [(min(b[3], y1) - max(b[1], y0)) / min(b[3] - b[1], y1 - y0) for y0, y1 in bands]
+                hit.append(int(np.argmax(ov)))
+                best.append(max(ov))
+            return min(best) >= 0.25 and np.median(best) >= 0.5 and len(set(hit)) == len(hit)
+
+        side: set[int] = set()
+        for seq in (cols, cols[::-1]):
+            for k, c in enumerate(seq):
+                if aligned[c].mean() > min_aligned or core[0] * iw <= cx[c].mean() <= core[1] * iw or attached(seq, k):
+                    break
+                side.update(c)
+        return sorted(side)
+
+    side = walk(floor_bands(inner))
+    for _ in range(10):
+        keep = [i for i in range(len(B)) if i not in side]
+        if not keep:
+            break
+        x0, x1 = B[keep, 0].min(), B[keep, 2].max()
+        dcx = 0.5 * (D[:, 0] + D[:, 2])
+        new = walk(floor_bands(np.concatenate([B[keep], D[(dcx >= x0) & (dcx <= x1)]])))
+        if new == side:
+            break
+        side = new
+    return side
 
 
 def _floor_rows(B: np.ndarray, floor: np.ndarray, is_door: np.ndarray, nf: int, ih: int) -> list[tuple[float, float]]:

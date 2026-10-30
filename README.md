@@ -44,7 +44,7 @@ The defaults are the current pipeline:
 | Unitize | `--merge-mode ast`, `--col-tol 0.045`, `--row-tol 0.055` |
 | Cluster | `--cluster-mode gate` (below) |
 | Doors | `facebook/sam3`, prompt `door` ≥ `--door-threshold` 0.45; override with any Hugging Face ID or model directory |
-| Side facades | `--side-filter`: edge window columns that sit off the main facade's floors are dropped (neighbouring buildings, side walls), plus doors outside the kept windows. An outermost column with one window on each of ≥ 3 main floors is kept (corner towers). |
+| Side facades | `--side-filter`: edge window columns that sit off the main facade's floors are dropped (neighbouring buildings, side walls), plus doors outside the kept windows. An outermost column with one window on each of ≥ 3 main floors is kept (corner towers). The main floors start from the windows and doors in the middle half of the image and are then rebuilt from the kept windows until nothing changes, so a row the middle misses counts once part of it is kept. |
 | Local symmetry | `--local-sym` (gate mode, below) |
 | Layout | `--grid floor_bays` (below) |
 
