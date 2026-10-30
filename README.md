@@ -43,7 +43,7 @@ The defaults are the current pipeline:
 | Detect | `facebook/sam3` prompt `window`, two-tier: keep score ≥ `--anchor-score` 0.7, add boxes in [`--threshold` 0.5, 0.7) that overlap no kept box by `--fill-max-overlap` 0.2 of the smaller box; `--min-side 13`; boxes on `car` / `truck` / `van` masks dropped (`--exclude-prompts`) |
 | Unitize | `--merge-mode ast`, `--col-tol 0.045`, `--row-tol 0.055` |
 | Cluster | `--cluster-mode gate` (below) |
-| Doors | `facebook/sam3`, prompt `door` ≥ `--door-threshold` 0.45; override with any Hugging Face ID or model directory |
+| Doors | `facebook/sam3`, prompt `door` ≥ `--door-threshold` 0.45; override with any Hugging Face ID or model directory. A door lying ≥ 80% inside a larger kept door (one leaf of a double door) is dropped |
 | Side facades | `--side-filter`: edge window columns that sit off the main facade's floors are dropped (neighbouring buildings, side walls), plus doors outside the kept windows. An outermost column with one window on each of ≥ 3 main floors is kept (corner towers). The main floors start from the windows and doors in the middle half of the image and are then rebuilt from the kept windows until nothing changes, so a row the middle misses counts once part of it is kept. |
 | Local symmetry | `--local-sym` (gate mode, below) |
 | Layout | `--grid floor_bays` (below) |
@@ -66,7 +66,7 @@ The axis is used during clustering, so the separate symmetry repair (below) is n
 
 The moves go to `meta.local_sym_moves` and `local_sym.json` (axes, pairs, vote costs). `--no-local-sym` gives plain gate clustering.
 
-**Per-floor bays** (`facade_recovery/floor_bays.py`): every floor gets its own bays, one per window or door. The gaps between neighbouring items are x-ranges, and gaps of different floors that share an x-range become one line at the centre of the shared range, so floors whose windows line up get the same line. Every floor then also takes all other floors' lines that run through none of its windows or doors (this also fills empty stretches), so an item spans several columns only where a line crosses it. The DSL columns are the union of all floors' lines, and every floor bay spans its columns (`placement_spans`). Floors and bays carry `h_m` / `w_m` so the compiler keeps them as they are. `meta.floor_bays` lists the per-floor bays. `--grid columns` keeps the older single column grid (`--layout-mode`).
+**Per-floor bays** (`facade_recovery/floor_bays.py`): every floor gets its own bays, one per window or door. The gaps between neighbouring items are x-ranges, and gaps of different floors that share an x-range become one line at the centre of the shared range, so floors whose windows line up get the same line. A line only one floor has is dropped when another floor's line already falls inside that gap (a wide gap from missing windows). Every floor then also takes all other floors' lines that run through none of its windows or doors (this also fills empty stretches), so an item spans several columns only where a line crosses it. The DSL columns are the union of all floors' lines, and every floor bay spans its columns (`placement_spans`). Floors and bays carry `h_m` / `w_m` so the compiler keeps them as they are. `meta.floor_bays` lists the per-floor bays. `--grid columns` keeps the older single column grid (`--layout-mode`).
 
 Older settings remain available, e.g. CMP XML boxes with box-only clustering:
 

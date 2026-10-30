@@ -33,7 +33,8 @@ def filter_door_boxes(
     min_y_frac: float,
     iou_nms: float,
 ) -> list[dict[str, Any]]:
-    """Keep ground-biased door detections that do not overlap windows."""
+    """Keep ground-biased door detections that do not overlap windows; a door lying >= 0.8 inside a larger kept
+    door (one leaf of a double door, cmp_b0089) is dropped."""
     iw, ih = image_size
     kept: list[dict[str, Any]] = []
     for d in door_boxes:
@@ -53,7 +54,18 @@ def filter_door_boxes(
         if any(box_iou(d["box_xyxy"], e["box_xyxy"]) >= 0.45 for e in final):
             continue
         final.append(d)
-    return final
+
+    def area(b: list[int]) -> float:
+        return max(1.0, float((b[2] - b[0]) * (b[3] - b[1])))
+
+    def inside(a: list[int], b: list[int]) -> float:
+        ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+        iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+        return ix * iy / area(a)
+
+    return [d for d in final if not any(
+        area(e["box_xyxy"]) > area(d["box_xyxy"]) and inside(d["box_xyxy"], e["box_xyxy"]) >= 0.8
+        for e in final)]
 
 
 def assign_doors_to_layout(

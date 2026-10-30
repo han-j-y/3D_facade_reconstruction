@@ -87,6 +87,12 @@ def build_floor_bays(
                 groups[-1] = (max(lo, g0), min(hi, g1), fl | {f})
                 continue
         groups.append((g0, g1, {f}))
+    # a one-floor line (its range is that floor's whole gap) is dropped when another line already falls inside
+    # the gap: that line separates the items, and the centre of a wide gap (missing windows) would cut other
+    # floors' items (cmp_b0089 attic dormer)
+    xs = [0.5 * (lo + hi) for lo, hi, _ in groups]
+    groups = [(lo, hi, fl) for lo, hi, fl in groups
+              if len(fl) >= 2 or not any(lo < x < hi and x != 0.5 * (lo + hi) for x in xs)]
     shared = []
     lines: list[list[tuple[float, str]]] = [[] for _ in range(nf)]
     for lo, hi, fl in groups:
