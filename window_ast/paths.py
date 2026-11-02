@@ -19,12 +19,6 @@ def resolve_blender(explicit: str | Path | None = None) -> str | None:
     which = shutil.which("blender")
     if which:
         candidates.append(Path(which))
-    candidates.extend(
-        [
-            Path.home() / "local_install/usr/share/blender-5.1.0-linux-x64/blender",
-            Path("/usr/bin/blender"),
-        ]
-    )
     for path in candidates:
         if path.is_file():
             return str(path.resolve())

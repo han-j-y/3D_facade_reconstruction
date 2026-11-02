@@ -68,6 +68,14 @@ from balcony_train.splits import (  # noqa: E402
 )
 
 
+def drop_prefixed(fold: dict[str, list[int]], samples: list, prefixes: list[str]) -> dict[str, list[int]]:
+    """Fold indices without samples whose file name starts with any of ``prefixes``."""
+    if not prefixes:
+        return fold
+    keep = lambda i: not Path(samples[i][0]).name.startswith(tuple(prefixes))  # noqa: E731
+    return {name: [i for i in idx if keep(i)] for name, idx in fold.items()}
+
+
 @torch.no_grad()
 def _metrics(
     model: RailingClassifier,
@@ -242,6 +250,13 @@ def parse_args() -> argparse.Namespace:
         help="comma-separated heads to train: floor,skin,structure (requires --init-ckpt)",
     )
     ap.add_argument(
+        "--exclude-prefix",
+        action="append",
+        default=[],
+        help="leave out crops whose file name starts with this (repeatable, e.g. flux2_); "
+        "split.json still covers them",
+    )
+    ap.add_argument(
         "--device",
         default="cuda" if torch.cuda.is_available() else "cpu",
     )
@@ -314,6 +329,10 @@ def main() -> None:
         )
 
     fold = indices_from_record(record, samples)
+    if args.exclude_prefix:
+        before = {k: len(v) for k, v in fold.items()}
+        fold = drop_prefixed(fold, samples, args.exclude_prefix)
+        print(f"exclude {args.exclude_prefix}: {before} -> { {k: len(v) for k, v in fold.items()} }")
     train_idx = fold["train"]
     val_idx = fold["val"]
     test_idx = fold["test"]
@@ -571,6 +590,7 @@ def main() -> None:
         train_enclosure_counts=train_enc_counts,
         split_file=str(args.split_file),
         epochs=args.epochs,
+        exclude_prefix=list(args.exclude_prefix),
     )
     print(f"wrote {args.out}  best_val_score={best_score:.3f}")
     print(f"held-out test n={len(test_idx)} — run evaluate.py --split test")

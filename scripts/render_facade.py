@@ -41,7 +41,6 @@ def _resolve_compiler_root() -> Path:
     for cand in (
         ROOT / "vendor" / "window_compiler",
         ROOT / "window_compiler",
-        ROOT.parent / "window_compiler",
     ):
         if (cand / "main.py").is_file():
             return cand.resolve()
@@ -277,7 +276,10 @@ def planned_windows(facade: dict) -> list[dict]:
             c += span
     wins = [w for w in out if w.get("kind") != "door"]
     if bool(pp.get("unify_type_size", True)):
-        unify_type_sizes(wins)
+        unify_type_sizes(
+            wins,
+            separate_spans=not bool(pp.get("unify_type_size_across_spans", True)),
+        )
     if bool(pp.get("align_type_bottom", True)):
         align_type_bottoms(wins, row_key="row")
     for w in wins:
@@ -611,8 +613,8 @@ def render_facade(
     env = os.environ.copy()
     env["FACADE_SAVE_BLEND"] = str(blend_path.resolve())
     env["FACADE_RENDER_IMAGE"] = str(png_path.resolve())
-    env["FACADE_RENDER_RES"] = res
-    env["FACADE_RENDER_SAMPLES"] = str(samples)
+    env["FACADE_DSL_RENDER_RES"] = res
+    env["FACADE_DSL_SAMPLES"] = str(samples)
     if ortho_zoom is not None:
         env["FACADE_DSL_ORTHO_ZOOM"] = str(ortho_zoom)
     cmd = [

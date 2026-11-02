@@ -160,6 +160,55 @@ def _dino(device, image: Image.Image, boxes: list[list[int]]) -> np.ndarray:
     return dino_embed(_DINO[1], dev, image, boxes)
 
 
+def photo_cell_data(
+    stem: str,
+    image: Image.Image,
+    windows_dsl: dict,
+    depth: np.ndarray,
+    seeds: list,
+    *,
+    device,
+    gt: set | None = None,
+) -> PhotoData | None:
+    """Per-cell features of one photo: OP1 volumes, hand features, DINOv2.
+
+    ``depth`` is already resized to the image. ``gt`` fills ``y``. None when
+    the photo has no grid cells. Training features use this too.
+    """
+    floor_y, bay_x = _bands_from_windows_dsl(windows_dsl)
+    if not floor_y or not bay_x:
+        return None
+    windows = window_boxes_from_dsl(windows_dsl)
+    enclosed, _excluded = split_seed_records(seeds)
+    stages: list = []
+    if enclosed:
+        stages = volume_stages(
+            image,
+            depth,
+            seeds,
+            floor_h=_floor_h(floor_y),
+            floor_y=floor_y,
+            bay_x=bay_x,
+            windows=windows,
+            symmetry=True,
+        )
+    by_id = {sid: boxes for sid, _title, boxes in stages}
+    volume = {
+        "stages": {sid: [list(map(int, b["box_xyxy"])) for b in boxes] for sid, boxes in by_id.items()},
+        "cells_5": sorted(cells_from_boxes(by_id.get("5_clip", []), floor_y, bay_x)),
+        "cells_6": sorted(cells_from_boxes(by_id.get("6_sym", by_id.get("5_clip", [])), floor_y, bay_x)),
+    }
+    names, rows, ys, cells = photo_rows(
+        stem, image, depth, floor_y, bay_x, windows, seeds, volume, set(gt or ())
+    )
+    if not cells:
+        return None
+    dino = _dino(device, image, [cell_box(c, floor_y, bay_x) for c in cells])
+    data = PhotoData(stem, names, np.asarray(rows, dtype=np.float64), cells, dino)
+    data.y = np.asarray(ys, dtype=int)
+    return data
+
+
 def detect_enclosed_cells(
     image: Image.Image,
     image_path: Path,
@@ -191,35 +240,10 @@ def detect_enclosed_cells(
         cache_path=Path(cache_path),
         threshold=sam3_threshold,
     ).get(stem, [])
-    enclosed, _excluded = split_seed_records(seeds)
-    stages: list = []
-    if enclosed:
-        stages = volume_stages(
-            image,
-            depth,
-            seeds,
-            floor_h=_floor_h(floor_y),
-            floor_y=floor_y,
-            bay_x=bay_x,
-            windows=window_boxes_from_dsl(windows_dsl),
-            symmetry=True,
-        )
-    by_id = {sid: boxes for sid, _title, boxes in stages}
-    volume = {
-        "stages": {sid: [list(map(int, b["box_xyxy"])) for b in boxes] for sid, boxes in by_id.items()},
-        "cells_5": sorted(cells_from_boxes(by_id.get("5_clip", []), floor_y, bay_x)),
-        "cells_6": sorted(cells_from_boxes(by_id.get("6_sym", by_id.get("5_clip", [])), floor_y, bay_x)),
-    }
-    windows = window_boxes_from_dsl(windows_dsl)
-    names, rows, _ys, cells = photo_rows(
-        stem, image, depth, floor_y, bay_x, windows, seeds, volume, set()
-    )
-    if not cells:
+    data = photo_cell_data(stem, image, windows_dsl, depth, seeds, device=device)
+    if data is None:
         print(f"enclosed cell_clf  {stem}  no cells")
         return set()
-    boxes = [cell_box(c, floor_y, bay_x) for c in cells]
-    dino = _dino(device, image, boxes)
-    data = PhotoData(stem, names, np.asarray(rows, dtype=np.float64), cells, dino)
     p_gate, p_cell = _predict(load_model(), data)
     chosen, gmax, off = decode_cells(data, stem, p_gate, p_cell, floor_y, bay_x)
     state = "off" if off else "on"

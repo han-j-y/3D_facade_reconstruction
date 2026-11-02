@@ -36,7 +36,7 @@ from balcony_train.cell_clf_v3 import rect_decode  # noqa: E402
 from balcony_train.enclosed_grid_store import DEFAULT_DSL_DIR, DEFAULT_EVAL_LABELS_JSONL  # noqa: E402
 
 DEFAULT_TRAIN_CELLS = ROOT / "runs" / "cell_clf" / "cells_train.npz"
-DEFAULT_TRAIN_LABELS = ROOT / "runs" / "enclosed_grid" / "labels_train.jsonl"
+DEFAULT_TRAIN_LABELS = ROOT / "runs" / "enclosed_grid" / "labels_train_oriel.jsonl"  # cmp_b + oriel_train_extra_stems.txt
 DEFAULT_MODEL = ROOT / "runs" / "cell_clf" / "model_base.joblib"
 DEFAULT_DUMP = ROOT / "runs" / "cell_clf" / "results_base.json"
 DINO_PCA = 16

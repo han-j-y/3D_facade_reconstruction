@@ -11,7 +11,7 @@ import torch.nn as nn
 
 from balcony_train.labels import CLASSES, ENCLOSURE_SKINS, FLOOR_SHAPES, MATERIALS
 from balcony_train.model import apply_skin_checkpoint, apply_structure_checkpoint
-from balcony_train.train import load_init_heads
+from balcony_train.train import drop_prefixed, load_init_heads
 
 
 class _Stub(nn.Module):
@@ -98,6 +98,19 @@ class LoadInitHeadsTests(unittest.TestCase):
         model = _Stub()
         self.assertFalse(apply_skin_checkpoint(model, ckpt))
         self.assertEqual(ENCLOSURE_SKINS, ("punched_window", "curtain_wall"))
+
+
+class DropPrefixedTests(unittest.TestCase):
+    def test_drops_prefixed_names_in_every_fold(self) -> None:
+        samples = [(Path("a/flux2_x.png"), 0), (Path("b/cmp_b0001_bal_000.png"), 0), (Path("c/lsaa_y.png"), 1)]
+        fold = {"train": [0, 1], "val": [2], "test": []}
+        self.assertEqual(drop_prefixed(fold, samples, []), fold)
+        self.assertEqual(
+            drop_prefixed(fold, samples, ["flux2_"]), {"train": [1], "val": [2], "test": []}
+        )
+        self.assertEqual(
+            drop_prefixed(fold, samples, ["flux2_", "lsaa_"]), {"train": [1], "val": [], "test": []}
+        )
 
 
 if __name__ == "__main__":

@@ -15,7 +15,13 @@ the floor row is disabled and saved as null.
 
 ``--structure-pass`` shows open crops that have no structure yet, only names
 starting with ``--structure-prefix`` (default ``cmp_b``; flux2 and web crops
-stay unlabeled for structure).
+stay unlabeled for structure). ``--skip-prefixes FILE`` hides crops whose
+name starts with any line of FILE (e.g. ``runs/test100/train_exclude_prefixes.txt``,
+the crops held out for the test set).
+
+LSAA structure pass::
+
+    C:\\Users\\hiroo\\anaconda3\\envs\\glodon\\python.exe balcony_train/label_ui.py --structure-pass --structure-prefix lsaa_ --skip-prefixes runs/test100/train_exclude_prefixes.txt
 """
 
 from __future__ import annotations
@@ -89,8 +95,13 @@ class LabelApp:
         review_all: bool = False,
         structure_pass: bool = False,
         structure_prefix: str = "cmp_b",
+        skip_prefixes: tuple[str, ...] = (),
+        open_only: bool = False,
     ) -> None:
         self.root = root
+        # Open balconies only: no enclosure row (always open) and no triangle
+        # floor (counts as rectangle).
+        self.open_only = open_only
         self.crops_dir = Path(crops_dir)
         self.labels_path = Path(labels_path)
         ensure_crop_dirs(self.crops_dir)
@@ -107,6 +118,8 @@ class LabelApp:
         )
         if structure_pass:
             self.queue = [s for s in self.queue if s.startswith(structure_prefix)]
+        if skip_prefixes:
+            self.queue = [s for s in self.queue if not s.startswith(tuple(skip_prefixes))]
         self.index = 0
         self.undo_stack: list[dict] = []
         self.back_stack: list[str] = []
@@ -176,13 +189,15 @@ class LabelApp:
                 variable=self.material_var,
             ).pack(side=tk.LEFT, padx=8)
 
+        floors = [(n, k) for n, k in zip(FLOOR_SHAPES, ("R", "T", "C"))
+                  if not (self.open_only and n == "triangle")]
         self.floor_fr = ttk.LabelFrame(
             self.root,
-            text="Floor shape — R rectangle / T triangle / C circle (none for juliet)",
+            text="Floor shape — " + " / ".join(f"{k} {n}" for n, k in floors) + " (none for juliet)",
             padding=8,
         )
         self.floor_fr.pack(fill=tk.X, padx=8, pady=4)
-        for name, key in zip(FLOOR_SHAPES, ("R", "T", "C")):
+        for name, key in floors:
             ttk.Radiobutton(
                 self.floor_fr,
                 text=f"{key}: {name}",
@@ -195,7 +210,8 @@ class LabelApp:
             text="Enclosure — O open / A half_enclosed / E enclosed",
             padding=8,
         )
-        enc_fr.pack(fill=tk.X, padx=8, pady=4)
+        if not self.open_only:
+            enc_fr.pack(fill=tk.X, padx=8, pady=4)
         for name, key in zip(ENCLOSURES, ("O", "A", "E")):
             ttk.Radiobutton(
                 enc_fr,
@@ -291,9 +307,10 @@ class LabelApp:
             self.material_var.set(MATERIAL_KEYS[ch])
             return
         if ch in FLOOR_KEYS and floor_required(self.structure_var.get()):
-            self.floor_var.set(FLOOR_KEYS[ch])
+            if not (self.open_only and FLOOR_KEYS[ch] == "triangle"):
+                self.floor_var.set(FLOOR_KEYS[ch])
             return
-        if ch in ENCLOSURE_KEYS:
+        if ch in ENCLOSURE_KEYS and not self.open_only:
             self.enclosure_var.set(ENCLOSURE_KEYS[ch])
             self._sync_skin()
             return
@@ -362,6 +379,15 @@ class LabelApp:
         if self.enclosure_var.get() not in ENCLOSURES:
             self.enclosure_var.set("open")
             self._sync_skin()
+
+    def _apply_open_only(self) -> None:
+        """In open-only mode: enclosure is open, a triangle floor shows as rectangle."""
+        if not self.open_only:
+            return
+        self.enclosure_var.set("open")
+        self.skin_var.set("")
+        if self.floor_var.get() == "triangle":
+            self.floor_var.set("rectangle")
 
     def _set_material_enabled(self, enabled: bool) -> None:
         state = "normal" if enabled else "disabled"
@@ -453,6 +479,7 @@ class LabelApp:
         self.enclosure_var.set(enclosure if enclosure in ENCLOSURES else "")
         skin = rec.get("skin") or ""
         self.skin_var.set(skin if skin in ENCLOSURE_SKINS else "")
+        self._apply_open_only()
         self._sync_skin()
         structure = rec.get("structure") or ""
         self.structure_var.set(structure if structure in LABEL_STRUCTURES else "")
@@ -479,6 +506,8 @@ class LabelApp:
         if path is None:
             messagebox.showwarning("Missing", f"Image not found for {stem}")
             return
+        if self.open_only:
+            self.enclosure_var.set("open")
         enclosure = self.enclosure_var.get()
         if enclosure not in ENCLOSURES:
             messagebox.showwarning(
@@ -623,6 +652,7 @@ def parse_args() -> argparse.Namespace:
         help="show open crops with no structure yet (names starting with --structure-prefix)",
     )
     ap.add_argument("--structure-prefix", default="cmp_b")
+    ap.add_argument("--skip-prefixes", type=Path, help="file with one name prefix per line; those crops are hidden")
     return ap.parse_args()
 
 
@@ -636,6 +666,9 @@ def main() -> None:
         review_all=args.review_all,
         structure_pass=args.structure_pass,
         structure_prefix=args.structure_prefix,
+        skip_prefixes=tuple(
+            line.strip() for line in args.skip_prefixes.read_text(encoding="utf-8").splitlines() if line.strip()
+        ) if args.skip_prefixes else (),
     )
     root.mainloop()
 

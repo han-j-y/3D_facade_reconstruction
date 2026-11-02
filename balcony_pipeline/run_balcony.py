@@ -58,6 +58,7 @@ from draw import (  # noqa: E402
     save,
 )
 from filter import filter_balcony_boxes, no_window_above  # noqa: E402
+from postfilter import apply_rules  # noqa: E402
 from heuristic_ir import (  # noqa: E402
     balcony_type_token,
     enclosure_from_ir,
@@ -216,6 +217,24 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=ROOT / "runs" / "da3_enclosure",
         help="DA3 ``<stem>_depth.npy`` directory for enclosed volumes",
+    )
+    ap.add_argument(
+        "--no-side-wall",
+        action="store_true",
+        help=(
+            "keep open boxes on side walls / neighbouring buildings (postfilter side_wall: "
+            "> 8%% farther than the main wall in DA3 depth, or cut off at the left/right "
+            "border and taller than wide)"
+        ),
+    )
+    ap.add_argument(
+        "--no-juliet-split",
+        action="store_true",
+        help=(
+            "keep one box over a balustrade that spans several windows (postfilter "
+            "masonry_juliet_split: a box the railing classifier calls juliet + open_work + "
+            "masonry is otherwise split into one box per window just above it)"
+        ),
     )
     ap.add_argument(
         "--enclosed-sam3-cache",
@@ -380,10 +399,18 @@ def snap_open_units(
     *,
     row_tol: float = 0.055,
     col_tol: float = 0.04,
+    side_wall: bool = False,
+    depth: np.ndarray | None = None,
+    split_predictor=None,
 ) -> tuple[list[dict], list[list[int]], list[dict]]:
     """Filter, merge and snap open-balcony boxes onto the window grid.
 
-    Returns (snapped units, filtered boxes, filter log).
+    ``side_wall`` also drops boxes on a side wall or a neighbouring building
+    (``postfilter.side_wall``; ``depth`` is the DA3 map at photo size, None uses
+    the border test only). ``split_predictor`` (railing classifier) splits a box
+    called juliet + open_work + masonry that spans two or more windows into one
+    box per window (``postfilter`` ``masonry_juliet_split``). Returns (snapped
+    units, filtered boxes, filter log).
     """
     if not raw_boxes:
         return [], [], []
@@ -392,6 +419,23 @@ def snap_open_units(
         facade,
         windows_dsl.get("instances") or [],
     )
+    if filtered_boxes and side_wall:
+        filtered_boxes, sw_log = apply_rules(
+            filtered_boxes, facade.size, windows_dsl, depth=depth, rules=("side_wall",)
+        )
+        for e in sw_log:
+            for row in drop_log:
+                if row["keep"] and row["box"] == e["box"]:
+                    row["keep"] = False
+                    row["reasons"] = [*row["reasons"], f"side_wall:{e.get('reason')}"]
+                    break
+    if filtered_boxes and split_predictor is not None and hasattr(split_predictor, "predict_full"):
+        labels = [split_predictor.predict_full(facade.crop(tuple(b))) for b in filtered_boxes]
+        filtered_boxes, sp_log = apply_rules(
+            filtered_boxes, facade.size, windows_dsl, labels=labels, rules=("masonry_juliet_split",)
+        )
+        for e in sp_log:
+            print(f"    split {e['box']} (juliet masonry) -> {len(e['into'])} boxes")
     if not filtered_boxes:
         return [], filtered_boxes, drop_log
     iw, ih = facade.size
@@ -635,14 +679,35 @@ def run(args: argparse.Namespace) -> Path | None:
         force=True,
     )
     snapped: list[dict] = []
+    early_predictor = None
     if raw_boxes:
         print("=== 1a-2 Filter, unitize, snap open balconies to window grid ===")
+        use_side_wall = not bool(getattr(args, "no_side_wall", False))
+        side_depth = None
+        if use_side_wall:
+            depth_path = ensure_da3_depth(
+                image_path,
+                Path(getattr(args, "depth_dir", ROOT / "runs" / "da3_enclosure")),
+                device=str(device),
+            )
+            if depth_path is not None:
+                from balcony_train.try_da3_enclosure import resize_depth
+
+                side_depth = resize_depth(np.load(depth_path), facade.width, facade.height)
+            else:
+                print("  side_wall: no DA3 depth; border test only")
+        early_predictor = None
+        if not bool(getattr(args, "no_juliet_split", False)):
+            early_predictor = resolve_railing_predictor(args, device)
         snapped, filtered_boxes, drop_log = snap_open_units(
             raw_boxes,
             facade,
             windows_dsl,
             row_tol=args.row_tol,
             col_tol=args.col_tol,
+            side_wall=use_side_wall,
+            depth=side_depth,
+            split_predictor=early_predictor,
         )
         n_drop = sum(1 for e in drop_log if not e["keep"])
         print(f"  {len(raw_boxes)} raw -> {len(filtered_boxes)} kept  (dropped {n_drop})")
@@ -810,7 +875,7 @@ def run(args: argparse.Namespace) -> Path | None:
                 }
             )
 
-        predictor = resolve_railing_predictor(args, device)
+        predictor = early_predictor if early_predictor is not None else resolve_railing_predictor(args, device)
         rail_src = "classifier" if predictor is not None else "heuristic"
         ir_label = "Classifier IR" if predictor is not None else "Heuristic IR"
 

@@ -7,8 +7,10 @@ Q quit), plus:
 * the photo with the crop's box drawn in red, beside the crop;
 * starting values from earlier hand labels (``prefill.jsonl``) on crops not
   yet saved. They are never model predictions;
-* ``X``: not a balcony (``not_balcony.jsonl``). These are left out of the
-  attribute accuracy and counted separately.
+* ``Cancel`` button or ``X``: not a balcony. Removes every label of the crop
+  and records it in ``not_balcony.jsonl``; ``U`` undoes it. These are left out
+  of the attribute accuracy and counted separately. Use ``--review-all`` to
+  reach crops already saved.
 
 A crop counts as reviewed once it is saved to ``labels.jsonl`` or marked X.
 
@@ -24,10 +26,20 @@ and ``labels.jsonl``, with context from ``crops_pipeline_train/context``
 (``export_train_pipeline_crops.py``). There is no prefill. ``--structure-pass``
 works as in ``label_ui.py``.
 
+``--dir runs/test100/crops`` labels the Base + LSAA 100-photo test set
+(``export_test100_crops.py``). Its prefill is earlier cmp_b training labels and
+the LSAA FiftyOne tags. That set is open-only (``--open-only``, on by default
+for that dir): no enclosure row, every saved crop is ``open``, and there is no
+triangle floor (a triangle prefill shows as rectangle).
+
+``--dir runs/lsaa_juliet/crops`` (``select_juliet_lsaa.py``) is LSAA training
+crops for structure, also open-only by default. It has no prefill.
+
 Example::
 
     C:\\Users\\hiroo\\anaconda3\\envs\\glodon\\python.exe balcony_train/label_pipeline_crops_ui.py
     C:\\Users\\hiroo\\anaconda3\\envs\\glodon\\python.exe balcony_train/label_pipeline_crops_ui.py --train
+    C:\\Users\\hiroo\\anaconda3\\envs\\glodon\\python.exe balcony_train/label_pipeline_crops_ui.py --dir runs/test100/crops
 """
 
 from __future__ import annotations
@@ -37,7 +49,7 @@ import json
 import sys
 import tkinter as tk
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import ttk
 
 from PIL import Image, ImageTk
 
@@ -52,6 +64,10 @@ from balcony_train.labels import CLASSES, ENCLOSURES, FLOOR_SHAPES, LABEL_STRUCT
 from balcony_train.paths import DEFAULT_CROPS_DIR, DEFAULT_LABELS_JSONL  # noqa: E402
 
 DEFAULT_DIR = ROOT / "runs" / "balcony_clf" / "crops_pipeline_ext"
+# The Base + LSAA test set labels open balconies only (no enclosure, no triangle).
+TEST100_DIR = ROOT / "runs" / "test100" / "crops"
+# LSAA juliet training round (select_juliet_lsaa.py): also open-only.
+JULIET_DIR = ROOT / "runs" / "lsaa_juliet" / "crops"
 TRAIN_DIR = ROOT / "runs" / "balcony_clf" / "crops_pipeline_train"
 
 
@@ -77,6 +93,7 @@ class PipelineCropApp(LabelApp):
         not_balcony_path: Path,
         review_all: bool = False,
         structure_pass: bool = False,
+        open_only: bool = False,
     ) -> None:
         self.context_dir = Path(context_dir)
         self.is_train = Path(prefill_path).parent.resolve() == TRAIN_DIR.resolve()
@@ -91,6 +108,7 @@ class PipelineCropApp(LabelApp):
             labels_path=labels_path,
             review_all=review_all,
             structure_pass=structure_pass,
+            open_only=open_only,
         )
         if not review_all:
             self.queue = [s for s in self.queue if s not in self.not_balcony]
@@ -110,9 +128,12 @@ class PipelineCropApp(LabelApp):
         self.ctx_label = ttk.Label(self.ctx_frame, anchor=tk.CENTER)
         self.ctx_label.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
         self.ctx_frame.bind("<Configure>", self._on_image_frame_configure)
+        ttk.Button(self.btns, text="Cancel (X): not a balcony", command=self.mark_not_balcony).pack(
+            side=tk.LEFT, padx=4
+        )
         ttk.Label(
             self.root,
-            text="X = not a balcony. Label the real balcony in the red box (left), not only the crop (right).",
+            text="Cancel / X = not a balcony (removes all labels of this crop). Label the real balcony in the red box (left), not only the crop (right).",
             padding=8,
         ).pack(anchor=tk.W)
 
@@ -148,10 +169,11 @@ class PipelineCropApp(LabelApp):
             self.floor_var.set(floor if floor in FLOOR_SHAPES else "")
             enc = pre.get("enclosure")
             self.enclosure_var.set(enc if enc in ENCLOSURES else "")
+            self._apply_open_only()
             self._sync_skin()
             # cmp_x labels saved projecting as null.
             structure = pre.get("structure") or "projecting"
-            if enc == "open" and structure in LABEL_STRUCTURES:
+            if self.enclosure_var.get() == "open" and structure in LABEL_STRUCTURES:
                 self.structure_var.set(structure)
             note = f"   [starting values from {pre['prefill_from']}, IoU {pre['prefill_iou']}]"
         elif stem not in self.labels:
@@ -174,14 +196,14 @@ class PipelineCropApp(LabelApp):
         if not self.queue:
             return
         stem = self.queue[self.index]
-        if stem in self.labels and not messagebox.askyesno(
-            "Not a balcony", f"{stem} already has labels. Remove them and mark it X?"
-        ):
-            return
+        path = find_image(self.crops_dir, stem)
+        self.undo_stack.append({
+            "stem": stem, "prev_label": dict(self.labels.get(stem) or {}),
+            "prev_path": str(path), "new_kind": None, "not_balcony": stem not in self.not_balcony,
+        })
         if stem in self.labels:
             self.labels.pop(stem)
             write_labels_jsonl(self.labels_path, self.labels)
-            path = find_image(self.crops_dir, stem)
             if path is not None:
                 _place_in_unlabeled(self.crops_dir, path)
         self.not_balcony.add(stem)
@@ -191,6 +213,14 @@ class PipelineCropApp(LabelApp):
         if self.index >= len(self.queue) and self.queue:
             self.index = len(self.queue) - 1
         self._show_current()
+
+    def undo(self) -> None:
+        item = self.undo_stack[-1] if self.undo_stack else {}
+        super().undo()
+        if item.get("not_balcony"):
+            self.not_balcony.discard(item["stem"])
+            self._write_not_balcony()
+            self._show_current()
 
     def save(self) -> None:
         stem = self.queue[self.index] if self.queue else None
@@ -214,6 +244,10 @@ def main() -> None:
     ap.add_argument(
         "--structure-pass", action="store_true", help="open crops with no structure yet (cmp_b names)"
     )
+    ap.add_argument(
+        "--open-only", action="store_true",
+        help="no enclosure row (always open), no triangle floor; on by default for runs/test100/crops and runs/lsaa_juliet/crops",
+    )
     args = ap.parse_args()
     root = tk.Tk()
     if args.train:
@@ -231,6 +265,7 @@ def main() -> None:
         not_balcony_path=side / "not_balcony.jsonl",
         review_all=args.review_all,
         structure_pass=args.structure_pass,
+        open_only=args.open_only or Path(args.dir).resolve() in (TEST100_DIR.resolve(), JULIET_DIR.resolve()),
     )
     root.mainloop()
 
