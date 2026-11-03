@@ -72,6 +72,7 @@ from heuristic_ir import (  # noqa: E402
 from merge_dsl import merge_balcony_into_windows_dsl  # noqa: E402
 from recovery_profile import DEFAULT_PROFILE, PROFILES, resolve_profile  # noqa: E402
 from snap import _bands_from_windows_dsl, snap_units  # noqa: E402
+from unit_labels import ExternalUnitLabels, UnitLabelPredictor  # noqa: E402
 from vote import vote_cluster_ir  # noqa: E402
 
 from balcony_train.model import try_load_predictor  # noqa: E402
@@ -234,6 +235,17 @@ def parse_args() -> argparse.Namespace:
             "keep one box over a balustrade that spans several windows (postfilter "
             "masonry_juliet_split: a box the railing classifier calls juliet + open_work + "
             "masonry is otherwise split into one box per window just above it)"
+        ),
+    )
+    ap.add_argument(
+        "--unit-labels",
+        type=Path,
+        default=None,
+        help=(
+            "JSON of per-unit railing labels (unit_index, box_xyxy, kind, material, "
+            "floor_shape, structure) used instead of the classifier for the step-4 "
+            "unit IR only; split, oriel floor/skin and everything else stay as is. "
+            "Fails when a unit box differs from the labeled box"
         ),
     )
     ap.add_argument(
@@ -878,6 +890,40 @@ def run(args: argparse.Namespace) -> Path | None:
         predictor = early_predictor if early_predictor is not None else resolve_railing_predictor(args, device)
         rail_src = "classifier" if predictor is not None else "heuristic"
         ir_label = "Classifier IR" if predictor is not None else "Heuristic IR"
+        unit_index = {id(u): i for i, u in enumerate(units)}
+        _write_text(
+            out_dir / "balcony_units.json",
+            json.dumps(
+                {
+                    "stem": stem,
+                    "units": [
+                        {
+                            "unit_index": i,
+                            "box_xyxy": [int(v) for v in u["box_xyxy"]],
+                            "type_id": int(u["type_id"]),
+                            "asset": u["asset"],
+                            "floor": int(u["floor"]),
+                            "rooftop": bool(u.get("rooftop", False)),
+                        }
+                        for i, u in enumerate(units)
+                    ],
+                },
+                indent=2,
+            )
+            + "\n",
+        )
+        ext_labels = None
+        if getattr(args, "unit_labels", None):
+            ext_labels = ExternalUnitLabels.load(Path(args.unit_labels))
+            ext_labels.check_units([u["box_xyxy"] for u in units])
+            rail_src = ext_labels.source
+            ir_label = f"External IR ({ext_labels.source})"
+            print(f"  unit labels from {args.unit_labels} ({len(units)} units, boxes match)")
+
+        def _unit_predictor(u: dict):
+            if ext_labels is None:
+                return predictor
+            return UnitLabelPredictor(ext_labels, unit_index[id(u)], u["box_xyxy"])
 
         if per_unit_railing:
             print(
@@ -890,7 +936,7 @@ def run(args: argparse.Namespace) -> Path | None:
                     u,
                     image_size=facade.size,
                     profile_name=profile_name,
-                    predictor=predictor,
+                    predictor=_unit_predictor(u),
                 )
                 tokens = ir_to_tokens(ir, profile_name=profile_name)
                 kind = railing_kind_from_ir(ir)
@@ -927,7 +973,7 @@ def run(args: argparse.Namespace) -> Path | None:
                         u,
                         image_size=facade.size,
                         profile_name=profile_name,
-                        predictor=predictor,
+                        predictor=_unit_predictor(u),
                     )
                     tokens = ir_to_tokens(ir, profile_name=profile_name)
                     member_preds.append(

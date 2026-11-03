@@ -33,7 +33,7 @@ from balcony_train.labels import ENCLOSURE_SKINS, FLOOR_SHAPES  # noqa: E402
 from snap import _bands_from_windows_dsl  # noqa: E402
 
 DEFAULT_PHOTO_DIR = ROOT / "data" / "test for enclosure"
-DEFAULT_DSL_DIR = ROOT / "runs" / "batch"
+DEFAULT_DSL_DIR = ROOT / "runs" / "batch_grid2"  # new grid (2026-10-31); old grid labels: *.grid1.jsonl on runs/batch
 DEFAULT_LABELS_JSONL = ROOT / "runs" / "enclosed_grid" / "labels.jsonl"
 # 133-photo test: labeled rows in labels_ext_all whose photo is in extended_selected.
 # Grid-failure rows are omitted by load_labels. The previous 61-photo set is labels_eval.jsonl.

@@ -493,6 +493,15 @@ def parse_args() -> argparse.Namespace:
         help="after the window floor×bay grid, run balcony_pipeline and write facade_dsl_with_balconies.json",
     )
     ap.add_argument(
+        "--balcony-unit-labels",
+        type=Path,
+        default=None,
+        help=(
+            "per-unit railing labels JSON for the balcony step-4 IR instead of the "
+            "classifier (run_balcony --unit-labels); boxes must match the labeled run"
+        ),
+    )
+    ap.add_argument(
         "--balcony-recovery-profile",
         default="railing_only",
         choices=["railing_only", "full"],
@@ -2596,6 +2605,7 @@ def run_one(
                 enclosed_method=args.enclosed_method,
                 depth_dir=ROOT / "runs" / "da3_enclosure",
                 enclosed_sam3_cache=ROOT / "runs" / "sam3_da3_volumes" / "sam3_seeds.json",
+                unit_labels=args.balcony_unit_labels,
             )
             merged_path = _bp.run(bp_args)
             if merged_path and merged_path.is_file():

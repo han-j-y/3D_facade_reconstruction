@@ -44,6 +44,8 @@ from balcony_train.cell_clf_search import SPECS, Model  # noqa: E402
 from balcony_train.cell_clf_train import DEFAULT_TRAIN_CELLS, DEFAULT_TRAIN_LABELS  # noqa: E402
 from balcony_train.enclosed_detect import (  # noqa: E402
     MODEL_PATH,
+    CELL_T,
+    PHOTO_GATE,
     SAM3_THRESHOLD,
     PhotoData,
     _predict,
@@ -129,6 +131,8 @@ def main() -> None:
     ap.add_argument("--train-labels", type=Path, default=DEFAULT_TRAIN_LABELS)
     ap.add_argument("--model", type=Path, default=MODEL_PATH, help="official cell model (joblib)")
     ap.add_argument("--skip-stems", type=Path, default=None, help="text file of photos left out of the score")
+    ap.add_argument("--gate", type=float, default=PHOTO_GATE, help="photo gate (pipeline default %(default)s)")
+    ap.add_argument("--t", type=float, default=CELL_T, help="cell threshold (pipeline default %(default)s)")
     ap.add_argument("--draw-only", action="store_true", help="only redraw the panels from the saved preds_*.json")
     args = ap.parse_args()
 
@@ -182,7 +186,7 @@ def main() -> None:
     }
     args.out_dir.mkdir(parents=True, exist_ok=True)
     lines = [
-        f"Oriel cells on runs/test100: {len(data)} photos, labels {args.labels.name}",
+        f"Oriel cells: {len(data)} photos from {args.photos_dir}, labels {args.labels.name}, gate {args.gate}, t {args.t}",
         "",
         "| model, unit | photos | cells | TP | FP | FN | TN | P | R | F1 | IoU | exact photos |",
         "|---|---|---|---|---|---|---|---|---|---|---|---|",
@@ -191,7 +195,7 @@ def main() -> None:
         preds: dict[str, set] = {}
         for s, d in data.items():
             p_gate, p_cell = _predict(model, d)
-            preds[s], _gmax, _off = decode_cells(d, s, p_gate, p_cell, *grids[s])
+            preds[s], _gmax, _off = decode_cells(d, s, p_gate, p_cell, *grids[s], gate=args.gate, t=args.t)
         (args.out_dir / f"preds_{name}.json").write_text(
             json.dumps({s: [list(c) for c in sorted(v)] for s, v in preds.items()}) + "\n", encoding="utf-8"
         )

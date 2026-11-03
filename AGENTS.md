@@ -59,7 +59,7 @@ Photo → detected elements → typed, voted structure → JSON DSL → parametr
   - Typed (`cluster.py`, appearance by default, `--cluster-mode box`).
   - The railing classifier (`balcony_train/model.py`, `checkpoints/railing_best.pt`: frozen DINOv2 + linear heads) labels each crop, then a per-type vote (`vote.py`).
 - Enclosed balconies / oriels are a separate cell detector: `balcony_train/enclosed_detect.py` (`--enclosed-method cell_clf`).
-  - Per-cell features (DA3 depth, SAM3, DINOv2) → HistGradientBoosting gate + cell model → rectangle decode → four cell rules → photo gate ≥ 0.10.
+  - Per-cell features (DA3 depth, SAM3, DINOv2) → HistGradientBoosting gate + cell model → rectangle decode (t 0.5) → four cell rules → photo gate ≥ 0.70 (456-photo model without test100, 2026-11-02).
   - Floor shape and skin (punched window / curtain wall) are one majority vote per photo.
 - `merge_dsl.py` appends `balcony_types` and `layout.balconies`, giving `facade_dsl_with_balconies.json`.
 
@@ -74,17 +74,17 @@ Photo → detected elements → typed, voted structure → JSON DSL → parametr
 
 - CMP Facade Database:
   - `cmp_b*` (base) is the only training data.
-  - `cmp_x*` (extended) is evaluation only. Never train or tune thresholds on it.
-  - Exception (user, 2026-10-31): the photos in `runs/enclosed_grid/oriel_train_extra_stems.txt` (50 cmp_x, 10 LSAA) train the oriel cell model only. Oriel test and dev scores leave them out; they never train the railing classifier.
+  - `cmp_x*` (extended) is no longer a test set (user, 2026-11-02). Do not train on it except as below. Its old test and dev results are in `agent_archive_cmp_x.md`.
+  - Exception (user, 2026-10-31): the photos in `runs/enclosed_grid/oriel_train_extra_stems.txt` (50 cmp_x, 10 LSAA) train the oriel cell model only. They never train the railing classifier.
   - Label maps are palette PNGs: 3 window, 4 door, 7 balcony.
   - In CMP XML, `<x>` holds rows and `<y>` holds columns (swapped from the usual meaning).
 - Enclosure splits:
-  - Train: `runs/enclosed_grid/labels_train.jsonl`.
-  - Test: `runs/enclosed_grid/labels_ext_all.jsonl` (skip `"status": "grid_failure"` lines).
-  - Dev: the older 61-photo `labels_eval.jsonl` set, which the current gate and rules were tuned on.
+  - Train: `runs/enclosed_grid/labels_train_oriel.jsonl` (oriel cell model; see below).
+  - Test: test100 only, `runs/test100/oriel_labels.jsonl` (photos `runs/test100/photos`). No test100 photo may be in any training set.
+  - `labels_ext_all.jsonl` and `labels_eval.jsonl` (cmp_x) are no longer scored or reported.
   - Cell numbers refer to the window grid in `runs/batch_grid2/<stem>/facade_dsl.json` (test100 LSAA: `runs/test100/batch_grid2`). The old-grid labels are kept as `*.grid1.jsonl` for `runs/batch`.
-  - Oriel cell model training labels: `runs/enclosed_grid/labels_train_oriel.jsonl` (cmp_b + the extra oriel photos). `labels_train.jsonl` stays cmp_b only.
+  - `labels_train_oriel.jsonl` = cmp_b + the extra oriel photos, minus the test100 photos. `labels_train.jsonl` stays cmp_b only.
 - Scoring:
   - Enclosure cells: pool TP / FP / FN over all cells (precision, recall, F1, IoU), not per-photo averages.
-  - Open-balcony boxes: one-to-one greedy IoU matching, reported at IoU ≥ 0.5 and ≥ 0.3, with the protocol and exclusions in `agent.md`.
+  - Open-balcony boxes: one-to-one greedy IoU matching, reported at IoU ≥ 0.5 and ≥ 0.3, on test100 (`runs/test100/balcony_gt_boxes.jsonl`); protocol in `agent.md`.
 - `runs/` holds large generated outputs and cached detections (e.g. `runs/batch/_rows/*_boxes.json`) that let scoring skip SAM3. Prefer reusing caches over rerunning detection.

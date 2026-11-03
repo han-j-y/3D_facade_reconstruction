@@ -1,6 +1,6 @@
-"""Official enclosed detection: classifier rectangle, four cell rules, gate 0.10.
+"""Official enclosed detection: classifier rectangle (t 0.5), four cell rules, gate 0.70.
 
-A photo whose gate-model max is below 0.10 predicts no cells. Every other
+A photo whose gate-model max is below 0.70 predicts no cells. Every other
 photo keeps the four-rule cells. The previous SAM3+DA3 volumes stay available
 as ``--enclosed-method sam3``.
 
@@ -42,8 +42,8 @@ from balcony_train.try_sam3_da3_volumes import (  # noqa: E402
 from enclosed import ensure_da3_depth  # noqa: E402
 from snap import _bands_from_windows_dsl  # noqa: E402
 
-CELL_T = 0.3
-PHOTO_GATE = 0.10
+CELL_T = 0.5  # 2026-11-02: CV choice on the 475-photo set, kept for the 456-photo model (see agent.md)
+PHOTO_GATE = 0.70  # before 2026-11-02: 0.10 / 0.3
 MODEL_PATH = ROOT / "runs" / "cell_clf" / "model_rules_gate.joblib"
 SAM3_THRESHOLD = 0.15
 
