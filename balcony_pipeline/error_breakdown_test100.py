@@ -9,6 +9,8 @@ prediction (FP) gets reproducible, automatic tags.
 FN, by stage where it was lost (first that applies):
   ``merged``         a final box covers >= 70% of the GT unit but IoU < 0.5: detected
                      as part of a larger box (e.g. one box over a continuous balustrade)
+  ``oriel_removed``  (``--pipeline-score`` only) a box removed by the oriel step matched
+                     (IoU >= 0.5) or covered >= 70% of the GT unit
   ``sam3_miss``      no raw SAM3 box with IoU >= 0.1 (not detected at all)
   ``sam3_extent``    a raw SAM3 box overlaps (0.1 <= IoU < 0.5): wrong extent at detection
   ``overlap_filter`` a raw box matched (IoU >= 0.5) but no filtered box did
@@ -32,6 +34,10 @@ Position tags rely on detected windows, which miss some windows; they are a prox
 Example::
 
     C:\Users\hiroo\anaconda3\envs\glodon\python.exe balcony_pipeline/error_breakdown_test100.py
+
+``--pipeline-score runs/test100/balcony_pipeline_score.json`` takes the final boxes from
+``score_test100_pipeline.py`` instead (v4 split, merge + snap, oriel removal = the pipeline
+output; main score since 2026-11-03).
 """
 
 from __future__ import annotations
@@ -81,11 +87,14 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=T100 / "balcony_error_breakdown.json")
     ap.add_argument("--labels", type=Path, default=T100 / "railing_preds_v2.json")
     ap.add_argument("--no-split", action="store_true")
+    ap.add_argument("--pipeline-score", type=Path, default=None,
+                    help="score_test100_pipeline.py output: use its final boxes and oriel-removed boxes")
     args = ap.parse_args()
 
     gt = {json.loads(l)["stem"]: json.loads(l) for l in args.gt.read_text(encoding="utf-8").splitlines() if l.strip()}
     cache = json.loads(args.cache.read_text(encoding="utf-8"))
     labels_all = json.loads(args.labels.read_text(encoding="utf-8"))
+    pipe = json.loads(args.pipeline_score.read_text(encoding="utf-8")) if args.pipeline_score else None
     oriel = {json.loads(l)["stem"]: json.loads(l)["cells"]
              for l in args.oriel.read_text(encoding="utf-8").splitlines() if l.strip()}
 
@@ -104,7 +113,11 @@ def main() -> None:
         raw = cache[s]["raw"]
         pred, log = apply_rules(filt, tuple(cache[s]["size"]), dsl, depth=depth, rules=("side_wall",))
         removed = [e["box"] for e in log]
-        if not args.no_split:
+        oriel_removed = []
+        if pipe is not None:
+            pred = [list(b) for b in pipe["boxes"]["final"][s]]
+            oriel_removed = [list(b) for b in pipe["oriel_dropped"].get(s, [])]
+        elif not args.no_split:
             left = list(range(len(filt)))
             labs = []
             for b in pred:
@@ -133,6 +146,8 @@ def main() -> None:
                 continue
             if any(inter(u, x) >= 0.7 * area(u) for x in pred):
                 stage = "merged"
+            elif best(u, oriel_removed) >= 0.5 or any(inter(u, x) >= 0.7 * area(u) for x in oriel_removed):
+                stage = "oriel_removed"
             elif best(u, raw) < 0.1:
                 stage = "sam3_miss"
             elif best(u, raw) < 0.5:

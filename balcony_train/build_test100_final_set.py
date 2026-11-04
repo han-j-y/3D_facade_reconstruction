@@ -54,7 +54,11 @@ def main() -> None:
     ap.add_argument("--gt-iou", type=float, default=0.5, help="min IoU with a GT box; 0 keeps every labeled crop")
     ap.add_argument("--cache", type=Path, default=ROOT / "runs" / "batch" / "_rows" / "test100_sam3_stage_boxes.json")
     ap.add_argument("--labels", type=Path, default=T / "railing_preds_v2.json", help="classifier labels for the split rule")
+    ap.add_argument("--pipeline-score", type=Path, default=None,
+                    help="use the final boxes of score_test100_pipeline.py (pipeline output after the oriel "
+                         "removal; main test protocol since 2026-11-03) instead of rebuilding them")
     args = ap.parse_args()
+    pipe = json.loads(args.pipeline_score.read_text(encoding="utf-8"))["boxes"]["final"] if args.pipeline_score else None
 
     cache = json.loads(args.cache.read_text(encoding="utf-8"))
     preds = json.loads(args.labels.read_text(encoding="utf-8"))
@@ -71,19 +75,22 @@ def main() -> None:
     for s in sorted(cache):
         if not (T / "photos" / f"{s}.jpg").is_file():
             continue
-        dsl = json.loads((T / "batch_grid2" / s / "facade_dsl.json").read_text(encoding="utf-8"))
-        dp = T / "da3_depth" / f"{s}_depth.npy"
-        depth = np.load(dp) if dp.is_file() else None
-        filt = cache[s]["filtered"]
-        size = tuple(cache[s]["size"])
-        sw, _ = apply_rules(filt, size, dsl, depth=depth, rules=("side_wall",))
-        left = list(range(len(filt)))
-        labs = []
-        for b in sw:
-            j = next(j for j in left if filt[j] == b)
-            left.remove(j)
-            labs.append(preds[s][j])
-        pred, _ = apply_rules(sw, size, dsl, labels=labs, rules=("masonry_juliet_split",))
+        if pipe is not None:
+            pred = [list(b) for b in pipe.get(s, [])]
+        else:
+            dsl = json.loads((T / "batch_grid2" / s / "facade_dsl.json").read_text(encoding="utf-8"))
+            dp = T / "da3_depth" / f"{s}_depth.npy"
+            depth = np.load(dp) if dp.is_file() else None
+            filt = cache[s]["filtered"]
+            size = tuple(cache[s]["size"])
+            sw, _ = apply_rules(filt, size, dsl, depth=depth, rules=("side_wall",))
+            left = list(range(len(filt)))
+            labs = []
+            for b in sw:
+                j = next(j for j in left if filt[j] == b)
+                left.remove(j)
+                labs.append(preds[s][j])
+            pred, _ = apply_rules(sw, size, dsl, labels=labs, rules=("masonry_juliet_split",))
         for b in pred:
             n_box += 1
             key = (s, tuple(b))

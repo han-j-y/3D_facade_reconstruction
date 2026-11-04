@@ -57,10 +57,10 @@ Photo → detected elements → typed, voted structure → JSON DSL → parametr
 - Open balconies:
   - SAM3 `balcony` boxes → `filter.py` → snapped to the window grid (`snap.py`, never re-clustered).
   - Typed (`cluster.py`, appearance by default, `--cluster-mode box`).
-  - The railing classifier (`balcony_train/model.py`, default `checkpoints/railing_test100_v4.pt` since 2026-11-02, set in `balcony_train/paths.py`: frozen DINOv2 + linear heads, trained without the test100 photos and without FLUX.2, own structure head) labels each crop, then a per-type vote (`vote.py`). Its skin head never saw a curtain wall, so oriel skin is always punched window until it is retrained. The old default `railing_best.pt` saw the test100 photos.
+  - The railing classifier (`balcony_train/model.py`, default `checkpoints/railing_test100_v4.pt` since 2026-11-02, set in `balcony_train/paths.py`: frozen DINOv2 + linear heads, trained without the test100 photos and without FLUX.2, own structure head) labels each crop, then a per-type vote (`vote.py`). Its skin head never saw a curtain wall, so the pipeline does not use it for oriels. The old default `railing_best.pt` saw the test100 photos.
 - Enclosed balconies / oriels are a separate cell detector: `balcony_train/enclosed_detect.py` (`--enclosed-method cell_clf`).
   - Per-cell features (DA3 depth, SAM3, DINOv2) → HistGradientBoosting gate + cell model → rectangle decode (t 0.5) → four cell rules → photo gate ≥ 0.70 (457-photo model without test100, refit 2026-11-03 after the training label review).
-  - Floor shape and skin (punched window / curtain wall) are one majority vote per photo.
+  - Floor shape (railing classifier) and skin (oriel skin model `checkpoints/oriel_skin.joblib`, `balcony_train/oriel_skin.py`, default since 2026-11-03; `--no-oriel-skin-model` falls back to the railing classifier) are one majority vote per photo.
 - `merge_dsl.py` appends `balcony_types` and `layout.balconies`, giving `facade_dsl_with_balconies.json`.
 
 **Compiler** (`vendor/window_compiler/`, runs inside Blender via `main.py`):
@@ -69,6 +69,10 @@ Photo → detected elements → typed, voted structure → JSON DSL → parametr
 - Grammars: `documents/WDSL.ebnf` (window), `documents/BDSL.ebnf` (balcony), `documents/FDSL.ebnf` (facade, recovery ↔ compiled mapping).
 
 **Training and evaluation** (`balcony_train/`): crop export, label UIs (Tkinter), classifier training (`train.py`, `--heads-only`), the enclosure cell classifier and its experiments, and scoring scripts. `agent.md` records which script produced which cited number.
+
+## Model defaults
+
+- When a newly trained model scores better on test100 than the pipeline default and passes the leakage check, make it the pipeline default right away (code, `agent.md`, this file) instead of leaving it as "not wired in" (user, 2026-11-03). Report the switch; the user does not need to ask each time.
 
 ## Data and evaluation rules
 
@@ -88,5 +92,6 @@ Photo → detected elements → typed, voted structure → JSON DSL → parametr
 - Scoring:
   - Enclosure cells: pool TP / FP / FN over all cells (precision, recall, F1, IoU), not per-photo averages.
   - Open-balcony boxes: one-to-one greedy IoU matching, reported at IoU ≥ 0.5 and ≥ 0.3, on test100 (`runs/test100/balcony_gt_boxes.jsonl`); protocol in `agent.md`.
+  - Open balconies and their types are scored on the pipeline output after the oriel removal (user, 2026-11-03): boxes with `balcony_pipeline/score_test100_pipeline.py`, the classifier on the crops of those boxes (`build_test100_final_set.py --pipeline-score`). Do not report or mix in older box / classifier numbers (cached v2 split labels, or no oriel removal).
 - Every model file the pipeline loads lives in `checkpoints/`, pushed with Git LFS (`*.pt`, `*.joblib`; e.g. `oriel_cell_gate.joblib`, `oriel_skin.joblib`). `runs/` is git-ignored and never pushed (user, 2026-11-03), so no default path in pipeline code may point into `runs/`.
 - `runs/` holds large generated outputs and cached detections (e.g. `runs/batch/_rows/*_boxes.json`) that let scoring skip SAM3. Prefer reusing caches over rerunning detection.

@@ -214,6 +214,21 @@ def parse_args() -> argparse.Namespace:
         help="skip enclosed detection (open-railing track only)",
     )
     ap.add_argument(
+        "--oriel-skin-model",
+        type=Path,
+        default=None,
+        help=(
+            "oriel skin model (punched window vs curtain wall per cell, then a photo vote); "
+            "default checkpoints/oriel_skin.joblib (user, 2026-11-03). Missing file or "
+            "--no-oriel-skin-model falls back to the railing classifier's skin head"
+        ),
+    )
+    ap.add_argument(
+        "--no-oriel-skin-model",
+        action="store_true",
+        help="take oriel skin from the railing classifier's skin head (never trained on curtain walls)",
+    )
+    ap.add_argument(
         "--depth-dir",
         type=Path,
         default=ROOT / "runs" / "da3_enclosure",
@@ -1083,6 +1098,19 @@ def run(args: argparse.Namespace) -> Path | None:
                 skin = pred.get("skin")
             floor_votes.append(shape)
             skin_votes.append(skin)
+        if not bool(getattr(args, "no_oriel_skin_model", False)):
+            from balcony_train.oriel_skin import MODEL_PATH as ORIEL_SKIN_MODEL
+            from balcony_train.oriel_skin import predict_cell_skins
+
+            skin_path = Path(getattr(args, "oriel_skin_model", None) or ORIEL_SKIN_MODEL)
+            if skin_path.is_file():
+                skin_votes = predict_cell_skins(
+                    facade, [u["box_xyxy"] for u in enclosed_units], device=device, model_path=skin_path
+                )
+                print(f"  oriel skin model {skin_path.name}: {sum(s == 'curtain_wall' for s in skin_votes)}"
+                      f"/{len(skin_votes)} cells curtain_wall")
+            else:
+                print(f"  oriel skin model missing ({skin_path}); skin from the railing classifier")
         floor_shape, floor_counts = vote_enclosed_floor_shape(floor_votes)
         skin_name, skin_counts = vote_enclosed_skin(skin_votes)
         enclosed_plan = assign_enclosed_plan(enclosed_units, floor_shape, skin_name)
