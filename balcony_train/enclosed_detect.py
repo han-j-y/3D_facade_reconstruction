@@ -6,7 +6,8 @@ as ``--enclosed-method sam3``.
 
 The classifier is the same one as ``clf_three_rules.py`` (hand-feature gate,
 enclosure-only cell model, DINOv2 PCA 16). It is fit on ``cells_train.npz``
-once and cached at ``runs/cell_clf/model_rules_gate.joblib``.
+once and cached at ``checkpoints/oriel_cell_gate.joblib`` (tracked with Git LFS;
+until 2026-11-03 ``runs/cell_clf/model_rules_gate.joblib``). Delete that file to refit.
 """
 
 from __future__ import annotations
@@ -44,7 +45,7 @@ from snap import _bands_from_windows_dsl  # noqa: E402
 
 CELL_T = 0.5  # 2026-11-02: CV choice on the 475-photo set, kept for the 456-photo model (see agent.md)
 PHOTO_GATE = 0.70  # before 2026-11-02: 0.10 / 0.3
-MODEL_PATH = ROOT / "runs" / "cell_clf" / "model_rules_gate.joblib"
+MODEL_PATH = ROOT / "checkpoints" / "oriel_cell_gate.joblib"
 SAM3_THRESHOLD = 0.15
 
 _MODEL: dict | None = None

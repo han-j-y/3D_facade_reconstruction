@@ -52,6 +52,8 @@ def main() -> None:
     ap.add_argument("--dsl-dir", type=Path, default=T100 / "batch_grid2")
     ap.add_argument("--depth-dir", type=Path, default=T100 / "da3_depth")
     ap.add_argument("--oriel-cells", choices=("pred", "gt"), default="pred")
+    ap.add_argument("--oriel-preds", type=Path, default=ORIEL_PRED,
+                    help="predicted oriel cells per stem (pred mode), e.g. final_457_test100/preds_official.json")
     ap.add_argument("--img-dir", type=Path, default=None)
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--panel-height", type=int, default=900)
@@ -64,7 +66,7 @@ def main() -> None:
     cache = json.loads(args.cache.read_text(encoding="utf-8"))
     labels_all = json.loads(args.labels.read_text(encoding="utf-8"))
     if args.oriel_cells == "pred":
-        oriel = json.loads(ORIEL_PRED.read_text(encoding="utf-8"))
+        oriel = json.loads(args.oriel_preds.read_text(encoding="utf-8"))
     else:
         oriel = {json.loads(l)["stem"]: json.loads(l)["cells"]
                  for l in ORIEL_GT.read_text(encoding="utf-8").splitlines() if l.strip()}

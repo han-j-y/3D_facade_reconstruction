@@ -399,7 +399,7 @@ def parse_args() -> argparse.Namespace:
         "--structure-ckpt",
         type=Path,
         default=None,
-        help="window structure AST checkpoint (default: best available under runs/)",
+        help="window structure AST checkpoint (default: checkpoints/structure_best.pt)",
     )
     ap.add_argument("--structure-only", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument(

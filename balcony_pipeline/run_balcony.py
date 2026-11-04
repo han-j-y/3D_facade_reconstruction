@@ -167,14 +167,14 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "solid/baluster classifier (default: checkpoints/railing_best.pt if present; "
+            "solid/baluster classifier (default: checkpoints/railing_test100_v4.pt if present; "
             "else opaque-run heuristic)"
         ),
     )
     ap.add_argument(
         "--no-railing-ckpt",
         action="store_true",
-        help="force the opaque-run heuristic even if railing_best.pt exists",
+        help="force the opaque-run heuristic even if the default railing checkpoint exists",
     )
     ap.add_argument(
         "--structure-ckpt",

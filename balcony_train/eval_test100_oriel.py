@@ -1,16 +1,19 @@
 """Oriel cell scores on the 100-photo test set (``runs/test100``).
 
 Runs the official enclosed detector (``enclosed_detect.py``: classifier
-rectangle, four cell rules, gate 0.10) on every photo in ``--photos-dir``,
+rectangle, four cell rules, photo gate) on every photo in ``--photos-dir``,
 using the window grids in ``--dsl-dir``, and scores the cells against
 ``--labels`` (``enclosed_grid_ui.py`` output).
 
-Two cell models are scored:
+One cell model is scored: the pipeline's cached ``--model``
+(``checkpoints/oriel_cell_gate.joblib``). The script stops if any labeled
+test photo is in its training features (``--train-cells``), so the score is
+never from a model that saw a test photo. (Until 2026-11-03 a second
+``heldout`` refit without the test photos was also scored; once the test
+photos left oriel training it gave identical predictions.)
 
-* ``heldout`` (main): refit on ``cells_train.npz`` without the photos in
-  ``--labels``. The 20 Base test photos are in ``labels_train.jsonl``.
-* ``official``: the cached ``runs/cell_clf/model_rules_gate.joblib``, which
-  saw those 20 photos in training. Supplementary only.
+Outputs in ``--out-dir``: ``summary.md``, ``preds_official.json`` and one
+``qualitative/`` folder (one panel per photo + a board per category).
 
 TP / FP / FN / TN are pooled over all cells (per union column, the main
 protocol). Rows without and with the ignore cells are printed; per floor bay
@@ -39,8 +42,6 @@ _PIPE = ROOT / "balcony_pipeline"
 if str(_PIPE) not in sys.path:
     sys.path.insert(0, str(_PIPE))
 
-from balcony_train.cell_clf_experiments import Data  # noqa: E402
-from balcony_train.cell_clf_search import SPECS, Model  # noqa: E402
 from balcony_train.cell_clf_train import DEFAULT_TRAIN_CELLS, DEFAULT_TRAIN_LABELS  # noqa: E402
 from balcony_train.enclosed_detect import (  # noqa: E402
     MODEL_PATH,
@@ -75,7 +76,7 @@ def photo_data(stem: str, photo: Path, dsl: dict, seeds: list, depth_path: Path,
 def draw_panels(out_dir: Path, photos: dict[str, Path], dsl_dir: Path, labels: dict, ignore: dict, name: str) -> None:
     """One panel per photo (blue = label only, red = prediction only, purple = both) plus boards per category."""
     preds = json.loads((out_dir / f"preds_{name}.json").read_text(encoding="utf-8"))
-    qdir = out_dir / f"qualitative_{name}"
+    qdir = out_dir / "qualitative"
     qdir.mkdir(parents=True, exist_ok=True)
     tiles: dict[str, list[Image.Image]] = {c: [] for c in CATEGORIES}
     gone = sorted(s for s in preds if s not in photos)
@@ -102,12 +103,13 @@ def draw_panels(out_dir: Path, photos: dict[str, Path], dsl_dir: Path, labels: d
     print(f"qualitative -> {qdir}  " + "  ".join(f"{c} {len(t)}" for c, t in tiles.items()))
 
 
-def heldout_model(exclude: set[str], cells: Path = DEFAULT_TRAIN_CELLS, labels: Path = DEFAULT_TRAIN_LABELS) -> dict:
-    train = Data(cells, labels)
-    stems = [s for s in train.stems if s not in exclude]
-    print(f"held-out cell model: {len(stems)} train photos ({len(train.stems) - len(stems)} test photos left out)")
-    fitted = Model(train, stems, SPECS["base"], None)
-    return {"parts": fitted.parts, "names": list(train.names)}
+def check_no_leak(test_stems: set[str], cells: Path = DEFAULT_TRAIN_CELLS) -> None:
+    """Stop when a test photo is in the cell model's training features."""
+    train = set(np.load(cells, allow_pickle=False)["groups"].astype(str))
+    leak = sorted(train & set(test_stems))
+    if leak:
+        raise SystemExit(f"{len(leak)} test photos are in {cells}: {leak[:5]} ... refit the cell model without them")
+    print(f"leak check: 0 of {len(test_stems)} test photos in {Path(cells).name} ({len(train)} training photos)")
 
 
 def table(name: str, r: dict) -> str:
@@ -127,8 +129,8 @@ def main() -> None:
     ap.add_argument("--sam3-cache", type=Path, default=TEST100 / "enclosed_sam3_cache.json")
     ap.add_argument("--out-dir", type=Path, default=TEST100 / "oriel_eval")
     ap.add_argument("--device", default="cuda")
-    ap.add_argument("--train-cells", type=Path, default=DEFAULT_TRAIN_CELLS, help="features for the held-out refit")
-    ap.add_argument("--train-labels", type=Path, default=DEFAULT_TRAIN_LABELS)
+    ap.add_argument("--train-cells", type=Path, default=DEFAULT_TRAIN_CELLS, help="training features of --model, for the leak check")
+    ap.add_argument("--train-labels", type=Path, default=DEFAULT_TRAIN_LABELS, help="unused (kept for old scripts)")
     ap.add_argument("--model", type=Path, default=MODEL_PATH, help="official cell model (joblib)")
     ap.add_argument("--skip-stems", type=Path, default=None, help="text file of photos left out of the score")
     ap.add_argument("--gate", type=float, default=PHOTO_GATE, help="photo gate (pipeline default %(default)s)")
@@ -146,8 +148,7 @@ def main() -> None:
         if p.suffix.lower() in (".jpg", ".jpeg", ".png"):
             photos.setdefault(p.stem, p)
     if args.draw_only:
-        for name in ("heldout", "official"):
-            draw_panels(args.out_dir, photos, args.dsl_dir, labels, ignore, name)
+        draw_panels(args.out_dir, photos, args.dsl_dir, labels, ignore, "official")
         return
 
     import torch
@@ -180,10 +181,8 @@ def main() -> None:
 
     import joblib
 
-    models = {
-        "heldout": heldout_model(set(labels), args.train_cells, args.train_labels),
-        "official": joblib.load(args.model),
-    }
+    check_no_leak(set(labels), args.train_cells)
+    models = {"official": joblib.load(args.model)}
     args.out_dir.mkdir(parents=True, exist_ok=True)
     lines = [
         f"Oriel cells: {len(data)} photos from {args.photos_dir}, labels {args.labels.name}, gate {args.gate}, t {args.t}",

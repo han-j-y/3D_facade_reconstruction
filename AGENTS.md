@@ -57,9 +57,9 @@ Photo → detected elements → typed, voted structure → JSON DSL → parametr
 - Open balconies:
   - SAM3 `balcony` boxes → `filter.py` → snapped to the window grid (`snap.py`, never re-clustered).
   - Typed (`cluster.py`, appearance by default, `--cluster-mode box`).
-  - The railing classifier (`balcony_train/model.py`, `checkpoints/railing_best.pt`: frozen DINOv2 + linear heads) labels each crop, then a per-type vote (`vote.py`).
+  - The railing classifier (`balcony_train/model.py`, default `checkpoints/railing_test100_v4.pt` since 2026-11-02, set in `balcony_train/paths.py`: frozen DINOv2 + linear heads, trained without the test100 photos and without FLUX.2, own structure head) labels each crop, then a per-type vote (`vote.py`). Its skin head never saw a curtain wall, so oriel skin is always punched window until it is retrained. The old default `railing_best.pt` saw the test100 photos.
 - Enclosed balconies / oriels are a separate cell detector: `balcony_train/enclosed_detect.py` (`--enclosed-method cell_clf`).
-  - Per-cell features (DA3 depth, SAM3, DINOv2) → HistGradientBoosting gate + cell model → rectangle decode (t 0.5) → four cell rules → photo gate ≥ 0.70 (456-photo model without test100, 2026-11-02).
+  - Per-cell features (DA3 depth, SAM3, DINOv2) → HistGradientBoosting gate + cell model → rectangle decode (t 0.5) → four cell rules → photo gate ≥ 0.70 (457-photo model without test100, refit 2026-11-03 after the training label review).
   - Floor shape and skin (punched window / curtain wall) are one majority vote per photo.
 - `merge_dsl.py` appends `balcony_types` and `layout.balconies`, giving `facade_dsl_with_balconies.json`.
 
@@ -75,7 +75,7 @@ Photo → detected elements → typed, voted structure → JSON DSL → parametr
 - CMP Facade Database:
   - `cmp_b*` (base) is the only training data.
   - `cmp_x*` (extended) is no longer a test set (user, 2026-11-02). Do not train on it except as below. Its old test and dev results are in `agent_archive_cmp_x.md`.
-  - Exception (user, 2026-10-31): the photos in `runs/enclosed_grid/oriel_train_extra_stems.txt` (50 cmp_x, 10 LSAA) train the oriel cell model only. They never train the railing classifier.
+  - Exception (user, 2026-10-31): the photos in `runs/enclosed_grid/oriel_train_extra_stems.txt` (51 cmp_x, 10 LSAA; `cmp_x0196` added 2026-11-03) train the oriel models only: the cell model and the oriel skin model (`balcony_train/oriel_skin.py`, user 2026-11-03). They never train the railing classifier. Oriel skin no longer comes from the railing classifier.
   - Label maps are palette PNGs: 3 window, 4 door, 7 balcony.
   - In CMP XML, `<x>` holds rows and `<y>` holds columns (swapped from the usual meaning).
 - Enclosure splits:
@@ -84,7 +84,9 @@ Photo → detected elements → typed, voted structure → JSON DSL → parametr
   - `labels_ext_all.jsonl` and `labels_eval.jsonl` (cmp_x) are no longer scored or reported.
   - Cell numbers refer to the window grid in `runs/batch_grid2/<stem>/facade_dsl.json` (test100 LSAA: `runs/test100/batch_grid2`). The old-grid labels are kept as `*.grid1.jsonl` for `runs/batch`.
   - `labels_train_oriel.jsonl` = cmp_b + the extra oriel photos, minus the test100 photos. `labels_train.jsonl` stays cmp_b only.
+- Leakage: never score, show or cite a test result from a model whose training data contains any test photo (e.g. `railing_best.pt` on test100). Not even as a "reference" row with a caveat, and not in `agent.md`. Check the training set before scoring a checkpoint.
 - Scoring:
   - Enclosure cells: pool TP / FP / FN over all cells (precision, recall, F1, IoU), not per-photo averages.
   - Open-balcony boxes: one-to-one greedy IoU matching, reported at IoU ≥ 0.5 and ≥ 0.3, on test100 (`runs/test100/balcony_gt_boxes.jsonl`); protocol in `agent.md`.
+- Every model file the pipeline loads lives in `checkpoints/`, pushed with Git LFS (`*.pt`, `*.joblib`; e.g. `oriel_cell_gate.joblib`, `oriel_skin.joblib`). `runs/` is git-ignored and never pushed (user, 2026-11-03), so no default path in pipeline code may point into `runs/`.
 - `runs/` holds large generated outputs and cached detections (e.g. `runs/batch/_rows/*_boxes.json`) that let scoring skip SAM3. Prefer reusing caches over rerunning detection.
