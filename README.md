@@ -78,7 +78,17 @@ python run.py --image data/facades/base/cmp_b0250.jpg --windows xml \
 
 `--cluster-mode shape_then_feat` (box GMM + DINO splits), `shape_then_struct`, `struct`, `box` and `appearance` skip the axis. With them, **L–R symmetry repair** runs by default (`--symmetry` / `--no-symmetry`).
 
-**Windows:** `--windows sam` (default) uses SAM3 instance masks as tight boxes; `--windows xml` loads CMP XML next to the image (it also annotates neighbouring buildings).
+```bash
+python run.py --image data/facades/base/cmp_b0250.jpg --windows sam \
+  --merge-mode ast --cluster-mode box --col-tol 0.045 \
+  --out-dir runs/e2e_sam3_cluster_cmp_b0250 --device cuda --blender-render
+```
+
+**Windows:** `--windows sam` (default) uses `facebook/sam3` prompt `window`, two-tier: keep score ≥ `--anchor-score` 0.7, then add boxes in [`--threshold` 0.5, 0.7) that overlap no kept box by `--fill-max-overlap` 0.2 of the smaller box. `--min-side` is 13. Boxes on `car` masks are dropped. `--windows xml` loads CMP XML; `--windows labelmap` reads the CMP label map (`<stem>.png`, class 3).
+
+**Grid:** `--grid floor_bays` (default, `facade_recovery/floor_bays.py`). Each floor gets its own bays, split at gap midpoints. Lines that match across floors are shared, and empty stretches inherit lines from the nearest floor with a similar window height. DSL columns are the union of those lines, and each floor bay spans them (`placement_spans`, `h_m` / `w_m`, `meta.floor_bays`). `--grid columns` keeps the older single column grid. Edge columns off the main floors are dropped (`--side-filter`).
+
+**Cluster:** `--cluster-mode gate` pairs windows about the symmetry axis and splits box groups only when mirror pairs stay together. It uses the bundled pane-tree checkpoint `checkpoints/structure_best.pt` (the `scratch_bal_b` run). After the side filter, `--local-sym` (on with gate) lets a window join a mirror partner's type (`facade_recovery/local_sym.py`). Moves are stored in `meta.local_sym_moves` and `local_sym.json`. `--no-local-sym` keeps plain gate. `--cluster-mode box` and `appearance` remain available. With those, L–R symmetry repair still runs (`--symmetry` / `--no-symmetry`). Unitize merge defaults to `--merge-mode ast` and `--no-merge-adjacent`. Doors use `facebook/sam3`.
 
 Outputs under `runs/facade_e2e_<id>/` (or `--out-dir`):
 
@@ -161,8 +171,10 @@ Uses `scripts/blender_facade_turntable.py` inside Blender (`$BLENDER` or `blende
 ## Grammars
 
 `documents/WDSL.ebnf` (window JSON IR, text syntax, structure tokens, façade openings) and
-`documents/FDSL.ebnf` (compiled `window_compiler_facade_v1`, recovery DSL, normalize mapping,
-template/pattern language) describe the formats the code above reads and writes.
+`documents/FDSL.ebnf` (compiled `window_compiler_facade_v1`, recovery DSL
+`facade_recovery_dsl_v1`, and the normalize mapping) describe the formats the
+code above reads and writes. Floor/bay templates stay in
+`scripts/facade_template.py`.
 
 ## Majority vote
 

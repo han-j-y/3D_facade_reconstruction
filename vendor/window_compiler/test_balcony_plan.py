@@ -1,0 +1,145 @@
+"""Surface-panel layout and plan outlines (no Blender)."""
+
+from __future__ import annotations
+
+import math
+import sys
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
+from balcony_plan import (  # noqa: E402
+    MULLION_WIDTH_M,
+    SURFACE_PANEL_M,
+    _panel_divisions,
+    curtain_circle_panes,
+    curtain_glass_spans,
+    curtain_transom_z,
+    outer_edges,
+    pane_count,
+    semicircle_pane_count,
+    slab_outline,
+    surface_panel_parts,
+)
+
+
+class SurfacePanelLayoutTests(unittest.TestCase):
+    def test_divisions_floor_not_round(self) -> None:
+        self.assertEqual(_panel_divisions(2.0, 1.0), 2)
+        self.assertEqual(_panel_divisions(1.5, 1.0), 1)
+
+    def test_2m_by_1_5m_matches_catalog(self) -> None:
+        parts = surface_panel_parts(
+            x0=0.0,
+            x1=2.0,
+            y_wall=0.0,
+            depth=1.5,
+            z_lo=0.0,
+            rail_h=1.1,
+        )
+        names = [str(p["name"]) for p in parts]
+        self.assertEqual(sum(n.startswith("mull_f_") for n in names), 3)
+        self.assertEqual(sum(n.startswith("panel_f_") for n in names), 2)
+        self.assertEqual(sum(n.startswith("panel_L_") for n in names), 1)
+        self.assertEqual(sum(n.startswith("panel_R_") for n in names), 1)
+        self.assertTrue(any(n.startswith("mull_L_") for n in names))
+        self.assertTrue(any(n.startswith("mull_R_") for n in names))
+        panels = [p for p in parts if str(p["name"]).startswith("panel_")]
+        self.assertTrue(all(abs(float(p["sy"]) - SURFACE_PANEL_M) < 1e-9 or
+                            abs(float(p["sx"]) - SURFACE_PANEL_M) < 1e-9 for p in panels))
+        mulls = [p for p in parts if str(p["name"]).startswith("mull_")]
+        for p in mulls:
+            self.assertAlmostEqual(float(p["sx"]), MULLION_WIDTH_M)
+            self.assertAlmostEqual(float(p["sy"]), MULLION_WIDTH_M)
+            self.assertAlmostEqual(float(p["sz"]), 1.1)
+
+    def test_outer_face_flush_with_slab_front(self) -> None:
+        parts = surface_panel_parts(
+            x0=0.0,
+            x1=2.0,
+            y_wall=1.0,
+            depth=1.5,
+            z_lo=0.2,
+            rail_h=1.1,
+        )
+        front = next(p for p in parts if p["name"] == "mull_f_0")
+        y_front = 1.0 + 1.5
+        self.assertAlmostEqual(float(front["cy"]) + MULLION_WIDTH_M / 2.0, y_front)
+
+    def test_front_only_has_no_sides(self) -> None:
+        parts = surface_panel_parts(
+            x0=0.0,
+            x1=2.0,
+            y_wall=0.0,
+            depth=0.06,
+            z_lo=0.0,
+            rail_h=1.1,
+            front_only=True,
+        )
+        names = [str(p["name"]) for p in parts]
+        self.assertFalse(any("_L_" in n or "_R_" in n for n in names))
+        self.assertTrue(any(n.startswith("panel_f_") for n in names))
+
+
+class OutlineTests(unittest.TestCase):
+    def test_rectangle_outer_edges_skip_the_wall(self) -> None:
+        outline = slab_outline("rectangle", x0=0.0, x1=4.0, y_wall=0.0, depth=1.5)
+        self.assertEqual(outline, [(0.0, 0.0), (0.0, 1.5), (4.0, 1.5), (4.0, 0.0)])
+        edges = outer_edges(outline, 0.0)
+        self.assertEqual(len(edges), 3)
+        for p0, p1 in edges:
+            self.assertFalse(abs(p0[1]) < 1e-6 and abs(p1[1]) < 1e-6)
+
+    def test_retired_shapes_draw_a_rectangle(self) -> None:
+        rect = slab_outline("rectangle", x0=0.0, x1=3.0, y_wall=0.0, depth=1.5)
+        for name in ("hexagon", "trapezoid"):
+            self.assertEqual(slab_outline(name, x0=0.0, x1=3.0, y_wall=0.0, depth=1.5), rect)
+
+    def test_triangle_apex_at_front_center(self) -> None:
+        outline = slab_outline("triangle", x0=0.0, x1=4.0, y_wall=0.0, depth=1.5)
+        self.assertEqual(outline, [(0.0, 0.0), (2.0, 1.5), (4.0, 0.0)])
+
+
+class PaneCountTests(unittest.TestCase):
+    def test_prefers_about_one_meter(self) -> None:
+        self.assertEqual(pane_count(4.7), 5)
+        self.assertEqual(pane_count(2.0), 2)
+        self.assertEqual(pane_count(1.0), 1)
+
+    def test_picks_the_closer_width_outside_the_band(self) -> None:
+        # 1.5 m: one pane is 1.5 m, two panes are 0.75 m. 0.75 is closer to the band.
+        self.assertEqual(pane_count(1.5), 2)
+
+    def test_semicircle_chords_stay_in_band(self) -> None:
+        diameter = 3.0
+        self.assertEqual(semicircle_pane_count(diameter), 5)
+        pts = curtain_circle_panes(0.0, diameter, 0.0)
+        self.assertEqual(len(pts), 6)
+        self.assertAlmostEqual(pts[0][1], 0.0, places=5)
+        self.assertAlmostEqual(pts[-1][1], 0.0, places=5)
+        radius = diameter / 2.0
+        cx = diameter / 2.0
+        for x, y in pts:
+            self.assertAlmostEqual((x - cx) ** 2 + y ** 2, radius ** 2, places=4)
+        for a, b in zip(pts, pts[1:]):
+            chord = math.hypot(b[0] - a[0], b[1] - a[1])
+            self.assertGreaterEqual(chord, 0.8)
+            self.assertLessEqual(chord, 1.2)
+
+    def test_transom_sits_2100mm_above_the_floor(self) -> None:
+        self.assertAlmostEqual(curtain_transom_z(0.0, 3.0), 2.1)
+        low, high = curtain_glass_spans(0.0, 3.0)
+        self.assertAlmostEqual(low[1], 2.1 - MULLION_WIDTH_M / 2.0)
+        self.assertAlmostEqual(high[0], 2.1 + MULLION_WIDTH_M / 2.0)
+        self.assertAlmostEqual(high[1], 3.0)
+
+    def test_short_storey_has_no_transom(self) -> None:
+        self.assertIsNone(curtain_transom_z(0.0, 2.0))
+        self.assertEqual(curtain_glass_spans(0.0, 2.0), [(0.0, 2.0)])
+
+
+if __name__ == "__main__":
+    unittest.main()

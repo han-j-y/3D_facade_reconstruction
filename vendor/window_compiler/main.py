@@ -137,6 +137,13 @@ def main() -> None:
         if facade_bounds is not None:
             write_camera_json(written.with_suffix(".camera.json"))
 
+    blend_out = os.environ.get("FACADE_SAVE_BLEND", "").strip()
+    if blend_out:
+        blend_path = Path(blend_out).resolve()
+        blend_path.parent.mkdir(parents=True, exist_ok=True)
+        bpy.ops.wm.save_as_mainfile(filepath=str(blend_path))
+        print(f"saved blend -> {blend_path}")
+
     orbit_out = os.environ.get("FACADE_DSL_RENDER_ORBIT", "").strip() or args.render_orbit
     if orbit_out:
         if facade_bounds is None:

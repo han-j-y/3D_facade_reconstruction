@@ -1,0 +1,120 @@
+# Balcony pipeline — changed vs added
+
+Window-only `python run.py` is unchanged unless you pass `--with-balconies`.
+
+## Changed (existing files)
+
+### `run.py`
+Docstring only: documents `--with-balconies`.
+
+### `run_pipeline.py`
+- New flag `--with-balconies`.
+- After writing `facade_dsl.json`, optionally calls `balcony_pipeline.run()`.
+- Copies `facade_dsl_with_balconies.json` into the window `out-dir`.
+- With `--blender-render`, uses the merged DSL when the balcony track succeeded.
+- Window stages (detect, unitize, cluster, structure vote, `build_facade_dsl`) are not modified.
+
+### Compiler (`vendor/window_compiler/`)
+- `facade_spec.normalize_facade_spec` maps `balcony_types` + `layout.balconies` onto `balconies` / `balcony_placement` (floor×bay span from the window grid).
+- `balcony_compile.py` matches the balcony catalog: plan shapes, baluster / 200 mm solid / 10 mm glass, enclosed glass box.
+- `facade_compile.compile_facade_scene` calls that pass (window-only JSON still compiles as before).
+
+### `documents/FDSL.ebnf`
+- Recovery JSON (§3): `balcony_types[]` (`structure_ir` is BDSL JSON) and `layout.balconies` (`floor`, `bay_start`–`bay_end`).
+- Compiled JSON (§2): `balconies` and `balcony_placement` (`row`, `col0`, `col1`, `type`), filled by `normalize_facade_spec` (§4).
+- Window `layout.placement` does not list balcony type names.
+
+### `balcony_pipeline/run_balcony.py`
+- `run()` entry for the window hook.
+- Unitize uses `merge_adjacent_boxes(..., mode="balcony")` (IoU/containment only; no gap merge).
+- ASCII `->` in console output (Windows cp1252).
+
+### `scripts/overlay_facade_merge_boxes.py`
+- `MERGE_PROFILES["window"|"balcony"]` and `mode=` on `merge_adjacent_boxes`.
+- Window callers keep default `mode="window"` (unchanged).
+
+## Added
+
+### Language
+- `documents/BDSL.ebnf` — one balcony type (sibling of WDSL). Catalog axes:
+  structure, floor shape, railing (baluster / solid / glass); enclosure is
+  authoring-only (`open`/`enclosed`). Recovery always uses `open`.
+  Wall opening is the window FDSL grid.
+- `vendor/window_compiler/examples/example_balcony_projecting.bdsl`
+- `vendor/window_compiler/examples/example_balcony_enclosed.bdsl` (glass box; no nested WDSL mesh)
+- `vendor/window_compiler/examples/example_facade_with_balcony.fdsl`
+
+### Code (`balcony_pipeline/`)
+Standalone track; does not edit window e2e internals.
+
+| File | Role |
+|------|------|
+| `run_balcony.py` | CLI + `run()` |
+| `snap.py` | Snap boxes to **window** floors/bays |
+| `cluster.py` | DINOv2 ROI + spectral + Potts (balcony boxes only) |
+| `filter.py` | Among SAM3 balcony boxes, drop the smaller one when two boxes overlap. A box below a window sill stays. A box with no window above it stays. Juliet balconies, including a box mostly inside a window, are kept. |
+| `heuristic_ir.py` | Per-crop BDSL JSON IR + `balcony_view` fingerprint |
+| `../balcony_train/` | Optional solid/baluster classifier (`railing.kind` only) |
+| `recovery_profile.py` | Which axes to infer/vote (`railing_only` / `full`) |
+| `vote.py` | Majority vote (same algorithm as windows, balcony key) |
+| `merge_dsl.py` | Copy window DSL; append `balcony_types` + `layout.balconies` |
+| `draw.py` | Stage overlays |
+
+Same **methods** as windows: SAM3 detect, box merge, DINO cluster, cosine medoid, majority vote. Floor/bay are **not** re-clustered; they come from the window DSL (`layout.floors` / `layout.bays`, plus `meta.columns_xy` / `meta.floors_y` from the same structural column layout as main; `--layout-mode centroid` for the old assign_bays grid). Multi-bay balconies store `bay_start`–`bay_end` plus `bays[]` (15% width overlap for span). Instance **width** stays from the photo box (`width_norm`). Horizontal center (default **`--balcony-center window`**) uses the same **2D overlap Pair** as decoration filters (`filter._partner_windows`: window box expanded 10%, overlap with balcony); nearest row above the slab; mean box center → `window_cx_norm` (with `partner_window_unit_ids`). Fallback when no partner: bay-band mean. **`--balcony-center bay`**: `bays_center[]` → `bay_cx_norm`. **`--balcony-center photo`**: detection box `cx_norm`. Wall door vs window is the window `placement` token on those cells, not a BDSL `opening` field.
+
+Vote fingerprint (`balcony_view`): controlled by `--recovery-profile`
+(default **`railing_only`** → vote `railing.kind`: **`open_work` | `surface_panel` |
+`solid`**, and for open_work also `railing.material`: **`metal` | `masonry`**).
+Legacy `glass` fingerprints map to `surface_panel`; `baluster` / bare `metal` →
+`open_work`. Disabled axes use fixed defaults (`projecting` / `open` /
+`rectangle` / supports 0). Use `--recovery-profile full` to restore other axes.
+
+Floor shape and structure are voted inside each type, separately from that key. Floor: circle or triangle only with more votes than each other shape, else rectangle. Structure: the type votes projecting / juliet from the classifier (head copied from `checkpoints/railing_structure.pt`), juliet on a strict majority. Rooftop is not a type value: a balcony on the top floor with no window above it in its bays gets `"structure": "rooftop"` on its `layout.balconies` record, which the compiler applies to that placement only (`--no-structure` turns both off).
+
+`railing.kind` / `railing.material` use `checkpoints/railing_best.pt` when present
+(frozen DINOv2 + multitask heads; see `balcony_train/README.md`). Otherwise the
+opaque-run heuristic in `heuristic_ir.py` (kind only; material defaults to
+`metal`). Force the heuristic with `--no-railing-ckpt`. Meshes compile in
+`balcony_compile.py` (open_work metal rods, open_work masonry 250/φ150/100 mm gaps/
+300×150 with front-full / side-trimmed rails, surface panel, solid parapet).
+All balcony slabs use **1.5 m** depth.
+
+Enclosed shells are a photo vote on top of that. `export_enclosed_crops.py` writes train volumes into `runs/balcony_clf/crops/unlabeled/`. `label_ui.py` sets floor shape and, for enclosed crops, skin (`P` punched_window, `G` curtain_wall). `--heads-only floor,skin` trains those linear heads on the frozen DINOv2. One skin per photo: curtain wall only on a strict majority, otherwise punched. Curtain wall sets `walls.curtain_wall` and the compiler drops windows in those bays. Punched sets `walls.infill = wall`, so the existing rule moves windows onto the front. An untrained skin head stays punched. Eval photos keep their own `floor_shape` and `skin` on `runs/enclosed_grid/labels_ext_all.jsonl` (one of each per enclosure photo) and are scored by `score_enclosed_plan.py` against the detector's cells. Those labels are not training data.
+
+## How to run
+
+Window only (unchanged):
+
+```text
+python run.py --image PHOTO.png --out-dir runs/demo --device cuda
+```
+
+Window then balcony:
+
+```text
+python run.py --image PHOTO.png --out-dir runs/demo --device cuda --with-balconies --blender-render
+```
+
+Balcony track only (needs an existing window `facade_dsl.json`):
+
+```text
+python balcony_pipeline/run_balcony.py --image PHOTO.png --windows-dsl path/to/facade_dsl.json --out-dir runs/balcony_demo --device cuda
+```
+
+Railing classifier (after labeling crops; checkpoint is shared):
+
+```text
+python balcony_train/collect.py
+python balcony_train/train.py --device cuda
+python run.py --image PHOTO.png --out-dir runs/demo --device cuda --with-balconies
+```
+
+Use `pipeline_preview/.venv` if the system Python has no torch.
+
+## Test (2026-08-19)
+
+On `pipeline_preview/input_cmp_b0168.png` + `facade_dsl_input_cmp_b0168.json` (CUDA, preview venv):
+
+- SAM3: 8 raw → 6 after size filter → 4 units
+- 2 types; votes 2/2 and 2/2
+- Wrote `runs/balcony_demo/facade_dsl_with_balconies.json` (`layout.balconies`, `balcony_types`)

@@ -1,0 +1,236 @@
+(*
+  BDSL — balcony DSL concrete syntax  (facade_dsl8)
+
+  Authoring language for a single balcony *type* (sibling of WDSL).
+  Parser: parse_bdsl.py. Compiles to balcony JSON IR.
+
+  Photo recovery emits the same JSON IR via tokens (like window structure IR),
+  not this text. Humans author .bdsl; the pipeline votes IR fingerprints.
+
+  A façade recovery document (FDSL.ebnf §3) stores this JSON IR on
+  balcony_types[].structure_ir. Multi-bay span is layout.balconies
+  (floor + bay_start..bay_end), not part of BDSL. normalize_facade_spec
+  copies that onto compiled balconies / balcony_placement (row + col span).
+
+  Coordinates: local 3D after compile — width along façade X, depth along +Y
+  (outward), height along Z. Floor shape is the slab plan (looking down).
+  width/depth on `balcony` are default type size; an instance may be scaled
+  to the span of cols[col0..col1].
+
+  Lexer: same as WDSL — '#' comments, UTF-8, indent for blocks
+  (`floor:`, `railing:`, `supports:`, `glazing:`, `output:`).
+*)
+
+document        = { comment | nl }, balcony_line, { nl },
+                  [ structure_line, { nl } ],
+                  [ enclosure_line, { nl } ],
+                  [ floor_block ],
+                  [ railing_line, { nl } ],
+                  [ railing_block ],
+                  [ supports_block ],
+                  [ columns_block ],
+                  [ walls_block ],
+                  [ opening_line, { nl } ],
+                  [ glazing_block ],
+                  [ output_block ],
+                  [ "debug", nl ] ;
+
+(* reuse WDSL: nl, comment, ident, letter, digit, number, rel_base, scalar, ws *)
+
+(* ——— slab plan (required) ——— *)
+
+balcony_line    = "balcony", ws, floor_call ;
+floor_call      = floor_shape, [ "(", [ arg_list ], ")" ] ;
+floor_shape     = "rectangle" | "circle" | "triangle" ;
+arg_list        = arg, { ",", arg } ;
+arg             = [ ident, "=" ], value ;
+value           = scalar | ident | string ;
+string          = '"', { ? any char except '"' ? }, '"'
+                | "'", { ? any char except "'" ? }, "'" ;
+
+(* Args by plan (parser defaults in parentheses):
+
+     rectangle(width, depth)              (1.0, 1.5)   aliases: w, d
+     rectangle(width, depth, height=2.5)  height = inset void (floor to ceiling)
+     circle(diameter, depth)              (1.0, 1.5)   plan ≈ semicircle; depth = projection
+     triangle(width, depth)               (1.0, 1.5)   apex at the front center
+
+   Extra plan flags may go in floor_block (e.g. triangle kind).
+   Photo recovery / façade compile force slab depth = 1.5 m for all balconies.
+*)
+
+(* ——— structure: how the slab meets the wall ——— *)
+
+structure_line  = "structure", ws, struct_name ;
+struct_name     = "projecting" | "inset" | "composite" | "free_standing"
+                | "juliet" | "rooftop" ;
+(* default: projecting
+   projecting     — cantilever in front of the wall
+   inset          — loggia: void into the volume, inner side walls + ceiling,
+                    railing on the front lip only
+   composite      — inset loggia (no lip rail) + projecting slab and 3-sided rail
+   free_standing  — posts at slab corners (rectangle: 4) from grade to soffit
+   juliet         — no slab: a front railing 0.15 m in front of the wall, from
+                    the sill of the window opening. Floor shape is ignored.
+   rooftop        — no slab of its own: the floor is the roof or setback below.
+                    A front railing stands on the top edge of its storey, its
+                    back face on the wall plane. When an enclosed stack below shares this
+                    balcony's slab as its roof (link_stacks), it compiles as
+                    projecting on that slab instead.
+
+   Photo recovery: the type votes projecting / juliet from the railing
+   classifier's structure head (juliet on a strict majority). rooftop is not
+   a type value in recovery: a balcony on the top floor with no window in its
+   bays above it gets "structure": "rooftop" on its layout.balconies record
+   (FDSL), which overrides its type's structure for that placement only.
+*)
+
+(* ——— enclosure ——— *)
+
+enclosure_line  = "enclosure", ws, enclosure_name ;
+enclosure_name  = "open" | "half_enclosed" | "enclosed" ;
+(* default: open.
+   half_enclosed — slab + railing + columns from the floor to a roof slab.
+                   Options in columns_block (ignored for other enclosures).
+   enclosed      — shell on every outer edge of the slab outline (any floor
+                   shape), no railing, roof slab.
+                   Options in walls_block (ignored for other enclosures).
+                   Nested WDSL glazing is optional and not used for this mesh.
+
+   Façade stacking (balcony_layout.link_stacks, grid row 0 = top floor):
+     - A half_enclosed / enclosed balcony whose bays overlap ≥ 50 % with a
+       balcony on the floor directly above shares that balcony's floor slab
+       as its roof (no own roof). The upper balcony is snapped to the lower
+       one's x range, depth and floor shape, so the stack lines up.
+     - With nothing above, it gets its own roof just under the next floor's
+       sill (or floor height, if authored).
+     - Open balconies never take a roof.
+
+   Window on an enclosed front (balcony_layout.front_window_targets):
+     A punched window (walls.infill wall, or glass without curtain_wall)
+     on the same floor whose bays overlap the balcony and whose center lies
+     on the flat front edge is moved onto the enclosure front: clamped 8 cm
+     inside the front, the front panel becomes wall infill with the opening
+     cut, and the main wall is not cut there. If < 60 % of the window width
+     fits (narrow front, triangle, circle) the window stays on the main wall
+     behind the shell.
+     curtain_wall (IR marker walls.curtain_wall = true, with infill glass)
+     drops those windows instead: nothing moves to the front and the main
+     wall is not cut. "infill glass" alone is not curtain wall; hand-written
+     BDSL keeps the punched move.
+
+   Photo recovery takes enclosure from the classifier's enclosure head
+   (open when the checkpoint has none) and does not vote on it. *)
+
+columns_block   = "columns:", nl, { ws, column_kv, nl } ;
+column_kv       = "count", ws, int
+                | "width", ws, scalar
+                | "style", ws, ( "square" | "round" ) ;
+(* defaults: count=0 (one column at every off-wall bend of the outline:
+   rectangle 2, triangle apex, circle 3), width=0.25, style=square *)
+
+walls_block     = "walls:", nl, { ws, wall_kv, nl } ;
+wall_kv         = "infill", ws, ( "glass" | "wall" ) ;
+(* default: glass (panes with ~1 m mullions). wall: 200 mm solid panels.
+   The front panel is forced to wall infill when a window is moved onto it.
+   Photo recovery may also set walls.curtain_wall = true (IR only, not a
+   BDSL keyword). That glass shell drops the windows in its bays. *)
+
+(* ——— extra floor params (optional; shape already on balcony_line) ——— *)
+
+floor_block     = "floor:", nl, { ws, floor_kv, nl } ;
+floor_kv        = "shape", ws, floor_shape
+                | "width", ws, scalar
+                | "depth", ws, scalar
+                | "height", ws, scalar
+                | "kind", ws, ident ;
+
+(* ——— railing ——— *)
+
+railing_line    = "railing", ws, rail_kind, { ws, railing_kv } ;
+railing_block   = "railing:", nl, { ws, railing_field, nl } ;
+rail_kind       = "open_work" | "surface_panel" | "solid"
+                | "baluster" | "glass" | "metal" ;
+railing_kv      = "height", ws, scalar
+                | "material", ws, ident ;
+railing_field   = "kind", ws, rail_kind
+                | "height", ws, scalar
+                | "material", ws, ident ;
+(* default: open_work, height=1.1.  height is continuous (dropped from vote fingerprint)
+   open_work     — material metal (default): ~20 mm Ø rods at ~100 mm, 50 mm Ø top pipe
+                   material masonry: 250 mm square posts, φ150 balusters with 100 mm
+                   clear gaps (centered under the rail), 300×150 top rail; assembly
+                   inset 150 mm from slab edge (shared U-frame, one post per corner);
+                   front rail extends to the slab left/right edges; side rails
+                   trimmed at front (no corner notch)
+                   aliases: baluster; bare `metal` → open_work (legacy)
+   surface_panel — 60×60 mm mullion frames, 25 mm infill, ~1 m bays, U open at wall
+                   alias: glass
+   solid         — 200 mm parapet (rectangle: 3-sided U, open at the wall)
+*)
+
+(* ——— supports (free_standing) ——— *)
+
+supports_block  = "supports:", nl, { ws, support_kv, nl } ;
+support_kv      = "count", ws, int
+                | "style", ws, ident
+                | "spacing", ws, scalar ;
+int             = digit, { digit } ;
+(* default: count=0 (compiler uses 4 corner posts for a rectangle) *)
+
+(* ——— wall opening is FDSL, not a BDSL axis ——— *)
+
+opening_line    = "opening", ws, opening_kind ;
+opening_kind    = "door" | "window" | "none" ;
+(* Optional / legacy. Wall door-or-window lives on the shared floor×bay
+   grid from the window pipeline (FDSL layout.placement). Balcony bind is
+   layout.balconies (floor + bay span), copied to balcony_placement
+   (row + col span) at compile. Do not vote on opening. *)
+
+(* ——— enclosed glazing: nested WDSL (see WDSL.ebnf) ——— *)
+
+glazing_block   = "glazing:", nl, wdsl_body ;
+wdsl_body       = { line indented strictly deeper than the `glazing:` line } ;
+(* Dedented and parsed by parse_wdsl.  Ignored unless enclosure=enclosed. *)
+
+(* ——— output (continuous finish) ——— *)
+
+output_block    = "output:", nl, { ws, ident, ws, scalar, nl } ;
+(* recognized keys: slab_thickness, railing_thickness
+   defaults: slab_thickness=0.12, railing_thickness=0.04
+             (solid parapet 0.20, surface_panel infill 0.025 unless authored;
+              enclosed floor/ceiling uses authored slab_thickness, typically 0.20) *)
+
+(* ——— compiled JSON IR ———
+
+  BDSL is a subset of this JSON. Photo majority-vote uses a discrete
+  fingerprint selected by recovery_profile (default railing_only:
+  railing.kind in {open_work, surface_panel, solid}; for open_work also
+  railing.material in {metal, masonry}). Floor shape and structure are
+  voted separately inside the type: a circle or a triangle needs more
+  votes than each other shape (else rectangle; juliet members do not
+  vote), and structure is projecting / juliet with juliet on a strict
+  majority (rooftop is per placement, see structure_line). Other disabled axes use fixed
+  (enclosure=open, supports=0) and are omitted from the vote key.
+  Floor×bay and wall window/door come from the window FDSL grid.
+  Floats (width, depth, height, thicknesses) and opening are dropped.
+
+  {
+    "type": "balcony",
+    "debug": bool,
+    "structure": "projecting"|"inset"|"composite"|"free_standing"|"juliet"|"rooftop",
+    "enclosure": "open"|"half_enclosed"|"enclosed",
+    "columns"?: { "count": int, "width": <scalar>, "style": "square"|"round" },
+    "walls"?: { "infill": "glass"|"wall", "curtain_wall"?: bool },
+    "floor": { "shape": "rectangle"|"circle"|"triangle",
+               "params": { "width": <scalar>, "depth": <scalar>, "height"? } },
+    "railing": { "kind": "open_work"|"surface_panel"|"solid", "height": <scalar>,
+                 "material"? },
+    "supports": { "count": int, "style"?, "spacing"? },
+    "opening": "door"|"window"|"none",
+    "glazing": null | <window JSON IR>,
+    "output": { "slab_thickness"?, "railing_thickness"? }
+  }
+
+  rel scalar JSON: { "relative_to": min_side|max_side|width|height, "value": number }
+*)

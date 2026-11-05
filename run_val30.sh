@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Validation set (datasets/valset, 30 facades): main pipeline (fold gate) -> balcony track (railing v4, sam3 enclosed
-# fallback) -> oblique renders (photo wall colour) of windows-only and windows+balconies. Usage: ./run_val30.sh [OUT]
+# Validation set (datasets/valset, 30 facades): main pipeline (fold gate) -> balcony track (railing v4, cell_clf enclosed)
+# -> oblique renders (photo wall colour) of windows-only and windows+balconies. Usage: ./run_val30.sh [OUT]
 set -u
 VAL=/localhome/jiyeonh/Research/arch/datasets/valset
-E=/local-scratch/localhome/jiyeonh/Research/arch/experiments/facade_e2e
+E="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 P=/localhome/jiyeonh/miniconda3/envs/arch/bin/python
 B=/localhome/jiyeonh/local_install/usr/share/blender-5.1.0-linux-x64/blender
 OBL=${OBL:-$E/scripts/oblique_ours.py}
@@ -15,8 +15,7 @@ for T in $IDS; do
   S=$(stem $T); IMG=$VAL/photos/$S.jpg; D=$OUT/$T
   [ -f "$D/facade_dsl.json" ] || $P run.py --image "$IMG" --windows sam --out-dir "$D" --device cuda > "$OUT/logs/$T.log" 2>&1 || echo "fail main $T"
   [ -f "$D/balcony/facade_dsl_with_balconies.json" ] || [ ! -f "$D/facade_dsl.json" ] || \
-    $P balcony_pipeline/run_balcony.py --image "$IMG" --windows-dsl "$D/facade_dsl.json" --out-dir "$D/balcony" --device cuda \
-      --railing-ckpt checkpoints/railing_test100_v4.pt --enclosed-method sam3 > "$OUT/logs/$T.balcony.log" 2>&1 || echo "fail balcony $T"
+    $P balcony_pipeline/run_balcony.py --image "$IMG" --windows-dsl "$D/facade_dsl.json" --out-dir "$D/balcony" --device cuda > "$OUT/logs/$T.balcony.log" 2>&1 || echo "fail balcony $T"
   echo "[$(date +%T)] $T done"
 done
 echo "[$(date +%T)] pipeline done"

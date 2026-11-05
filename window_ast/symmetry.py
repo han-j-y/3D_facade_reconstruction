@@ -22,6 +22,9 @@ from typing import Literal, Sequence
 
 import numpy as np
 
+# NumPy 2 removed np.trapz in favor of np.trapezoid.
+_trapezoid = getattr(np, "trapezoid", None) or np.trapz
+
 Box = tuple[float, float, float, float]  # x0, y0, x1, y1
 
 
@@ -218,7 +221,7 @@ def _centricity_integral(xs: np.ndarray, p: np.ndarray) -> float:
     c = 0.5 * (lo + hi)
     sigma = w / 3.0
     g = np.exp(-((xs - c) / sigma) ** 2)
-    return float(np.trapz(p * g, xs))
+    return float(_trapezoid(p * g, xs))
 
 
 def integral_symmetry_1d(

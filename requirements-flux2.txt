@@ -1,0 +1,18 @@
+# Optional: FLUX.2 [dev] synthetic masonry openwork crops (balcony_train/generate_flux2.py).
+# Install (glodon env):
+#   C:\Users\hiroo\anaconda3\envs\glodon\python.exe -m pip install -r requirements-flux2.txt
+#
+# Requires NVIDIA GPU + CUDA PyTorch (see main requirements.txt).
+# Accept the model license on Hugging Face, then:
+#   huggingface-cli login
+# or set HF_TOKEN.
+#
+# Full weights need a large GPU; for consumer cards use --quantized
+# (diffusers/FLUX.2-dev-bnb-4bit) and typically --cpu-offload.
+diffusers>=0.36.0
+transformers>=4.56.0
+accelerate>=1.0.0
+safetensors>=0.4.0
+huggingface_hub>=0.34.0
+# Needed for --quantized (bitsandbytes 4-bit weights)
+bitsandbytes>=0.45.0

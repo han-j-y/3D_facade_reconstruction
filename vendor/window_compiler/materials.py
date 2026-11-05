@@ -6,7 +6,14 @@ import bpy
 MATS = {}
 
 
-def make_principled_mat(name, base_color=(0.8, 0.8, 0.8), roughness=0.5, transmission_weight=0.0):
+def make_principled_mat(
+    name,
+    base_color=(0.8, 0.8, 0.8),
+    roughness=0.5,
+    transmission_weight=0.0,
+    alpha=1.0,
+    ior=1.45,
+):
     mat = bpy.data.materials.new(name)
     mat.use_nodes = True
     bsdf = mat.node_tree.nodes["Principled BSDF"]
@@ -14,6 +21,29 @@ def make_principled_mat(name, base_color=(0.8, 0.8, 0.8), roughness=0.5, transmi
     bsdf.inputs["Roughness"].default_value = roughness
     if "Transmission Weight" in bsdf.inputs:
         bsdf.inputs["Transmission Weight"].default_value = transmission_weight
+    if "Alpha" in bsdf.inputs:
+        bsdf.inputs["Alpha"].default_value = alpha
+    if "IOR" in bsdf.inputs:
+        bsdf.inputs["IOR"].default_value = ior
+    translucent = transmission_weight > 0.0 or alpha < 0.999
+    if translucent:
+        try:
+            mat.blend_method = "HASHED"
+        except (AttributeError, TypeError):
+            pass
+        try:
+            mat.shadow_method = "HASHED"
+        except (AttributeError, TypeError):
+            pass
+        try:
+            mat.use_screen_refraction = True
+            mat.refraction_depth = 0.01
+        except (AttributeError, TypeError):
+            pass
+        try:
+            mat.surface_render_method = "DITHERED"
+        except (AttributeError, TypeError):
+            pass
     return mat
 
 

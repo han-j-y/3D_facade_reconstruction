@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -176,7 +177,6 @@ def planned_windows(facade: dict) -> list[dict]:
     type_ratios = (facade.get("meta") or {}).get("type_ratios") or {}
     default_wr = float(pp.get("width_ratio", 0.55))
     default_hr = float(pp.get("height_ratio", 0.60))
-    bottom_m = float(pp.get("bottom_margin_ratio", 0.14))
     mirror_x = bool(pp.get("mirror_x", True))
     n_rows = len(facade["grid"]["rows"])
     n_cols = len(facade["grid"]["cols"])
@@ -441,6 +441,7 @@ def overlay_clusters_on_photo(*, recovery: dict, out_path: Path) -> Path | None:
         tid = int(inst["type_id"])
         color = type_color(tid, inst.get("kind", "window"))
         x0, y0, x1, y1 = [float(v) for v in inst["box_xyxy"]]
+        label = instance_label(inst)
         draw.rectangle([x0, y0, x1, y1], outline=(*color, 230), width=3)
         draw_tag_above(draw, x0, y0, instance_label(inst), color, font_sm)
 
@@ -491,6 +492,111 @@ def write_photo_compare(
     return out_path
 
 
+def resolve_balcony_cluster_png(recovery_path: Path, recovery: dict) -> Path | None:
+    """Locate balcony_pipeline s3 cluster overlay next to the e2e out-dir."""
+    meta = recovery.get("meta") or {}
+    stem = str(meta.get("balcony_stem") or "")
+    if not stem:
+        img = meta.get("balcony_image") or meta.get("image")
+        stem = Path(str(img)).stem if img else str(meta.get("facade_id") or "")
+    if not stem:
+        return None
+    balcony_dir = recovery_path.parent / "balcony"
+    direct = balcony_dir / f"s3_cluster_balcony_types_{stem}.png"
+    return direct if direct.is_file() else None
+
+
+def write_balcony_window_compare(
+    *,
+    balcony_path: Path,
+    photo_path: Path,
+    render_path: Path,
+    out_path: Path,
+    title: str = "",
+    target_h: int = 900,
+) -> Path | None:
+    if not balcony_path.is_file() or not photo_path.is_file() or not render_path.is_file():
+        return None
+    from PIL import Image, ImageDraw, ImageFont
+
+    try:
+        font = ImageFont.truetype("arial.ttf", 18)
+    except OSError:
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 18)
+        except OSError:
+            font = ImageFont.load_default()
+
+    def fit_h(im: Image.Image, h: int) -> Image.Image:
+        w = max(1, int(round(im.width * h / im.height)))
+        return im.resize((w, h), Image.Resampling.LANCZOS)
+
+    a = fit_h(Image.open(balcony_path).convert("RGB"), target_h)
+    b = fit_h(Image.open(photo_path).convert("RGB"), target_h)
+    c = fit_h(Image.open(render_path).convert("RGB"), target_h)
+    gap, label_h = 16, 44
+    canvas = Image.new(
+        "RGB",
+        (a.width + b.width + c.width + gap * 2, label_h + target_h),
+        (28, 28, 28),
+    )
+    d = ImageDraw.Draw(canvas)
+    prefix = f"{title}  ·  " if title else ""
+    labels = (
+        "balcony types (cluster)",
+        f"{prefix}photo (clusters)",
+        f"{prefix}blender render (clusters)",
+    )
+    xs = (12, a.width + gap + 12, a.width + gap + b.width + gap + 12)
+    for x, label in zip(xs, labels):
+        d.text((x, 12), label, fill=(230, 230, 230), font=font)
+    canvas.paste(a, (0, label_h))
+    canvas.paste(b, (a.width + gap, label_h))
+    canvas.paste(c, (a.width + gap + b.width + gap, label_h))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if out_path.is_file():
+        out_path.unlink()
+    canvas.save(out_path, quality=92)
+    return out_path
+
+
+def archive_stem_from_recovery(recovery: dict) -> str:
+    """Input image stem for archive filenames (e.g. cmp_b0015)."""
+    meta = recovery.get("meta") or {}
+    for key in ("balcony_stem", "facade_id"):
+        raw = meta.get(key)
+        if raw:
+            return Path(str(raw)).stem
+    for key in ("balcony_image", "image", "source_image"):
+        raw = meta.get(key)
+        if raw:
+            return Path(str(raw)).stem
+    return "facade"
+
+
+def archive_blender_outputs(out_dir: Path, stem: str) -> list[Path]:
+    """Copy blend + balcony compare into ``_Archive`` with input stem in the name."""
+    archive_dir = out_dir / "_Archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    mapping = (
+        (out_dir / "facade_scene.blend", archive_dir / f"facade_scene_{stem}.blend"),
+        (
+            out_dir / "Compare_window_balcony_vs_render.jpg",
+            archive_dir / f"Compare_window_balcony_vs_render_{stem}.jpg",
+        ),
+    )
+    wrote: list[Path] = []
+    for src, dest in mapping:
+        if not src.is_file():
+            continue
+        if dest.is_file():
+            dest.unlink()
+        shutil.copy2(src, dest)
+        wrote.append(dest)
+        print(f"archive -> {dest}")
+    return wrote
+
+
 def render_facade(
     *,
     blender: str,
@@ -508,7 +614,9 @@ def render_facade(
             "Set FACADE_COMPILER_ROOT to a package with main.py, or skip --render."
         )
     png_path.parent.mkdir(parents=True, exist_ok=True)
+    blend_path = png_path.parent / "facade_scene.blend"
     env = os.environ.copy()
+    env["FACADE_SAVE_BLEND"] = str(blend_path.resolve())
     env["FACADE_RENDER_IMAGE"] = str(png_path.resolve())
     env["FACADE_DSL_RENDER_RES"] = res
     env["FACADE_DSL_SAMPLES"] = str(samples)
@@ -556,7 +664,8 @@ def main() -> None:
     n_win = sum(len(cell_tokens(tok)) for row in facade.get("placement") or [] for tok in row)
     print(
         f"wrote {facade_path}  "
-        f"types={len(facade.get('windows') or {})}  placed={n_win}"
+        f"types={len(facade.get('windows') or {})}  placed={n_win}  "
+        f"balconies={len(facade.get('balcony_placement') or [])}"
     )
 
     render_png = out_dir / "facade_render.png"
@@ -572,7 +681,8 @@ def main() -> None:
                 samples=args.samples,
                 ortho_zoom=args.ortho_zoom,
             )
-            print(f"façade render → {render_png}")
+            print(f"facade render -> {render_png}")
+            print(f"facade blend -> {out_dir / 'facade_scene.blend'}")
     else:
         print(
             "skip Blender (pass --render). Manual:\n"
@@ -595,10 +705,10 @@ def main() -> None:
             ortho_zoom=args.ortho_zoom,
         )
         if wrote_r:
-            print(f"render clusters → {wrote_r}")
+            print(f"render clusters -> {wrote_r}")
     wrote_p = overlay_clusters_on_photo(recovery=recovery, out_path=photo_clusters)
     if wrote_p:
-        print(f"photo clusters → {wrote_p}")
+        print(f"photo clusters -> {wrote_p}")
 
     compare_path = out_dir / "compare_photo_vs_render.png"
     left = photo_clusters if photo_clusters.is_file() else None
@@ -613,7 +723,23 @@ def main() -> None:
             title=f"facade {fid}" if fid else "",
         )
         if wrote:
-            print(f"compare → {wrote}")
+            print(f"compare -> {wrote}")
+
+    balcony_cluster = resolve_balcony_cluster_png(recovery_path, recovery)
+    compare_balcony_path = out_dir / "Compare_window_balcony_vs_render.jpg"
+    if balcony_cluster and left and right.is_file():
+        wrote_b = write_balcony_window_compare(
+            balcony_path=balcony_cluster,
+            photo_path=left,
+            render_path=right,
+            out_path=compare_balcony_path,
+            title=f"facade {fid}" if fid else "",
+        )
+        if wrote_b:
+            print(f"balcony compare -> {wrote_b}")
+
+    archive_stem = archive_stem_from_recovery(recovery) or fid or "facade"
+    archived = archive_blender_outputs(out_dir, archive_stem)
 
     summary = {
         "recovery": str(recovery_path),
@@ -623,6 +749,10 @@ def main() -> None:
         "render_clusters": str(render_clusters) if render_clusters.is_file() else None,
         "photo_clusters": str(photo_clusters) if photo_clusters.is_file() else None,
         "compare": str(compare_path) if compare_path.is_file() else None,
+        "compare_balcony": str(compare_balcony_path) if compare_balcony_path.is_file() else None,
+        "balcony_cluster": str(balcony_cluster) if balcony_cluster else None,
+        "archive_stem": archive_stem,
+        "archive": [str(p) for p in archived],
         "n_types": len(facade.get("windows") or {}),
         "n_placed": n_win,
         "grid": {
@@ -632,7 +762,7 @@ def main() -> None:
         "out_dir": str(out_dir),
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
-    print(f"done → {out_dir}")
+    print(f"done -> {out_dir}")
 
 
 if __name__ == "__main__":

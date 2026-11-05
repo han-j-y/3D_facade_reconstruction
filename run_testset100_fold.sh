@@ -4,7 +4,7 @@
 #   SAM IoU (real style, two-tier, doors excluded) on all. Usage: ./run_testset100_fold.sh [TAG]
 set -u
 TESTSET=/localhome/jiyeonh/Research/arch/datasets/testset
-E=/localhome/jiyeonh/Research/arch/experiments/facade_e2e
+E="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 P=/localhome/jiyeonh/miniconda3/envs/arch/bin/python
 TAG=${1:-testset100_fold}
 MAIN=runs_${TAG}_main

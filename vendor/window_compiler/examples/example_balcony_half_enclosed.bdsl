@@ -1,0 +1,15 @@
+# Half-enclosed balcony: columns carry a roof, still open to the outside air.
+# A balcony directly above becomes the roof (shared floor) when the façade
+# stacks them; otherwise the compiler adds a roof slab.
+
+balcony rectangle(width=2.4, depth=1.0)
+
+structure projecting
+enclosure half_enclosed
+
+columns:
+  count 0
+  width 0.25
+  style round
+
+railing open_work material masonry height 1.0

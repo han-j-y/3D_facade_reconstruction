@@ -147,6 +147,30 @@ def x_gap(a: list[int], b: list[int]) -> float:
     return 0.0
 
 
+# Window: merge multi-pane faces of one opening.
+# Balcony: keep neighbors separate; only merge nested/IoU duplicate SAM hits.
+MERGE_PROFILES: dict[str, dict[str, float]] = {
+    "window": {
+        "contain_thr": 0.55,
+        "iou_thr": 0.25,
+        "extruded_gap": 2.2,
+        "min_y_overlap": 0.30,
+        "narrow_frac": 0.9,
+        "tight_gap": 0.55,
+        "cross_bay_gap": 1.0,
+    },
+    "balcony": {
+        "contain_thr": 0.55,
+        "iou_thr": 0.25,
+        "extruded_gap": 0.0,
+        "min_y_overlap": 0.30,
+        "narrow_frac": 0.9,
+        "tight_gap": 0.0,
+        "cross_bay_gap": 0.0,
+    },
+}
+
+
 def merge_adjacent_boxes(
     boxes: list[list[int]],
     cx: np.ndarray,
@@ -156,37 +180,46 @@ def merge_adjacent_boxes(
     adj_gap: float,
     merge_bays: bool,
     col_tol: float,
-    contain_thr: float = 0.55,
-    iou_thr: float = 0.25,
-    extruded_gap: float = 2.2,
-    min_y_overlap: float = 0.30,
-    narrow_frac: float = 0.9,
-    tight_gap: float = 0.55,
-    cross_bay_gap: float = 1.0,
+    mode: str = "window",
+    contain_thr: float | None = None,
+    iou_thr: float | None = None,
+    extruded_gap: float | None = None,
+    min_y_overlap: float | None = None,
+    narrow_frac: float | None = None,
+    tight_gap: float | None = None,
+    cross_bay_gap: float | None = None,
     structural_col: np.ndarray | None = None,
     adjacent: bool = False,
-    mode: str = "window",
 ) -> tuple[list[list[int]], list[list[int]], np.ndarray, np.ndarray]:
     """Merge pane faces of one opening; keep separate columns apart.
 
-    ``mode="balcony"`` (balcony_pipeline): keep neighbours separate and merge only nested / IoU duplicates
-    (no extruded, tight or cross-bay gap merges). ``"window"`` keeps the arguments as given.
-
-    Phase 1 — nested / high-IoU (no floor gate): full opening + inner pane.
-    Phase 2 — close-by on the same floor only (if ``adjacent=True``):
-      - Same bay: generous gap (projecting bay faces).
-      - Different bay: only if a box is narrow (flat multi-pane) and gap is small.
-      - Optional: force whole vertical bay.
-    Default ``adjacent=False``: containment/IoU only (no nearby-gap merges).
-    If ``structural_col`` is set, only merge within the same structural column
-    (plus containment/IoU). Uses ``adj_gap`` with similar pane widths — not the
-    large ``extruded_gap`` used for projecting bays, because structural columns
-    can span multiple side-by-side windows on one floor.
+    Phase 1 — nested / high-IoU. Window mode allows a pane nested across a
+    floor band; balcony mode stays on one floor.
+    Phase 2 — close-by panes on the same floor when ``adjacent=True`` (default off: containment/IoU only).
+    ``mode="balcony"`` leaves adjacent balconies separate.
     """
-    if mode == "balcony":
-        extruded_gap = tight_gap = cross_bay_gap = 0.0
-    elif mode != "window":
-        raise ValueError(f"merge mode {mode!r}: expected 'window' or 'balcony'")
+    if mode not in MERGE_PROFILES:
+        raise ValueError(f"unknown merge mode {mode!r}; expected one of {sorted(MERGE_PROFILES)}")
+    profile = dict(MERGE_PROFILES[mode])
+    overrides = {
+        "contain_thr": contain_thr,
+        "iou_thr": iou_thr,
+        "extruded_gap": extruded_gap,
+        "min_y_overlap": min_y_overlap,
+        "narrow_frac": narrow_frac,
+        "tight_gap": tight_gap,
+        "cross_bay_gap": cross_bay_gap,
+    }
+    for key, val in overrides.items():
+        if val is not None:
+            profile[key] = float(val)
+    contain_thr = float(profile["contain_thr"])
+    iou_thr = float(profile["iou_thr"])
+    extruded_gap = float(profile["extruded_gap"])
+    min_y_overlap = float(profile["min_y_overlap"])
+    narrow_frac = float(profile["narrow_frac"])
+    tight_gap = float(profile["tight_gap"])
+    cross_bay_gap = float(profile["cross_bay_gap"])
     n = len(boxes)
     floor = lay.assign_bays(cy, row_tol)
     bay = lay.assign_bays(cx, col_tol)
@@ -199,15 +232,17 @@ def merge_adjacent_boxes(
             return False
         return min(wi, wj) / max(wi, wj) >= min_ratio
 
-    # Phase 1: nested / IoU (allow cross-floor — nest before banding).
+    # Phase 1: nested / IoU. Balcony stays on one floor; windows may nest across a band.
     for i in range(n):
         for j in range(i + 1, n):
             if containment_or_iou(
                 boxes[i], boxes[j], contain_thr=contain_thr, iou_thr=iou_thr
             ):
+                if mode == "balcony" and int(floor[i]) != int(floor[j]):
+                    continue
                 uf.union(i, j)
 
-    # Phase 2: close-by panes, same floor band only (opt-in).
+    # Phase 2: close-by panes, same floor band only.
     if adjacent:
         for i in range(n):
             for j in range(i + 1, n):

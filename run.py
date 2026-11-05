@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Facade photo → window types → structure IR → recovery DSL.
 
-Blender rendering is optional (``--blender-render``).
+Optional ``--with-balconies`` runs balcony_pipeline after the window DSL
+(does not change window stages). Blender rendering is optional (``--blender-render``).
 
 Optional ``--with-balconies`` runs the balcony track (``balcony_pipeline/run_balcony.py``, unchanged from
 hiroo/balcony-pipeline) after the window DSL is written. It reads ``<out-dir>/facade_dsl.json`` and writes
@@ -37,6 +38,11 @@ def _arg(argv: list[str], name: str) -> str | None:
     return None
 
 
+def is_real_lfs_file(path: Path) -> bool:
+    """True when the file exists and is not an unfetched Git LFS pointer."""
+    return path.is_file() and not path.open("rb").read(40).startswith(b"version https://git-lfs")
+
+
 def run_balconies(image: Path, out_dir: Path, device: str | None) -> Path | None:
     """Balcony track on a finished window DSL; returns the merged DSL path (None if it produced none)."""
     cmd = [sys.executable, str(ROOT / "balcony_pipeline" / "run_balcony.py"),
@@ -44,10 +50,9 @@ def run_balconies(image: Path, out_dir: Path, device: str | None) -> Path | None
            "--out-dir", str(out_dir / "balcony")]
     if device:
         cmd += ["--device", device]
-    # The default enclosed detector (cell_clf) needs hiroo's trained classifier / labelled cell features, which are
-    # not in the repo; without them use the branch's SAM3+DA3 volume detector.
-    clf = ROOT / "runs" / "cell_clf"
-    if not ((clf / "model_rules_gate.joblib").is_file() or (clf / "cells_train.npz").is_file()):
+    # The default enclosed detector (cell_clf) needs the trained model (Git LFS); without it use the SAM3+DA3 detector.
+    if not is_real_lfs_file(ROOT / "checkpoints" / "oriel_cell_gate.joblib"):
+        print("warn: oriel_cell_gate.joblib missing, enclosed detection falls back to sam3")
         cmd += ["--enclosed-method", "sam3"]
     print("=== balcony track (balcony_pipeline/run_balcony.py) ===", flush=True)
     subprocess.run(cmd, check=True)

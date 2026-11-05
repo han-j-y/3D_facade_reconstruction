@@ -9,13 +9,14 @@ Pipeline (defaults)
   4. Cluster  — ``--cluster-mode gate``: z-scored box geometry (GMM), then the symmetry axis
                 (``scripts/symmetry_axis_ghost_continuous.py``, ``open balcony`` detections break ties), then
                 pane-tree structure splits inside each box group that keep mirror pairs together
-  5. Doors    — facebook/sam3 ``door`` >= 0.45; side facades (edge columns off the main
+  5. Doors    — ``facebook/sam3`` prompt ``door`` >= 0.45; side facades (edge columns off the main
                 floors) and the doors beside them dropped; then (gate) local symmetries let windows join a
                 mirror partner's type (``facade_recovery/local_sym.py``)
   6. Assetize — per-type crops; medoid exemplar
   7. Structure — predict window structure IR per unit; majority-vote within type
   8. DSL       — per-floor bays (``facade_recovery/floor_bays.py``) + type library (``facade_dsl.json``)
   9. (opt)     — Blender façade render via ``scripts/render_facade.py``
+  10. (opt)    — ``--with-balconies`` runs balcony_pipeline on this floor×bay grid
 
 Majority vote uses a discrete ``structure_view`` fingerprint (shape + pane
 topology + program ops). Continuous floats are ignored. Ties prefer the
@@ -27,6 +28,9 @@ Examples::
 
   python run.py --facade-id 8 --device cuda
   python run.py --image photo.png --out-dir runs/demo --device cuda
+  python run.py --image photo.png --device cuda --with-balconies --threshold 0.45 --balcony-threshold 0.35
+  python run.py --image-dir data/base --out-dir runs/batch --device cuda --with-balconies
+  python run.py --image-dir data/base --out-dir runs/batch --device cuda --with-balconies --blender-render
   python run.py --facade-id 8 --blender-render --device cuda
 """
 
@@ -35,6 +39,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import pathlib
 import shutil
 import sys
 import types
@@ -50,6 +55,9 @@ from PIL import Image, ImageDraw, ImageFont
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+if sys.platform == "win32":
+    # The bundled scratch_bal_b checkpoint was saved on Linux and contains PosixPath.
+    pathlib.PosixPath = pathlib.WindowsPath
 
 from facade_recovery.box_cluster import (  # noqa: E402
     cluster_box_geometry_pipeline,
@@ -106,11 +114,50 @@ patch = _load(ROOT / "scripts" / "overlay_facade_patch_layout.py", "e2e_patch")
 merge_mod = _load(ROOT / "scripts" / "overlay_facade_merge_boxes.py", "e2e_merge")
 reemb = _load(ROOT / "scripts" / "overlay_facade_merge_reembed.py", "e2e_reemb")
 
+_IMAGE_GLOBS = ("*.jpg", "*.jpeg", "*.png", "*.webp", "*.JPG", "*.JPEG", "*.PNG", "*.WEBP")
+
+
+def iter_images_in_dir(image_dir: Path) -> list[Path]:
+    """Sorted image paths under ``image_dir`` (non-recursive)."""
+    found: list[Path] = []
+    for pattern in _IMAGE_GLOBS:
+        found.extend(p for p in image_dir.glob(pattern) if p.is_file())
+    return sorted({p.resolve() for p in found}, key=lambda p: p.name.lower())
+
+
+def copy_to_batch_summary(batch_root: Path, stem: str, blender_dir: Path) -> list[Path]:
+    """Copy key Blender outputs into ``{batch_root}/_Summary`` (batch mode only)."""
+    summary_dir = batch_root / "_Summary"
+    summary_dir.mkdir(parents=True, exist_ok=True)
+    mapping = (
+        (blender_dir / "facade_scene.blend", summary_dir / f"facade_scene_{stem}.blend"),
+        (
+            blender_dir / "Compare_window_balcony_vs_render.jpg",
+            summary_dir / f"Compare_window_balcony_vs_render_{stem}.jpg",
+        ),
+    )
+    wrote: list[Path] = []
+    for src, dest in mapping:
+        if not src.is_file():
+            continue
+        shutil.copy2(src, dest)
+        wrote.append(dest)
+        print(f"summary → {dest}")
+    return wrote
+
 
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--facade-id", type=str, default=None)
     ap.add_argument("--image", type=Path, default=None, help="facade image (else train_up/{id}.png)")
+    ap.add_argument(
+        "--image-dir",
+        type=Path,
+        default=None,
+        help="run all facade images in this folder (*.jpg, *.jpeg, *.png, *.webp); "
+        "writes each to {out_dir}/{stem}/; with --blender-render also copies "
+        "facade_scene.blend and Compare_window_balcony_vs_render.jpg to {out_dir}/_Summary/",
+    )
     ap.add_argument(
         "--train-up",
         type=Path,
@@ -174,6 +221,12 @@ def parse_args() -> argparse.Namespace:
         help="drop a window/door box when this fraction of it lies on an excluded-object mask",
     )
     ap.add_argument("--threshold", type=float, default=0.5, help="window detection score threshold (fill tier)")
+    ap.add_argument(
+        "--balcony-threshold",
+        type=float,
+        default=None,
+        help="SAM3 score threshold for balcony detect with --with-balconies (default: 0.45)",
+    )
     ap.add_argument(
         "--anchor-score",
         type=float,
@@ -396,7 +449,7 @@ def parse_args() -> argparse.Namespace:
         "--structure-ckpt",
         type=Path,
         default=None,
-        help="window structure AST checkpoint (default: best available under runs/)",
+        help="window structure AST checkpoint (default: checkpoints/structure_best.pt)",
     )
     ap.add_argument("--structure-only", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument(
@@ -484,7 +537,82 @@ def parse_args() -> argparse.Namespace:
         "(uniform or box-area weights) instead of a majority vote; per-member predictions are still "
         "stored and compared against it",
     )
+    ap.add_argument(
+        "--with-balconies",
+        action="store_true",
+        help="after the window floor×bay grid, run balcony_pipeline and write facade_dsl_with_balconies.json",
+    )
+    ap.add_argument(
+        "--balcony-unit-labels",
+        type=Path,
+        default=None,
+        help=(
+            "per-unit railing labels JSON for the balcony step-4 IR instead of the "
+            "classifier (run_balcony --unit-labels); boxes must match the labeled run"
+        ),
+    )
+    ap.add_argument(
+        "--balcony-recovery-profile",
+        default="railing_only",
+        choices=["railing_only", "full"],
+        help="balcony photo IR vote axes (default: railing_only; use full to restore all axes)",
+    )
+    ap.add_argument(
+        "--no-railing-vote",
+        action="store_true",
+        help=(
+            "balcony track: each unit keeps its own railing and floor shape "
+            "(skip type majority vote)"
+        ),
+    )
+    ap.add_argument(
+        "--no-floor-shape-vote",
+        action="store_true",
+        help=(
+            "balcony track: do not majority-vote floor shape; each balcony keeps "
+            "its predicted plan. Implied by --no-railing-vote"
+        ),
+    )
+    ap.add_argument(
+        "--railing-ckpt",
+        type=Path,
+        default=None,
+        help="balcony solid/baluster classifier (default: checkpoints/railing_best.pt)",
+    )
+    ap.add_argument(
+        "--no-railing-ckpt",
+        action="store_true",
+        help="balcony track: force opaque-run heuristic (ignore railing_best.pt)",
+    )
+    ap.add_argument(
+        "--balcony-center",
+        choices=("window", "bay", "photo"),
+        default="window",
+        help=(
+            "balcony mesh horizontal center: paired window (default), bay bands, or photo box"
+        ),
+    )
+    ap.add_argument(
+        "--enclosed-method",
+        choices=("cell_clf", "sam3"),
+        default="cell_clf",
+        help=(
+            "enclosed detection inside --with-balconies. "
+            "cell_clf (default): four cell rules, gate >= 0.10. "
+            "sam3: previous SAM3+DA3 volumes"
+        ),
+    )
     return ap.parse_args()
+
+
+def balcony_sam3_threshold(args: argparse.Namespace) -> float:
+    """Balcony SAM3 threshold. Stays 0.45 unless ``--balcony-threshold`` is set.
+
+    The window fill tier (``--threshold``) is 0.5 and must not move balcony detection.
+    """
+    if args.balcony_threshold is not None:
+        return float(args.balcony_threshold)
+    return 0.45
 
 
 # ---------------------------------------------------------------------------
@@ -502,14 +630,19 @@ def detect_windows(
     max_side_frac: float,
     device: torch.device,
     model_id: str = "facebook/sam3",
+    sam=None,
+    processor=None,
+    det_boxes_out: list[list[int]] | None = None,
 ) -> list[dict[str, Any]]:
     from transformers import Sam3Model, Sam3Processor
 
     iw, ih = image.size
-    print(f"loading SAM3 ({model_id})…")
-    processor = Sam3Processor.from_pretrained(model_id)
-    sam = Sam3Model.from_pretrained(model_id).to(device)
-    sam.eval()
+    own_model = sam is None or processor is None
+    if own_model:
+        print(f"loading SAM3 ({model_id})…")
+        processor = Sam3Processor.from_pretrained(model_id)
+        sam = Sam3Model.from_pretrained(model_id).to(device)
+        sam.eval()
     inputs = processor(images=image, text=prompt, return_tensors="pt")
     inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
     # The original SAM3 always appends the geometry encoder's CLS token to the text prompt; HF skips the geometry
@@ -534,14 +667,18 @@ def detect_windows(
         else:
             masks = np.asarray(masks)
     print(f"SAM3 raw detections: {len(boxes)}  masks={'yes' if masks is not None else 'no'}")
-    del sam, outputs, inputs
-    torch.cuda.empty_cache()
+    del outputs, inputs
+    if own_model:
+        del sam
+        torch.cuda.empty_cache()
 
     records = []
     n_mask_box = 0
     n_clamped = 0
     for i, (box, sc) in enumerate(zip(boxes, scores)):
         det = [float(v) for v in box]
+        if det_boxes_out is not None:
+            det_boxes_out.append([int(v) for v in det])
         x0, y0, x1, y1 = det
         used_mask = False
         fill = None
@@ -1824,6 +1961,50 @@ def main() -> None:
             args.blender = blender_bin
             args.compiler_root = compiler
 
+    if args.image is not None and args.image_dir is not None:
+        raise SystemExit("use only one of --image or --image-dir")
+    if args.image_dir is not None and args.from_index is not None:
+        raise SystemExit("--image-dir cannot be used with --from-index")
+    if args.image_dir is not None and args.facade_id is not None:
+        raise SystemExit("--image-dir cannot be used with --facade-id")
+
+    if args.image_dir is not None:
+        image_dir = Path(args.image_dir)
+        if not image_dir.is_dir():
+            raise SystemExit(f"not a directory: {image_dir}")
+        images = iter_images_in_dir(image_dir)
+        if not images:
+            raise SystemExit(f"no images in {image_dir}")
+        batch_root = Path(args.out_dir) if args.out_dir else ROOT / "runs" / "batch"
+        batch_root.mkdir(parents=True, exist_ok=True)
+        print(f"=== batch: {len(images)} images → {batch_root}/{{stem}}/ ===")
+        failures: list[tuple[str, str]] = []
+        for i, img_path in enumerate(images, start=1):
+            stem = img_path.stem
+            one_dir = batch_root / stem
+            print(f"\n=== [{i}/{len(images)}] {img_path.name} → {one_dir} ===")
+            try:
+                run_one(
+                    args,
+                    device=device,
+                    facade_path=img_path,
+                    facade_id=stem,
+                    out_dir=one_dir,
+                )
+                copy_to_batch_summary(batch_root, stem, one_dir / "blender")
+            except SystemExit as exc:
+                msg = str(exc) or "failed"
+                failures.append((img_path.name, msg))
+                print(f"skip {img_path.name}: {msg}")
+        ok = len(images) - len(failures)
+        print(f"\n=== batch done: {ok}/{len(images)} ok ===")
+        if failures:
+            print("failures:")
+            for name, err in failures:
+                print(f"  {name}: {err}")
+            raise SystemExit(1)
+        return
+
     if args.image is not None:
         facade_path = Path(args.image)
         facade_id = args.facade_id or facade_path.stem
@@ -1834,9 +2015,26 @@ def main() -> None:
         facade_id = "unknown"
         facade_path = None
     else:
-        raise SystemExit("provide --facade-id, --image, or --from-index")
+        raise SystemExit("provide --facade-id, --image, --image-dir, or --from-index")
 
     out_dir = Path(args.out_dir) if args.out_dir else ROOT / "runs" / f"facade_e2e_{facade_id}"
+    run_one(
+        args,
+        device=device,
+        facade_path=facade_path,
+        facade_id=facade_id,
+        out_dir=out_dir,
+    )
+
+
+def run_one(
+    args: argparse.Namespace,
+    *,
+    device: torch.device,
+    facade_path: Path | None,
+    facade_id: str,
+    out_dir: Path,
+) -> None:
     assets_dir = out_dir / "assets"
     types_dir = assets_dir / "types"
     crops_dir = out_dir / "crops"
@@ -2380,6 +2578,63 @@ def main() -> None:
     print(f"  DSL → {dsl_path}")
     print(f"  assets → {types_dir}")
     print(f"  overview → {out_dir / 'overview.png'}")
+    if args.grid == "floor_bays":
+        print(
+            f"  grid=floor_bays  floors={len(dsl['layout']['floors'])}  "
+            f"bays={len(dsl['layout']['bays'])}"
+        )
+
+    if args.with_balconies:
+        img = Path(facade_path) if facade_path else None
+        if img is None or not img.is_file():
+            print("warn: --with-balconies skipped (no facade image path)")
+        else:
+            print("=== balcony track (balcony_pipeline) ===")
+            bp_dir = ROOT / "balcony_pipeline"
+            if str(bp_dir) not in sys.path:
+                sys.path.insert(0, str(bp_dir))
+            import argparse as _ap
+            import run_balcony as _bp
+
+            bp_out = out_dir / "balcony"
+            bp_threshold = balcony_sam3_threshold(args)
+            bp_args = _ap.Namespace(
+                image=img,
+                windows_dsl=dsl_path,
+                out_dir=bp_out,
+                prompt="balcony",
+                threshold=bp_threshold,
+                min_side=20,
+                max_side_frac=1.0,
+                device=str(device),
+                dino=args.dino,
+                facade_max_side=args.facade_max_side,
+                pca_dim=args.pca_dim,
+                seed=args.seed,
+                k_max=args.k_max,
+                col_tol=args.col_tol,
+                row_tol=args.row_tol,
+                spatial_strength=args.spatial_strength,
+                unary_weight=args.unary_weight,
+                force=True,
+                recovery_profile=args.balcony_recovery_profile,
+                no_railing_vote=args.no_railing_vote,
+                no_floor_shape_vote=args.no_floor_shape_vote,
+                railing_ckpt=args.railing_ckpt,
+                no_railing_ckpt=args.no_railing_ckpt,
+                balcony_center=args.balcony_center,
+                no_enclosed=False,
+                enclosed_method=args.enclosed_method,
+                depth_dir=ROOT / "runs" / "da3_enclosure",
+                enclosed_sam3_cache=ROOT / "runs" / "sam3_da3_volumes" / "sam3_seeds.json",
+                unit_labels=args.balcony_unit_labels,
+            )
+            merged_path = _bp.run(bp_args)
+            if merged_path and merged_path.is_file():
+                dest = out_dir / "facade_dsl_with_balconies.json"
+                dest.write_text(merged_path.read_text(encoding="utf-8"), encoding="utf-8")
+                print(f"  merged DSL -> {dest}")
+                dsl_path = dest
 
     if args.blender_render:
         import os

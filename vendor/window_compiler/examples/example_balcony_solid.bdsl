@@ -1,0 +1,7 @@
+# Projecting open balcony — solid parapet
+
+balcony rectangle(width=2.0, depth=1.5)
+
+structure projecting
+enclosure open
+railing solid height 1.1

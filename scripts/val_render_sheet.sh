@@ -2,7 +2,7 @@
 # Front renders (photo wall colour) of windows-only and windows+balconies DSLs for every run dir, then a sheet.
 set -u
 RUN=$1; IDS=$2
-E=/local-scratch/localhome/jiyeonh/Research/arch/experiments/facade_e2e
+E="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 P=/localhome/jiyeonh/miniconda3/envs/arch/bin/python
 B=/localhome/jiyeonh/local_install/usr/share/blender-5.1.0-linux-x64/blender
 mkdir -p "$RUN/front"
