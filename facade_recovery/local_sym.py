@@ -286,6 +286,45 @@ def _can_be(a: float, b: float, a_min: bool, tol: float) -> bool:
     return a <= b * (1 + tol)
 
 
+def pair_size_ok(bi: list[float], bj: list[float], oi: set[int], oj: set[int], tol: float) -> bool:
+    """Could windows i and j be the same size? A fully visible extent is trusted (must agree within ``tol``); an
+    extent with a hidden side is only a lower bound (may be shorter than its partner by any amount)."""
+    wh = lambda b: (b[2] - b[0], b[3] - b[1])
+    a, b = wh(bi), wh(bj)
+    return all(_can_be(a[k], b[k], _axis_hidden(oi, k), tol) and _can_be(b[k], a[k], _axis_hidden(oj, k), tol)
+               for k in (0, 1))
+
+
+def local_pairs(
+    boxes: list[list[float]],
+    occluder_mask: np.ndarray | None,
+    image_size: tuple[int, int],
+    *,
+    size_tol: float = 1.0 / 3.0,
+) -> tuple[list[tuple[int, int]], dict[str, Any]]:
+    """Mirror pairs over all local symmetry axes (same axes as :func:`local_sym_vote`), kept only where the two
+    windows can be the same size (:func:`pair_size_ok`; ``size_tol`` 1/3 = up to 1.5x for visible extents).
+    Windows on an occluder take no part. Returns (pairs as sorted index tuples, report)."""
+    iw, ih = image_size
+    on = [occluder_mask is not None and float(occluder_mask[int(b[1]):int(b[3]), int(b[0]):int(b[2])].mean()) >= 0.5
+          for b in boxes]
+    idx = [i for i in range(len(boxes)) if not on[i]]
+    report: dict[str, Any] = {"on_occluder": [i for i in range(len(boxes)) if on[i]], "occluded_sides": {},
+                              "n_raw": 0, "dropped_size": []}
+    if len(idx) < 2:
+        return [], report
+    sub = [list(map(float, boxes[i])) for i in idx]
+    occ = cut_sides(sub, occluded_sides(sub, occluder_mask, iw, ih))
+    syms = continuous_weights(sub, occ, local_symmetries(sub, occ))
+    raw = {key for s in syms for key in s["pairs"]}
+    keep = sorted((idx[i], idx[j]) for i, j in raw if pair_size_ok(sub[i], sub[j], occ[i], occ[j], size_tol))
+    report["n_raw"] = len(raw)
+    report["dropped_size"] = sorted([idx[i], idx[j]] for i, j in raw
+                                    if (min(idx[i], idx[j]), max(idx[i], idx[j])) not in set(keep))
+    report["occluded_sides"] = {idx[i]: sorted(o) for i, o in enumerate(occ) if o}
+    return keep, report
+
+
 def size_mates(boxes: list[list[float]], occ: list[set[int]], tol: float = 0.12) -> list[set[int]]:
     """Per window: others it could still be, given hidden sides. Not symmetric: a short occluded box may list a
     longer window, and that longer window does not list it back."""

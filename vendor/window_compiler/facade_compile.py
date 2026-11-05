@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import os
+
 from typing import Any
 
+import bmesh
 import bpy
+from mathutils import Matrix
 
+from balcony_compile import ENCLOSED_WALL_M, add_balcony_meshes
+from balcony_layout import balcony_frames, front_edge_x, front_window_targets, windows_behind_glass
+from balcony_plan import outer_edges
+from balcony_layout import front_y as balcony_front_y
 from blender_scene import build_blender_scene
 from compiler import compile_spec
 from door_scene import (
@@ -19,6 +27,8 @@ from facade_spec import (
     EMPTY_TOKENS,
     align_type_bottoms,
     build_instance_map,
+    cell_fit,
+    cell_tokens,
     fit_window_ir_to_bounds,
     fit_window_ir_to_cell,
     cell_cx_ratio_world,
@@ -31,6 +41,8 @@ from facade_spec import (
     placement_fit_for_instance,
     total_grid_size,
     unify_type_sizes,
+    align_column_centers,
+    align_columns_enabled,
     unwrap_window_ir,
     world_placement_in_cell,
 )
@@ -73,6 +85,11 @@ def _build_wall(spec: dict[str, Any], parent: bpy.types.Collection) -> bpy.types
         c.objects.unlink(obj)
     parent.objects.link(obj)
     return obj
+
+
+def _slot_suffix(p: dict[str, Any]) -> str:
+    """Object-name suffix for items stacked in one cell (slot > 0), so their names stay unique."""
+    return f"_s{p['slot']}" if p.get("slot") else ""
 
 
 def _cut_opening(
@@ -161,6 +178,166 @@ def _apply_cutter(wall_obj: bpy.types.Object, cutter: bpy.types.Object) -> None:
         bpy.data.meshes.remove(mesh_to_drop)
 
 
+def _curve_y(outline: list[tuple[float, float]], y_wall: float, x: float) -> float | None:
+    """Depth (y) of a balcony plan's outer boundary at ``x`` (max over its outer edges), None outside it."""
+    best = None
+    for (ax, ay), (bx, by) in outer_edges(outline, y_wall):
+        lo, hi = min(ax, bx), max(ax, bx)
+        if not (lo - 1e-6 <= x <= hi + 1e-6):
+            continue
+        y = ay if abs(bx - ax) < 1e-9 else ay + (by - ay) * (x - ax) / (bx - ax)
+        best = y if best is None else max(best, y)
+    return best
+
+
+def _curved_front_targets(
+    frames: list[dict[str, Any] | None], wins: list[dict[str, Any]], taken: set[int], recess: float, margin: float = 0.05
+) -> list[dict[str, Any]]:
+    """Windows of punched enclosed balconies whose plan has no flat front (circle). A window belongs to a frame on
+    its floor whose bays overlap its own and whose plan spans its centre x, between floor top and enclosure top. It
+    moves to just inside the shell (the shallowest boundary depth over its width, minus the recess) and is marked
+    ``on_balcony``; returns the openings to cut through the shell once it is built."""
+    cuts = []
+    for wi, w in enumerate(wins):
+        if wi in taken:
+            continue
+        r, c_lo = int(w["r"]), int(w["c"])
+        c_hi = c_lo + max(1, int(w.get("span", 1))) - 1
+        wcx, wcz = float(w["ox"]) + 0.5 * float(w["ww"]), float(w["oz"]) + 0.5 * float(w["hh"])
+        for f in frames:
+            if f is None or f.get("enclosure") != "enclosed" or f.get("outline") is None or f.get("curtain_wall"):
+                continue
+            if front_edge_x(f) is not None or f["row"] != r or c_hi < f["col0"] or c_lo > f["col1"]:
+                continue
+            xs = [q[0] for q in f["outline"]]
+            if not (min(xs) + margin < wcx < max(xs) - margin):
+                continue
+            z_lo, z_hi = f["sill_z"] + f["thick"], float(f["top_z"])
+            if not (z_lo < wcz < z_hi):
+                continue
+            x0 = max(float(w["ox"]), min(xs) + margin)
+            x1 = min(float(w["ox"]) + float(w["ww"]), max(xs) - margin)
+            ys = [_curve_y(f["outline"], float(f["y_wall"]), x) for x in (x0, 0.5 * (x0 + x1), x1)]
+            if x1 - x0 < 0.3 or any(y is None for y in ys):
+                continue
+            w.update(ox=x0, ww=x1 - x0, on_balcony=int(f["index"]))
+            r_in = min(max(0.02, recess), 0.06)
+            w["oy"] = min(ys) - r_in
+            cuts.append({"frame": f, "win": w, "recess": r_in})
+            break
+    return cuts
+
+
+def _bend_to_curve(objs: list[bpy.types.Object], f: dict[str, Any], recess: float, step: float = 0.04) -> None:
+    """Wrap a flat window (built facing +y) onto its balcony's curved shell: sliced every ``step`` along x, then each
+    vertex at (x, y) goes to the shell point at x, offset along the shell's outward normal by its depth below the
+    window's front face (minus the recess), so the frame follows the curve and sits in the shell thickness."""
+    outline, y_wall = f["outline"], float(f["y_wall"])
+    xs_o = [q[0] for q in outline]
+    lo, hi = min(xs_o) + 1e-3, max(xs_o) - 1e-3
+
+    def curve(x: float) -> float:
+        return _curve_y(outline, y_wall, min(hi, max(lo, x))) or y_wall
+
+    def normal(x: float, h: float = 0.12) -> tuple[float, float]:
+        a, b = max(lo, x - h), min(hi, x + h)
+        dy = (curve(b) - curve(a)) / max(b - a, 1e-6)
+        n = (dy * dy + 1.0) ** 0.5
+        return -dy / n, 1.0 / n
+
+    dg = bpy.context.evaluated_depsgraph_get()
+    meshes = []
+    for o in objs:  # world-space, single-user mesh data; curve objects (muntins) become meshes
+        if o.type not in ("MESH", "CURVE") or o.data is None:
+            continue
+        mw = o.matrix_world.copy()
+        if o.type == "CURVE":
+            me = bpy.data.meshes.new_from_object(o.evaluated_get(dg))
+            m = bpy.data.objects.new(o.name, me)
+            for c in o.users_collection:
+                c.objects.link(m)
+            bpy.data.objects.remove(o, do_unlink=True)
+        else:
+            m = o
+            m.data = m.data.copy()
+            m.parent = None
+        m.data.transform(mw)
+        m.matrix_world = Matrix.Identity(4)
+        meshes.append(m)
+    if not meshes:
+        return
+    y_front = max(v.co.y for o in meshes for v in o.data.vertices)
+    for o in meshes:
+        bm = bmesh.new()
+        bm.from_mesh(o.data)
+        vx = [v.co.x for v in bm.verts]
+        if vx:
+            x = min(vx) + step
+            while x < max(vx) - 1e-4:
+                geom = bm.verts[:] + bm.edges[:] + bm.faces[:]
+                bmesh.ops.bisect_plane(bm, geom=geom, plane_co=(x, 0.0, 0.0), plane_no=(1.0, 0.0, 0.0))
+                x += step
+        for v in bm.verts:
+            d = v.co.y - y_front - recess
+            x = v.co.x
+            nx, ny = normal(x)
+            v.co.x, v.co.y = x + nx * d, curve(x) + ny * d
+        bm.to_mesh(o.data)
+        bm.free()
+        o.data.update()
+
+
+def _cut_curved_openings(cuts: list[dict[str, Any]]) -> int:
+    """Boolean-cut each curved-front window's opening through the shell panels of its balcony."""
+    coll = bpy.data.collections.get("Balconies")
+    if coll is None or not cuts:
+        return 0
+    n = 0
+    for cut in cuts:
+        w = cut["win"]
+        x0, x1 = w.get("open_x0", w["ox"]), w.get("open_x1", w["ox"] + w["ww"])
+        z0, z1 = w.get("open_z0", w["oz"]), w.get("open_z1", w["oz"] + w["hh"])
+        prefix = f"Balc_{int(cut['frame']['index'])}_"
+        for obj in list(coll.all_objects):
+            if not obj.name.startswith(prefix) or "_wall_" not in obj.name or obj.type != "MESH":
+                continue
+            bx = [(obj.matrix_world @ v.co).x for v in obj.data.vertices]
+            if not bx or max(bx) < x0 or min(bx) > x1:
+                continue
+            # box cutter from 0.08 m outside the shell to past its back face, bent like the window so the
+            # opening's reveals are normal to the curve
+            pad, depth = 0.005, ENCLOSED_WALL_M + 0.16
+            if w.get("outline"):  # arched etc.: the window's padded outline
+                cutter = make_prism("OpeningCutter", w["outline"], -depth, 0.0, coll)
+            else:
+                bpy.ops.mesh.primitive_cube_add(location=(0.5 * (x0 + x1), -depth / 2.0, 0.5 * (z0 + z1)))
+                cutter = bpy.context.active_object
+                cutter.name = "OpeningCutter"
+                cutter.scale = ((x1 - x0) / 2.0 + pad, depth / 2.0, (z1 - z0) / 2.0 + pad)
+                bpy.ops.object.transform_apply(scale=True)
+            _bend_to_curve([cutter], cut["frame"], -0.08)
+            _apply_cutter(obj, cutter)
+            n += 1
+    return n
+
+
+def _glaze_railing_panels() -> int:
+    """See-through material on balcony railing infill panels (``surface_panel``, which ``glass`` aliases to).
+
+    ``balcony_compile`` builds them with the opaque ``railing`` material; mullions and rails keep it.
+    """
+    coll = bpy.data.collections.get("Balconies")
+    mat = MATS.get("railing_glass")
+    if coll is None or mat is None:
+        return 0
+    n = 0
+    for obj in coll.all_objects:
+        if "_panel_" in obj.name:
+            assign_mat(obj, mat)
+            n += 1
+    return n
+
+
 def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
     """Compile wall + all placed windows into the current Blender scene."""
     if spec.get("type") != "facade":
@@ -179,7 +356,7 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
     bottom_m = float(pp.get("bottom_margin_ratio", 0.14))
     # Recess into the opening (toward -Y). Must stay within a cut hole —
     # without openings, any recess buries windows inside the solid wall.
-    recess = float(pp.get("recess", 0.01))
+    recess = float(os.environ.get("FACADE_DSL_RECESS") or pp.get("recess", 0.01))
     wall_depth = float((spec.get("wall") or {}).get("depth", 0.42))
     front_y = float((spec.get("wall") or {}).get("base_front_y", 0.0))
 
@@ -214,115 +391,114 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
         c = 0
         floor_id = int(floor_ids[r]) if r < len(floor_ids) else r
         while c < n_cols:
-            tok = row[c] if c < len(row) else None
             span = 1
             if c < len(span_row) and span_row[c]:
                 span = max(1, int(span_row[c]))
-            if tok in EMPTY_TOKENS:
+            toks = cell_tokens(row[c] if c < len(row) else None)  # several when items are stacked in the cell
+            if not toks:
                 c += max(1, span)
                 continue
-            tok = str(tok)
-            is_door = tok in doors or is_door_type_token(tok)
-            if is_door and tok not in doors:
-                print(f"warn: unknown door type {tok!r} at ({r},{c})")
-                c += span
-                continue
-            if not is_door and tok not in windows:
-                print(f"warn: unknown window type {tok!r} at ({r},{c})")
-                c += span
-                continue
-            if span > 1:
-                cell = get_cell_span(spec, r, c, c + span, mirror_x=mirror_x)
-            else:
-                cell = get_cell(spec, r, c, mirror_x=mirror_x)
-            fit_row = placement_fit[r] if r < len(placement_fit) else []
-            fit = fit_row[c] if c < len(fit_row) and fit_row[c] else {}
-            inst = inst_map.get((floor_id, c))
+            for slot, tok in enumerate(toks):
+                is_door = tok in doors or is_door_type_token(tok)
+                if is_door and tok not in doors:
+                    print(f"warn: unknown door type {tok!r} at ({r},{c})")
+                    continue
+                if not is_door and tok not in windows:
+                    print(f"warn: unknown window type {tok!r} at ({r},{c})")
+                    continue
+                if span > 1:
+                    cell = get_cell_span(spec, r, c, c + span, mirror_x=mirror_x)
+                else:
+                    cell = get_cell(spec, r, c, mirror_x=mirror_x)
+                fit_row = placement_fit[r] if r < len(placement_fit) else []
+                fit = cell_fit(fit_row[c], slot) if c < len(fit_row) else {}
+                inst = inst_map.get((floor_id, c, slot))
 
-            if is_door:
-                door_def = dict(doors[tok])
-                # door types can mix rectangular and arched members
-                if inst is not None and inst.get("kind") == "door" and inst.get("shape"):
-                    door_def["shape"] = inst["shape"]
-                    door_def["arch_rise_ratio"] = float(inst.get("arch_rise_ratio") or 0.0)
+                if is_door:
+                    door_def = dict(doors[tok])
+                    # door types can mix rectangular and arched members
+                    if inst is not None and inst.get("kind") == "door" and inst.get("shape"):
+                        door_def["shape"] = inst["shape"]
+                        door_def["arch_rise_ratio"] = float(inst.get("arch_rise_ratio") or 0.0)
+                    seg_fit = (
+                        placement_fit_for_instance(spec, inst, r, c)
+                        if inst is not None
+                        else fit
+                    )
+                    if seg_fit:
+                        ox, oz, ww, hh = world_placement_in_cell(cell, seg_fit)
+                    else:
+                        ratios = type_ratios.get(tok) or {}
+                        wr = float(fit.get("width_ratio", ratios.get("width_ratio", default_wr)))
+                        hr = float(fit.get("height_ratio", ratios.get("height_ratio", default_hr)))
+                        ww = max(0.25, float(cell["w"]) * wr)
+                        hh = max(0.35, float(cell["h"]) * hr)
+                        cx_ratio = cell_cx_ratio_world(cell, float(fit.get("cx_ratio", 0.5)))
+                        cy_ratio = float(fit.get("cy_ratio", 0.5))
+                        ox = float(cell["x0"]) + cx_ratio * float(cell["w"]) - ww / 2.0
+                        cz = float(cell["z1"]) - cy_ratio * float(cell["h"])
+                        oz = cz - hh / 2.0
+                    oy = front_y - max(0.0, recess)
+                    open_to_floor = 0.0 if floor_id == ground_floor_id else oz
+                    open_x0, open_z0, open_x1, open_z1 = door_opening_bounds(
+                        ox=ox, oz=oz, ww=ww, hh=hh, open_to_floor_z=open_to_floor
+                    )
+                    planned.append(
+                        {
+                            "r": r,
+                            "c": c,
+                            "tok": tok,
+                        "slot": slot,
+                            "kind": "door",
+                            "door_def": door_def,
+                            "ox": ox,
+                            "oy": oy,
+                            "oz": oz,
+                            "ww": ww,
+                            "hh": hh,
+                            "open_x0": open_x0,
+                            "open_x1": open_x1,
+                            "open_z0": open_z0,
+                            "open_z1": open_z1,
+                        }
+                    )
+                    continue
+
+                ratios = type_ratios.get(tok) or {}
                 seg_fit = (
                     placement_fit_for_instance(spec, inst, r, c)
                     if inst is not None
                     else fit
                 )
-                if seg_fit:
-                    ox, oz, ww, hh = world_placement_in_cell(cell, seg_fit)
-                else:
-                    ratios = type_ratios.get(tok) or {}
-                    wr = float(fit.get("width_ratio", ratios.get("width_ratio", default_wr)))
-                    hr = float(fit.get("height_ratio", ratios.get("height_ratio", default_hr)))
-                    ww = max(0.25, float(cell["w"]) * wr)
-                    hh = max(0.35, float(cell["h"]) * hr)
-                    cx_ratio = cell_cx_ratio_world(cell, float(fit.get("cx_ratio", 0.5)))
-                    cy_ratio = float(fit.get("cy_ratio", 0.5))
-                    ox = float(cell["x0"]) + cx_ratio * float(cell["w"]) - ww / 2.0
-                    cz = float(cell["z1"]) - cy_ratio * float(cell["h"])
-                    oz = cz - hh / 2.0
-                oy = front_y - max(0.0, recess)
-                open_to_floor = 0.0 if floor_id == ground_floor_id else oz
-                open_x0, open_z0, open_x1, open_z1 = door_opening_bounds(
-                    ox=ox, oz=oz, ww=ww, hh=hh, open_to_floor_z=open_to_floor
-                )
+                if not seg_fit:
+                    seg_fit = {
+                        "width_ratio": float(
+                            fit.get("width_ratio", ratios.get("width_ratio", default_wr))
+                        ),
+                        "height_ratio": float(
+                            fit.get("height_ratio", ratios.get("height_ratio", default_hr))
+                        ),
+                        "cx_ratio": float(fit.get("cx_ratio", 0.5)),
+                        "cy_ratio": float(fit.get("cy_ratio", 0.5)),
+                    }
+                ox, oz, ww, hh = world_placement_in_cell(cell, seg_fit)
                 planned.append(
                     {
                         "r": r,
                         "c": c,
                         "tok": tok,
-                        "kind": "door",
-                        "door_def": door_def,
+                        "slot": slot,
+                        "kind": "window",
+                        "span": span,
+                        "cell": cell,
                         "ox": ox,
-                        "oy": oy,
+                        "oy": front_y - max(0.0, recess),
                         "oz": oz,
                         "ww": ww,
                         "hh": hh,
-                        "open_x0": open_x0,
-                        "open_x1": open_x1,
-                        "open_z0": open_z0,
-                        "open_z1": open_z1,
+                        "seg_fit": seg_fit,
                     }
                 )
-                c += span
-                continue
-
-            ratios = type_ratios.get(tok) or {}
-            seg_fit = (
-                placement_fit_for_instance(spec, inst, r, c)
-                if inst is not None
-                else fit
-            )
-            if not seg_fit:
-                seg_fit = {
-                    "width_ratio": float(
-                        fit.get("width_ratio", ratios.get("width_ratio", default_wr))
-                    ),
-                    "height_ratio": float(
-                        fit.get("height_ratio", ratios.get("height_ratio", default_hr))
-                    ),
-                    "cx_ratio": float(fit.get("cx_ratio", 0.5)),
-                    "cy_ratio": float(fit.get("cy_ratio", 0.5)),
-                }
-            ox, oz, ww, hh = world_placement_in_cell(cell, seg_fit)
-            planned.append(
-                {
-                    "r": r,
-                    "c": c,
-                    "tok": tok,
-                    "kind": "window",
-                    "span": span,
-                    "cell": cell,
-                    "ox": ox,
-                    "oy": front_y - max(0.0, recess),
-                    "oz": oz,
-                    "ww": ww,
-                    "hh": hh,
-                    "seg_fit": seg_fit,
-                }
-            )
             c += span
 
     planned_wins = [p for p in planned if p["kind"] == "window"]
@@ -333,6 +509,26 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
         )
     if bool(pp.get("align_type_bottom", True)):
         align_type_bottoms(planned_wins)
+    if align_columns_enabled(pp):
+        align_column_centers(planned_wins, tol=float(pp.get("align_column_tol", 0.25)))
+
+    # balconies (hiroo/balcony-pipeline hooks), after type sizing and bay alignment: windows behind an enclosed
+    # balcony's glass are dropped; windows on a balcony front move onto it (the balcony mesh cuts their opening)
+    frames = balcony_frames(spec) if spec.get("balcony_placement") else []
+    behind_glass = windows_behind_glass(frames, planned_wins)
+    if behind_glass:
+        drop_ids = {id(planned_wins[i]) for i in behind_glass}
+        planned = [p for p in planned if id(p) not in drop_ids]
+        planned_wins = [p for i, p in enumerate(planned_wins) if i not in behind_glass]
+    flat_targets = front_window_targets(frames, planned_wins)
+    for wi, (fi, (ox, oz, ww, hh)) in flat_targets.items():
+        p = planned_wins[wi]
+        p.update(ox=ox, oz=oz, ww=ww, hh=hh, on_balcony=fi)
+        p["oy"] = balcony_front_y(frames[fi]) - max(0.0, recess)
+    # punched (wall-skin) enclosed balconies with a curved front (circle plan): front_window_targets only handles a
+    # flat front, so place those windows here, just inside the curved shell, and cut their openings after the
+    # balcony meshes exist (see _cut_curved_openings)
+    curved_cuts = _curved_front_targets(frames, planned_wins, set(flat_targets), recess)
 
     for p in planned:
         if p["kind"] != "window":
@@ -352,7 +548,18 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
                 [(p["ox"] + q.x, p["oz"] + q.y) for q in contour_for_region(root)]
             )
 
+    front_openings: dict[int, list[dict[str, Any]]] = {}
+    for p in planned_wins:
+        if p.get("on_balcony") is None:
+            continue
+        front_openings.setdefault(int(p["on_balcony"]), []).append(
+            {"x0": p["open_x0"], "x1": p["open_x1"], "z0": p["open_z0"], "z1": p["open_z1"],
+             "outline": p.get("outline")}
+        )
+
     for p in planned:
+        if p.get("on_balcony") is not None:
+            continue
         if p.get("kind") == "door":
             dd = p.get("door_def") or {}
             top_z = p["oz"] + max(0.35, p["hh"])
@@ -394,7 +601,7 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
         if p.get("kind") == "door":
             dd = p.get("door_def") or {}
             build_default_door(
-                name_prefix=f"Door_r{p['r']}_c{p['c']}_{p['tok']}",
+                name_prefix=f"Door_r{p['r']}_c{p['c']}{_slot_suffix(p)}_{p['tok']}",
                 parent_collection=doors_coll,
                 origin=(p["ox"], p["oy"], p["oz"]),
                 width=p["ww"],
@@ -406,24 +613,41 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
             )
             n_doors += 1
             continue
-        prefix = f"Win_r{p['r']}_c{p['c']}_{p['tok']}"
+        prefix = f"Win_r{p['r']}_c{p['c']}{_slot_suffix(p)}_{p['tok']}"
+        before = set(bpy.data.objects)
         build_blender_scene(
             p["ctx"],
             name_prefix=prefix,
             parent_collection=windows_coll,
             origin=(p["ox"], p["oy"], p["oz"]),
         )
+        bend = next((c for c in curved_cuts if c["win"] is p), None)
+        if bend is not None:
+            _bend_to_curve([o for o in bpy.data.objects if o not in before], bend["frame"], bend["recess"])
         n_placed += 1
         n_segments += len(p["ctx"].segments)
 
+    n_balc = add_balcony_meshes(
+        spec,
+        wall_obj,
+        facade_coll,
+        cut_opening=_cut_opening,
+        cut_opening_poly=_cut_opening_poly,
+        frames=frames or None,
+        front_openings=front_openings,
+    )
+    _glaze_railing_panels()
+    _cut_curved_openings(curved_cuts)
+
     bounds = (-total_w / 2.0, total_w / 2.0, 0.0, total_h)
     print(
-        f"compiled façade: {n_placed} windows, {n_doors} doors, {n_segments} muntin segments, "
+        f"compiled façade: {n_placed} windows, {n_doors} doors, {n_balc} balconies, {n_segments} muntin segments, "
         f"size={total_w:.2f}×{total_h:.2f}m"
     )
     return {
         "n_windows": n_placed,
         "n_doors": n_doors,
+        "n_balconies": n_balc,
         "n_segments": n_segments,
         "total_w": total_w,
         "total_h": total_h,

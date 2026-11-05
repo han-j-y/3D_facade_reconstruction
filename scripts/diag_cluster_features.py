@@ -153,7 +153,7 @@ def main() -> None:
         spatial, meta = rp.patch.facade_patch_spatial(dino, photo, device=device, max_side=896)
         feats["dino"] = rp.patch.roi_pool_patches(spatial, boxes, meta)
         with pred.pkgs:
-            fps = [rp.structure_fingerprint(u["structure_ir_member"]) for u in units]
+            fps = [rp.structure_fingerprint(u.get("pred_ir", u.get("structure_ir_member"))) for u in units]
         feats["pred"] = np.array([fps.index(f) for f in fps])
         matched = []
         for r in rows:

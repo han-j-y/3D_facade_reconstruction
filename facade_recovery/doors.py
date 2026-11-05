@@ -32,10 +32,19 @@ def filter_door_boxes(
     image_size: tuple[int, int],
     min_y_frac: float,
     iou_nms: float,
+    max_inside_window: float = 0.5,
 ) -> list[dict[str, Any]]:
     """Keep ground-biased door detections that do not overlap windows; a door lying >= 0.8 inside a larger kept
-    door (one leaf of a double door, cmp_b0089) is dropped."""
+    door (one leaf of a double door, cmp_b0089) is dropped. A door lying more than ``max_inside_window`` (share of
+    its own area) inside a window is dropped too: a glazed door within a shopfront or balcony opening, which the
+    window already represents (the DSL has no door inside a window; kept, it shrank the window's cell, t106)."""
     iw, ih = image_size
+
+    def _inside(a: list[int], b: list[int]) -> float:
+        ix = max(0, min(a[2], b[2]) - max(a[0], b[0]))
+        iy = max(0, min(a[3], b[3]) - max(a[1], b[1]))
+        return ix * iy / max(1.0, float((a[2] - a[0]) * (a[3] - a[1])))
+
     kept: list[dict[str, Any]] = []
     for d in door_boxes:
         x0, y0, x1, y1 = d["box_xyxy"]
@@ -46,6 +55,8 @@ def filter_door_boxes(
         if bh / bw < 1.05:
             continue
         if any(box_iou(d["box_xyxy"], wb) >= iou_nms for wb in window_boxes):
+            continue
+        if any(_inside(d["box_xyxy"], wb) > max_inside_window for wb in window_boxes):
             continue
         kept.append(d)
     kept.sort(key=lambda r: float(r.get("score", 0.0)), reverse=True)

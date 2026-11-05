@@ -165,8 +165,12 @@ def merge_adjacent_boxes(
     cross_bay_gap: float = 1.0,
     structural_col: np.ndarray | None = None,
     adjacent: bool = False,
+    mode: str = "window",
 ) -> tuple[list[list[int]], list[list[int]], np.ndarray, np.ndarray]:
     """Merge pane faces of one opening; keep separate columns apart.
+
+    ``mode="balcony"`` (balcony_pipeline): keep neighbours separate and merge only nested / IoU duplicates
+    (no extruded, tight or cross-bay gap merges). ``"window"`` keeps the arguments as given.
 
     Phase 1 — nested / high-IoU (no floor gate): full opening + inner pane.
     Phase 2 — close-by on the same floor only (if ``adjacent=True``):
@@ -179,6 +183,10 @@ def merge_adjacent_boxes(
     large ``extruded_gap`` used for projecting bays, because structural columns
     can span multiple side-by-side windows on one floor.
     """
+    if mode == "balcony":
+        extruded_gap = tight_gap = cross_bay_gap = 0.0
+    elif mode != "window":
+        raise ValueError(f"merge mode {mode!r}: expected 'window' or 'balcony'")
     n = len(boxes)
     floor = lay.assign_bays(cy, row_tol)
     bay = lay.assign_bays(cx, col_tol)

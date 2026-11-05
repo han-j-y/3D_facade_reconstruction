@@ -42,6 +42,20 @@ def assign_door_floors(W: np.ndarray, D: np.ndarray, floor: np.ndarray) -> np.nd
     return np.asarray(out, dtype=np.int32)
 
 
+def stacked_intervals(B: np.ndarray, stack_overlap: float = 0.5) -> list[tuple[float, float]]:
+    """x-intervals of one floor's items left → right; items overlapping in x by more than ``stack_overlap`` of the
+    narrower one are merged (stacked: they share a bay)."""
+    out: list[list[float]] = []
+    for x0, x1 in sorted((float(b[0]), float(b[2])) for b in B):
+        if out:
+            p = out[-1]
+            if min(p[1], x1) - max(p[0], x0) > stack_overlap * min(p[1] - p[0], x1 - x0):
+                p[1] = max(p[1], x1)
+                continue
+        out.append([x0, x1])
+    return [(a, b) for a, b in out]
+
+
 def build_floor_bays(
     boxes: list,
     iw: int,
@@ -49,6 +63,7 @@ def build_floor_bays(
     *,
     doors: list = (),
     row_tol: float = 0.055,
+    stack_overlap: float = 0.5,
 ) -> dict[str, Any]:
     """Per-floor bay lines for window ``boxes`` and ``doors`` (xyxy px).
 
@@ -68,13 +83,16 @@ def build_floor_bays(
     nf = int(floor.max()) + 1
     rows = [sorted(np.where(floor == f)[0], key=lambda i: B[i, 0] + B[i, 2]) for f in range(nf)]
 
-    # 1) each floor's gaps between neighbouring items are x-ranges (overlapping items: a zero-width gap at the
-    #    middle of the overlap); gaps of different floors with a common x-range form one line at the centre of
-    #    that range, swept by gap centre with each floor at most once per line
+    # 1) each floor's gaps between neighbouring items are x-ranges; gaps of different floors with a common x-range
+    #    form one line at the centre of that range, swept by gap centre with each floor at most once per line.
+    #    Items overlapping in x by more than ``stack_overlap`` of the narrower one are stacked (transom over a
+    #    window, window over a door) and form one x-interval, so no line runs through them; neighbours overlapping
+    #    less (touching boxes) get a zero-width gap at the middle of the overlap.
     gaps = []
     for f in range(nf):
-        for a, b in zip(rows[f], rows[f][1:]):
-            g0, g1 = B[a, 2], B[b, 0]
+        iv = stacked_intervals(B[rows[f]], stack_overlap)
+        for (_, a1), (b0, _) in zip(iv, iv[1:]):
+            g0, g1 = a1, b0
             if g1 <= g0:
                 g0 = g1 = 0.5 * (g0 + g1)
             gaps.append((g0, g1, f))
@@ -236,7 +254,10 @@ def apply_floor_bays(dsl: dict[str, Any], *, storey_m: float = 3.0, row_tol: flo
     Columns are the union of all floors' bay lines inside the facade extent (item envelope + half the typical
     gap); each floor bay spans the columns between its lines. Floors / bays carry ``h_m`` / ``w_m`` so the
     compiler keeps thin union columns as they are (it widens any column under 5% of the facade otherwise).
-    Instance ``floor`` / ``bay`` / ``colspan`` are rewritten; the per-floor bays go to ``meta.floor_bays``."""
+    Instance ``floor`` / ``bay`` / ``colspan`` are rewritten; the per-floor bays go to ``meta.floor_bays`` as
+    ``{c0, c1, item}`` (x span = ``columns_xy[c0][0]`` .. ``columns_xy[c1 - 1][1]``, not stored twice). Items
+    stacked in one bay (see :func:`build_floor_bays`) are all kept: the placement cell holds their tokens as a list,
+    top → bottom, and each instance gets ``slot`` = its index in that list."""
     dsl = copy.deepcopy(dsl)
     iw, ih = dsl["meta"]["image_size"]
     wins = [u for u in dsl["instances"] if u.get("kind", "window") == "window"]
@@ -265,7 +286,7 @@ def apply_floor_bays(dsl: dict[str, Any], *, storey_m: float = 3.0, row_tol: flo
     def col_of(x: float) -> int:
         return int(np.argmin([abs(x - b) for b in bounds]))
 
-    placement: list[list[str | None]] = [[None] * len(cols) for _ in range(nf)]
+    placement: list[list[str | list[str] | None]] = [[None] * len(cols) for _ in range(nf)]
     spans = [[1] * len(cols) for _ in range(nf)]
     placed, floor_bays = [], []
     for f in range(nf):
@@ -273,16 +294,25 @@ def apply_floor_bays(dsl: dict[str, Any], *, storey_m: float = 3.0, row_tol: flo
         row = []
         for b0, b1 in zip(fl[:-1], fl[1:]):
             c0, c1 = col_of(b0), col_of(b1)
-            here = [int(i) for i in np.where(floor == f)[0] if b0 <= 0.5 * (B[i, 0] + B[i, 2]) < b1]
-            row.append(dict(x0=round(b0, 1), x1=round(b1, 1), c0=c0, c1=c1,
-                            item=("door" if is_door[here[0]] else "window") if here else "empty"))
+            # every item of the bay, top → bottom (stacked items share the bay: one token, or a list of tokens)
+            here = sorted((int(i) for i in np.where(floor == f)[0] if b0 <= 0.5 * (B[i, 0] + B[i, 2]) < b1),
+                          key=lambda i: B[i, 1])
+            kinds = ["door" if is_door[i] else "window" for i in here]
+            row.append(dict(c0=c0, c1=c1,  # x span = columns_xy[c0][0] .. columns_xy[c1 - 1][1]
+                            item=(kinds[0] if len(kinds) == 1 else "+".join(kinds)) if here else "empty"))
             if not here:
                 continue
-            u = items[here[0]]
-            tok = str(u.get("name") or "d00") if is_door[here[0]] else f"win_type_{int(u['type_id']):02d}"
-            u.update(floor=f, bay=c0, colspan=c1 - c0)
-            placed.append(u)
-            placement[f][c0] = tok
+            toks = []
+            for slot, i in enumerate(here):
+                u = items[i]
+                toks.append(str(u.get("name") or "d00") if is_door[i] else f"win_type_{int(u['type_id']):02d}")
+                u.update(floor=f, bay=c0, colspan=c1 - c0)
+                if len(here) > 1:
+                    u["slot"] = slot
+                else:
+                    u.pop("slot", None)
+                placed.append(u)
+            placement[f][c0] = toks[0] if len(toks) == 1 else toks
             spans[f][c0] = c1 - c0
             for c in range(c0 + 1, c1):
                 spans[f][c] = 0

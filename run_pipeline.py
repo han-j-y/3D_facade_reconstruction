@@ -80,8 +80,11 @@ from facade_recovery.doors import (  # noqa: E402
     filter_door_boxes,
 )
 from facade_recovery.floor_bays import apply_floor_bays, drop_side_facades  # noqa: E402
-from facade_recovery.local_sym import OCCLUDER_PROMPTS, local_sym_vote  # noqa: E402
-from facade_recovery.sym_gate import gate_cluster, mirror_partners, refine_axis, two_tier  # noqa: E402
+from facade_recovery.type_fit import fit_types  # noqa: E402
+from facade_recovery.structure_vote import structure_fingerprint, vote_cluster_ir  # noqa: E402,F401
+from facade_recovery.fold_gate import fold_gate, outline_class  # noqa: E402
+from facade_recovery.local_sym import OCCLUDER_PROMPTS, cut_sides, local_pairs, local_sym_vote, occluded_sides  # noqa: E402
+from facade_recovery.sym_gate import gate_cluster, mirror_partners, mustlink_cluster, refine_axis, two_tier  # noqa: E402
 from facade_recovery.paths import (  # noqa: E402
     default_structure_ckpt,
     default_train_up,
@@ -202,6 +205,23 @@ def parse_args() -> argparse.Namespace:
         "bay windows, slivers). 0.35 = 1st percentile of GT windows on the cmp_windows train split. 0 = off",
     )
     ap.add_argument("--max-side-frac", type=float, default=0.55)
+    ap.add_argument(
+        "--type-fit",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="after the floor-bay grid, move a window out of a type whose rendered size makes it overlap a neighbour "
+        "or stick out of its (sub-)cell beyond its photo box (facade_recovery/type_fit.py): to the closest other "
+        "type with the same structure that fits, else a type of its own",
+    )
+    ap.add_argument(
+        "--align-columns",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="render each bay's windows (same start column and span) on one centre x, their median "
+        "(meta.align_column_center; floor_bays grid only). Off: every window keeps its photo centre",
+    )
+    ap.add_argument("--type-fit-overlap", type=float, default=0.01, help="overlap share of the smaller box")
+    ap.add_argument("--type-fit-excess", type=float, default=0.10, help="excess share of the window size")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--dino", default="dinov2_vits14")
     ap.add_argument("--facade-max-side", type=int, default=896)
@@ -225,6 +245,36 @@ def parse_args() -> argparse.Namespace:
         default=0.1,
         help="gate: refuse a split that separates more than this fraction of the node's mirror pairs",
     )
+    ap.add_argument(
+        "--gate-mode",
+        choices=("fold", "freeze"),
+        default="fold",
+        help="gate: fold (default) = floor-wise fold symmetry pairs + vertical merges + box groups merged by matching "
+        "links, then the structure split over must-link components (facade_recovery/fold_gate.py); freeze = the "
+        "previous global-axis gate (a split breaking > --gate-eps of the mirror pairs is refused)",
+    )
+    ap.add_argument("--fold-pairs", action=argparse.BooleanOptionalAction, default=True,
+                    help="fold gate: horizontal fold-symmetry pairs as must-links (ablation: --no-fold-pairs)")
+    ap.add_argument("--vertical-merge", action=argparse.BooleanOptionalAction, default=True,
+                    help="fold gate: merge aligned adjacent-floor components (ablation: --no-vertical-merge)")
+    ap.add_argument("--cross-group", action=argparse.BooleanOptionalAction, default=True,
+                    help="fold gate: links with matching outlines may merge box groups (ablation: --no-cross-group)")
+    ap.add_argument("--structure-split", action=argparse.BooleanOptionalAction, default=True,
+                    help="fold gate: split must-link components with the structure descriptor tree "
+                    "(ablation: --no-structure-split, every component is a type)")
+    ap.add_argument("--fold-size-ratio", type=float, default=1.3,
+                    help="fold gate: visible extents of a mirror pair within this ratio (a hidden side is a lower bound)")
+    ap.add_argument(
+        "--gate-pairs",
+        choices=("global", "local"),
+        default="global",
+        help="gate: global = mirror pairs about the facade axis, a split may break at most --gate-eps of them "
+        "(a refused split keeps the whole node); local = pairs over all local symmetry axes whose sizes can match "
+        "(visible extents within --gate-pair-size-tol, a hidden side is a lower bound), always kept together "
+        "(facade_recovery/sym_gate.mustlink_cluster)",
+    )
+    ap.add_argument("--gate-pair-size-tol", type=float, default=1.0 / 3.0,
+                    help="gate --gate-pairs local: visible extents may differ by this fraction of the larger one")
     ap.add_argument(
         "--gate-feature",
         choices=("z", "heads"),
@@ -684,7 +734,15 @@ def draw_excluded(
 
 def load_from_index(index_path: Path) -> tuple[Image.Image, list[dict[str, Any]], dict]:
     index = json.loads(index_path.read_text())
-    facade = Image.open(index["facade_path"]).convert("RGB")
+    facade_path = Path(index["facade_path"])
+    if not facade_path.is_file():
+        # Older cached indices sometimes stored a workspace-relative path such
+        # as arch/experiments/data/...; recover it from the canonical base set.
+        fallback = ROOT.parent / "data" / "facades" / "base" / facade_path.name
+        if fallback.is_file():
+            facade_path = fallback
+            index["facade_path"] = str(fallback)
+    facade = Image.open(facade_path).convert("RGB")
     windows = []
     for i, w in enumerate(index["windows"]):
         box = [int(v) for v in w["box_xyxy"]]
@@ -1340,106 +1398,6 @@ class TreeStructurePredictor:
         return self._result(toks, key, tree)
 
 
-def structure_fingerprint(ir: dict[str, Any]) -> str:
-    """Stable key for voting (shape / pane topology; no continuous floats)."""
-    from window_ast.structure import structure_view
-
-    return json.dumps(structure_view(ir), sort_keys=True, separators=(",", ":"))
-
-
-def vote_cluster_ir(
-    member_preds: list[dict[str, Any]],
-    *,
-    prefer_unit_id: int | None = None,
-) -> dict[str, Any]:
-    """Majority-vote structure among cluster members; tie → prefer_unit / first.
-
-    ``member_preds`` items: ``{unit_id, tokens?, ir?, parse_error?}``.
-    Returns ``{structure_ir, structure_tokens, vote, members}``.
-    """
-    valid: list[dict[str, Any]] = []
-    for p in member_preds:
-        ir = p.get("ir")
-        if not isinstance(ir, dict) or p.get("parse_error"):
-            continue
-        try:
-            key = structure_fingerprint(ir)
-        except Exception:
-            continue
-        valid.append({**p, "structure_key": key})
-
-    tallies: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for p in valid:
-        tallies[p["structure_key"]].append(p)
-
-    vote_summary = {
-        "n_members": len(member_preds),
-        "n_valid": len(valid),
-        "n_unique": len(tallies),
-        "counts": {
-            k: len(v) for k, v in sorted(tallies.items(), key=lambda kv: -len(kv[1]))
-        },
-    }
-
-    if not valid:
-        return {
-            "structure_ir": None,
-            "structure_tokens": None,
-            "vote": {**vote_summary, "winner_key": None, "winner_count": 0},
-            "members": member_preds,
-        }
-
-    # majority; ties → candidate containing prefer_unit_id, else largest then first
-    ranked = sorted(tallies.items(), key=lambda kv: (-len(kv[1]), kv[0]))
-    best_count = len(ranked[0][1])
-    tied = [k for k, vs in ranked if len(vs) == best_count]
-    winner_key = tied[0]
-    if prefer_unit_id is not None and len(tied) > 1:
-        for k in tied:
-            if any(int(p["unit_id"]) == int(prefer_unit_id) for p in tallies[k]):
-                winner_key = k
-                break
-    winners = tallies[winner_key]
-    chosen = winners[0]
-    if prefer_unit_id is not None:
-        for p in winners:
-            if int(p["unit_id"]) == int(prefer_unit_id):
-                chosen = p
-                break
-
-    members_out: list[dict[str, Any]] = []
-    for p in member_preds:
-        key = None
-        ir = p.get("ir")
-        if isinstance(ir, dict) and not p.get("parse_error"):
-            try:
-                key = structure_fingerprint(ir)
-            except Exception:
-                key = None
-        members_out.append(
-            {
-                "unit_id": int(p["unit_id"]),
-                "structure_key": key,
-                "tokens": p.get("tokens"),
-                "parse_error": p.get("parse_error"),
-                "agrees_with_vote": key is not None and key == winner_key,
-            }
-        )
-
-    return {
-        "structure_ir": chosen.get("ir"),
-        "structure_tokens": chosen.get("tokens"),
-        "vote": {
-            **vote_summary,
-            "winner_key": winner_key,
-            "winner_count": best_count,
-            "winner_unit_id": int(chosen["unit_id"]),
-            "unanimous": best_count == len(valid) and len(tallies) == 1,
-        },
-        "members": members_out,
-    }
-
-
 def joint_cluster_ir(
     predictor: TreeStructurePredictor,
     inputs: list[tuple[Path, list[float] | None, float]],
@@ -1692,6 +1650,61 @@ def render_overview(
     canvas.save(out_path)
 
 
+def _fold_gate_labels(
+    facade: Image.Image,
+    clustered: dict[str, Any],
+    struct_predictor: TreeStructurePredictor,
+    args: argparse.Namespace,
+    out_dir: Path,
+    feat: np.ndarray,
+    device: torch.device,
+) -> np.ndarray:
+    """Labels of ``--gate-mode fold`` (facade_recovery/fold_gate.py). Needs, at gate time, each window's hidden sides
+    (the local-symmetry occluder mask, cached for the later local-symmetry step) and its predicted outline (each
+    window's own structure prediction on its box crop, cached in ``clustered['_pred_cache']`` and reused by the
+    structure vote)."""
+    boxes = [list(map(float, b)) for b in clustered["merged_boxes"]]
+    iw, ih = facade.size
+    occ_mask = clustered.get("_occluder_mask")
+    if occ_mask is None:
+        prompts = [p.strip() for p in args.local_sym_occluders.split(",") if p.strip()]
+        occ_mask = detect_object_mask(facade, prompts=prompts, threshold=args.local_sym_occluder_threshold, device=device)
+        clustered["_occluder_mask"] = occ_mask
+    # hidden sides as in local_sym_vote: windows mostly on an occluder take no part (no hidden sides), the column-wise
+    # cut is over the remaining windows
+    on = [occ_mask is not None and float(occ_mask[int(b[1]):int(b[3]), int(b[0]):int(b[2])].mean()) >= 0.5 for b in boxes]
+    keep = [i for i in range(len(boxes)) if not on[i]]
+    sub = [boxes[i] for i in keep]
+    occ = [set() for _ in boxes]
+    for k, o in zip(keep, cut_sides(sub, occluded_sides(sub, occ_mask, iw, ih)) if sub else []):
+        occ[k] = o
+    cache = clustered.setdefault("_pred_cache", {})
+    gate_crops = out_dir / "crops"
+    gate_crops.mkdir(parents=True, exist_ok=True)
+    outline = {}
+    for i, b in enumerate(boxes):
+        key = tuple(int(v) for v in b)
+        if key not in cache:
+            crop_p = gate_crops / f"gate_box_{i:03d}.png"
+            facade.crop(key).save(crop_p)
+            cache[key] = struct_predictor.predict(crop_p)
+        outline[i] = outline_class(cache[key].get("ir"))
+    floor = {i: int(f) for i, f in enumerate(clustered["floor"])}
+    labels, report = fold_gate(
+        boxes, np.asarray(clustered["labels_box"]), floor, np.asarray(feat), occ, outline,
+        thr=args.struct_split_thr, size_ratio=args.fold_size_ratio, use_fold=args.fold_pairs,
+        use_vertical=args.vertical_merge, use_cross=args.cross_group, use_split=args.structure_split,
+    )
+    report["occluded_sides"] = {i: sorted(o) for i, o in enumerate(occ) if o}
+    report["outline"] = {i: o for i, o in outline.items()}
+    report["index"] = "gate boxes (before the side-facade drop)"
+    clustered["fold_gate"] = report
+    print(f"gate (fold): {len(report['fold_axes'])} fold axes, {len(report['fold_pairs'])} fold pairs, "
+          f"{len(report['vertical_merges'])} vertical merges, box groups {report['box_groups']} -> "
+          f"{report['merged_groups']}, {len(set(labels.tolist()))} types")
+    return labels
+
+
 def gate_types(
     facade: Image.Image,
     facade_id: str,
@@ -1739,9 +1752,23 @@ def gate_types(
     feat = struct_predictor.describe(
         [facade.crop(tuple(int(v) for v in b)) for b in boxes], feature=args.gate_feature
     )
-    labels = gate_cluster(
-        feat, np.asarray(clustered["labels_box"]), partner, thr=args.struct_split_thr, eps=args.gate_eps
-    )
+    if args.gate_mode == "fold":
+        labels = _fold_gate_labels(facade, clustered, struct_predictor, args, axis_dir.parent, feat, device)
+    elif args.gate_pairs == "local":
+        prompts = [p.strip() for p in args.local_sym_occluders.split(",") if p.strip()]
+        occ_mask = detect_object_mask(facade, prompts=prompts, threshold=args.local_sym_occluder_threshold, device=device)
+        clustered["_occluder_mask"] = occ_mask
+        lp, lp_report = local_pairs(boxes, occ_mask, facade.size, size_tol=args.gate_pair_size_tol)
+        clustered["gate_local_pairs"] = {"index": "gate boxes (before the side-facade drop)",
+                                         "pairs": [list(p) for p in lp], "n_raw": lp_report["n_raw"],
+                                         "dropped_size": lp_report["dropped_size"],
+                                         "occluded_sides": lp_report["occluded_sides"]}
+        labels = mustlink_cluster(feat, np.asarray(clustered["labels_box"]), lp, thr=args.struct_split_thr)
+        print(f"gate: local pairs {len(lp)} kept / {lp_report['n_raw']} (size check), must-link")
+    else:
+        labels = gate_cluster(
+            feat, np.asarray(clustered["labels_box"]), partner, thr=args.struct_split_thr, eps=args.gate_eps
+        )
     print(
         f"gate: axis {summary['chosen_cx']:.1f} → {cx:.1f} ({summary['dual']['reason']}), "
         f"balconies={len(balconies)}, mirror-paired {sum(p is not None for p in partner)}/{len(boxes)}, "
@@ -2072,16 +2099,20 @@ def main() -> None:
     clustered["side_dropped"] = side_dropped
 
     local_sym_moves: list[list[int]] | None = None
+    local_sym_pairs: list[list[float]] | None = None  # [unit i, unit j, axis strength / strongest]
     if gate and args.local_sym:
         prompts = [p.strip() for p in args.local_sym_occluders.split(",") if p.strip()]
-        occ_mask = detect_object_mask(
-            facade, prompts=prompts, threshold=args.local_sym_occluder_threshold, device=device
-        )
+        occ_mask = clustered.get("_occluder_mask")  # already detected by --gate-pairs local
+        if occ_mask is None:
+            occ_mask = detect_object_mask(
+                facade, prompts=prompts, threshold=args.local_sym_occluder_threshold, device=device
+            )
         sym_feat = struct_predictor.describe(
             [facade.crop(tuple(int(v) for v in b)) for b in merged_boxes], feature="heads"
         )
         voted, report = local_sym_vote(merged_boxes, labels, sym_feat, occ_mask, facade.size)
         local_sym_moves = report["moves"]
+        local_sym_pairs = [[int(i), int(j), float(ax["strength"])] for ax in report["axes"] for i, j in ax["pairs"]]
         (out_dir / "local_sym.json").write_text(
             json.dumps({"before": labels.tolist(), "after": voted.tolist(), **report}, indent=1) + "\n",
             encoding="utf-8",
@@ -2160,13 +2191,10 @@ def main() -> None:
     units: list[dict[str, Any]] = []
     for ui, box in enumerate(merged_boxes):
         crop = facade.crop(tuple(box))
+        # crops are kept per unit; type membership lives only in type_id (it can change after the vote)
         crop_path = crops_dir / f"unit_{ui:03d}.png"
         crop.save(crop_path)
         tid = int(labels[ui])
-        type_crop_dir = types_dir / f"type_{tid:02d}"
-        type_crop_dir.mkdir(parents=True, exist_ok=True)
-        asset_path = type_crop_dir / f"unit_{ui:03d}.png"
-        shutil.copy(crop_path, asset_path)
         units.append(
             {
                 "unit_id": ui,
@@ -2176,7 +2204,7 @@ def main() -> None:
                 "colspan": int(clustered["colspan"][ui]),
                 "type_id": tid,
                 "member_raw_idxs": members[ui],
-                "asset": str(asset_path.relative_to(out_dir)),
+                "asset": str(crop_path.relative_to(out_dir)),
                 "is_exemplar": ui == medoids[tid],
             }
         )
@@ -2211,17 +2239,13 @@ def main() -> None:
     types_out: list[dict[str, Any]] = []
     for tid, med_i in sorted(medoids.items()):
         exemplar = units[med_i]
-        ex_path = out_dir / exemplar["asset"]
-        # canonical exemplar copy
-        canon = types_dir / f"type_{tid:02d}" / "exemplar.png"
-        shutil.copy(ex_path, canon)
         member_units = [u for u in units if int(u["type_id"]) == int(tid)]
         entry: dict[str, Any] = {
             "type_id": tid,
             "name": f"win_type_{tid:02d}",
             "n_instances": len(member_units),
             "exemplar_unit": med_i,
-            "exemplar_asset": str(canon.relative_to(out_dir)),
+            "exemplar_asset": exemplar["asset"],  # the exemplar unit's own crop
             "structure_ir": None,
         }
         if predictor is not None:
@@ -2253,16 +2277,18 @@ def main() -> None:
                         max(0, round(x0 - px)), max(0, round(y0 - py)),
                         min(facade.width, round(x1 + px)), min(facade.height, round(y1 + py)),
                     )).save(crop_p)
-                pred = predictor.predict(crop_p, **glass_kw)
+                cached = (clustered.get("_pred_cache") or {}).get(tuple(int(v) for v in u["box_xyxy"])) \
+                    if not glass_kw and not args.structure_pad else None
+                pred = cached if cached is not None else predictor.predict(crop_p, **glass_kw)
                 x0, y0, x1, y1 = u["box_xyxy"]
                 joint_inputs.append((crop_p, glass_kw.get("glass"), float((x1 - x0) * (y1 - y0))))
                 member_preds.append({"unit_id": int(u["unit_id"]), **pred})
-                # stash per-unit prediction on the instance
-                u["structure_tokens"] = pred.get("tokens")
+                # the unit's own prediction from its crop (the type's voted structure is in window_types)
+                u["pred_tokens"] = pred.get("tokens")
                 if pred.get("ir") is not None:
-                    u["structure_ir_member"] = pred["ir"]
+                    u["pred_ir"] = pred["ir"]
                 if "parse_error" in pred:
-                    u["structure_parse_error"] = pred["parse_error"]
+                    u["pred_parse_error"] = pred["parse_error"]
 
             voted = vote_cluster_ir(member_preds, prefer_unit_id=med_i)
             if args.structure_joint != "off" and isinstance(predictor, TreeStructurePredictor):
@@ -2271,10 +2297,6 @@ def main() -> None:
             entry["structure_tokens"] = voted["structure_tokens"]
             entry["structure_vote"] = voted["vote"]
             entry["structure_members"] = voted["members"]
-            # propagate unified IR onto every unit of this type
-            for u in member_units:
-                u["structure_ir"] = voted["structure_ir"]
-                u["structure_tokens_voted"] = voted["structure_tokens"]
 
             vote = voted["vote"]
             print(
@@ -2282,19 +2304,6 @@ def main() -> None:
                 f"{vote.get('winner_count', 0)}/{vote.get('n_valid', 0)} "
                 f"unique={vote.get('n_unique', 0)} "
                 f"unanimous={vote.get('unanimous', False)}"
-            )
-            (types_dir / f"type_{tid:02d}" / "structure_ir.json").write_text(
-                json.dumps(
-                    {
-                        "tokens": voted["structure_tokens"],
-                        "ir": voted["structure_ir"],
-                        "vote": voted["vote"],
-                        "members": voted["members"],
-                    },
-                    indent=2,
-                )
-                + "\n",
-                encoding="utf-8",
             )
         types_out.append(entry)
 
@@ -2318,13 +2327,26 @@ def main() -> None:
     if axis_x is not None:
         dsl["meta"]["axis_x"] = round(axis_x, 1)
     dsl["meta"]["cluster_mode"] = clustered.get("cluster_mode")
+    dsl["meta"]["gate_pairs"] = args.gate_pairs
+    dsl["meta"]["gate_mode"] = args.gate_mode
+    if clustered.get("fold_gate") is not None:
+        dsl["meta"]["fold_gate"] = clustered["fold_gate"]
+    if clustered.get("gate_local_pairs") is not None:
+        dsl["meta"]["gate_local_pairs"] = clustered["gate_local_pairs"]
     if local_sym_moves is not None:
         dsl["meta"]["local_sym_moves"] = local_sym_moves
+        dsl["meta"]["local_sym_pairs"] = local_sym_pairs
     if side_dropped:
         dsl["meta"]["side_dropped"] = [[round(v, 1) for v in b] for b in side_dropped]
     if args.grid == "floor_bays":
         dsl = apply_floor_bays(dsl, row_tol=args.row_tol)
-    n_types = len(types_out)
+        dsl["meta"]["align_column_center"] = bool(args.align_columns)
+        if args.type_fit:
+            dsl, fit_moves = fit_types(dsl, overlap=args.type_fit_overlap, excess=args.type_fit_excess)
+            if fit_moves:
+                print(f"type fit: {len(fit_moves)} windows left a type they do not fit: "
+                      f"{[(m['from'], m['to']) for m in fit_moves]}")
+    n_types = len(dsl["window_types"]) if args.grid == "floor_bays" and args.type_fit else len(types_out)
     dsl_path = out_dir / "facade_dsl.json"
     dsl_path.write_text(json.dumps(dsl, indent=2) + "\n", encoding="utf-8")
 

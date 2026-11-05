@@ -114,3 +114,58 @@ def gate_cluster(
         labels[idx] = sub + nxt
         nxt += int(sub.max()) + 1
     return labels
+
+
+def _component_top_split(feat: np.ndarray, comps: list[list[int]]) -> tuple[list[int], list[int], float] | None:
+    """Top split of average linkage over components (window-id lists); component distance = mean pairwise cosine
+    distance of their windows. Returns (side A ids, side B ids, merge height) or None for a single component."""
+    from scipy.cluster.hierarchy import to_tree
+    from scipy.spatial.distance import squareform
+
+    if len(comps) < 2:
+        return None
+    ids = [i for c in comps for i in c]
+    pos = {i: k for k, i in enumerate(ids)}
+    D = squareform(pdist(feat[ids], metric="cosine"))
+    C = np.array([[D[np.ix_([pos[i] for i in a], [pos[i] for i in b])].mean() if x != y else 0.0
+                   for y, b in enumerate(comps)] for x, a in enumerate(comps)])
+    root = to_tree(linkage(squareform(C, checks=False), method="average"))
+    side = lambda node: [i for k in node.pre_order() for i in comps[k]]
+    return side(root.get_left()), side(root.get_right()), float(root.dist)
+
+
+def mustlink_split(feat: np.ndarray, idx: list[int], pairs: list[tuple[int, int]], thr: float) -> list[list[int]]:
+    """Top-down splits of windows ``idx`` where every pair in ``pairs`` (and every chain of them) stays together:
+    windows connected by pairs form one leaf, the tree is built over leaves, a node splits while its merge height
+    is above ``thr``. Returns the parts as window-id lists."""
+    idx = [int(i) for i in idx]
+    par = {i: i for i in idx}
+
+    def find(x: int) -> int:
+        while par[x] != x:
+            par[x] = par[par[x]]
+            x = par[x]
+        return x
+
+    for i, j in pairs:
+        if i in par and j in par:
+            par[find(i)] = find(j)
+    groups: dict[int, list[int]] = {}
+    for i in idx:
+        groups.setdefault(find(i), []).append(i)
+    top = _component_top_split(feat, list(groups.values()))
+    if top is None or top[2] <= thr:
+        return [idx]
+    a, b, _ = top
+    return mustlink_split(feat, a, pairs, thr) + mustlink_split(feat, b, pairs, thr)
+
+
+def mustlink_cluster(feat: np.ndarray, groups: np.ndarray, pairs: list[tuple[int, int]], *, thr: float = 0.16) -> np.ndarray:
+    """Final type labels: :func:`mustlink_split` inside every box group, numbered consecutively."""
+    labels = np.zeros(len(groups), dtype=np.int64)
+    nxt = 0
+    for g in sorted(set(np.asarray(groups).tolist())):
+        for part in mustlink_split(feat, np.where(groups == g)[0].tolist(), pairs, thr):
+            labels[part] = nxt
+            nxt += 1
+    return labels

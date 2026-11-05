@@ -493,8 +493,9 @@ def _ensure_ortho_camera_and_sun(
     light = bpy.data.objects.new("Sun", light_data)
     bpy.context.scene.collection.objects.link(light)
     light.location = (cx + span_w * 0.5, cam_dist * 0.6, cz + span_h * 0.5)
-    light.rotation_euler = (0.9, 0.2, 0.8)
-    light.data.energy = 3.0
+    rot = os.environ.get("FACADE_DSL_SUN_ROT", "").strip()  # "rx,ry,rz" radians
+    light.rotation_euler = tuple(float(v) for v in rot.split(",")) if rot else (0.9, 0.2, 0.8)
+    light.data.energy = float(os.environ.get("FACADE_DSL_SUN_ENERGY", 3.0))
     return cam
 
 

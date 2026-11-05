@@ -57,6 +57,8 @@ from facade_recovery.paths import resolve_blender  # noqa: E402
 from facade_spec import (  # noqa: E402
     EMPTY_TOKENS,
     build_instance_map,
+    cell_fit,
+    cell_tokens,
     cell_cx_ratio_world,
     fit_window_ir_to_bounds,
     fit_window_ir_to_cell,
@@ -68,6 +70,8 @@ from facade_spec import (  # noqa: E402
     total_grid_size,
     align_type_bottoms,
     unify_type_sizes,
+    align_column_centers,
+    align_columns_enabled,
     world_placement_in_cell,
 )
 
@@ -188,90 +192,90 @@ def planned_windows(facade: dict) -> list[dict]:
         floor_id = int(floor_ids[r]) if r < len(floor_ids) else r
         c = 0
         while c < n_cols:
-            tok = row[c] if c < len(row) else None
             span = 1
             if c < len(span_row) and span_row[c]:
                 span = max(1, int(span_row[c]))
-            if tok in EMPTY_TOKENS:
+            toks = cell_tokens(row[c] if c < len(row) else None)  # several when items are stacked in the cell
+            if not toks:
                 c += span
                 continue
-            tok = str(tok)
-            is_door = tok in doors or is_door_type_token(tok)
-            if not is_door and tok not in windows:
-                c += span
-                continue
-            if span > 1:
-                cell = get_cell_span(facade, r, c, c + span, mirror_x=mirror_x)
-            else:
-                cell = get_cell(facade, r, c, mirror_x=mirror_x)
-            fit = fit_row[c] if c < len(fit_row) and fit_row[c] else {}
-            ratios = type_ratios.get(tok) or {}
-            hr = float(fit.get("height_ratio", ratios.get("height_ratio", default_hr)))
-            inst = inst_map.get((floor_id, c))
-            if is_door:
+            for slot, tok in enumerate(toks):
+                is_door = tok in doors or is_door_type_token(tok)
+                if not is_door and tok not in windows:
+                    continue
+                if span > 1:
+                    cell = get_cell_span(facade, r, c, c + span, mirror_x=mirror_x)
+                else:
+                    cell = get_cell(facade, r, c, mirror_x=mirror_x)
+                fit = cell_fit(fit_row[c], slot) if c < len(fit_row) else {}
+                ratios = type_ratios.get(tok) or {}
+                hr = float(fit.get("height_ratio", ratios.get("height_ratio", default_hr)))
+                inst = inst_map.get((floor_id, c, slot))
+                if is_door:
+                    seg_fit = (
+                        placement_fit_for_instance(facade, inst, r, c)
+                        if inst is not None
+                        else fit
+                    )
+                    if seg_fit:
+                        ox, oz, ww, hh = world_placement_in_cell(cell, seg_fit)
+                    else:
+                        wr = float(fit.get("width_ratio", ratios.get("width_ratio", default_wr)))
+                        hr = float(fit.get("height_ratio", ratios.get("height_ratio", default_hr)))
+                        ww = float(cell["w"] * wr)
+                        hh = float(cell["h"] * hr)
+                        cx_ratio = cell_cx_ratio_world(cell, float(fit.get("cx_ratio", 0.5)))
+                        cy_ratio = float(fit.get("cy_ratio", 0.5))
+                        ox = float(cell["x0"]) + cx_ratio * float(cell["w"]) - ww / 2.0
+                        cz = float(cell["z1"]) - cy_ratio * float(cell["h"])
+                        oz = cz - hh / 2.0
+                    out.append(
+                        {
+                            "row": r,
+                            "col": c,
+                            "name": tok,
+                            "kind": "door",
+                            "slot": slot,
+                            "type_id": type_id_from_name(tok),
+                            "x0": ox,
+                            "z0": max(0.0, oz) if floor_id != ground_floor_id else 0.0,
+                            "x1": ox + ww,
+                            "z1": oz + max(0.35, hh),
+                        }
+                    )
+                    continue
                 seg_fit = (
                     placement_fit_for_instance(facade, inst, r, c)
                     if inst is not None
                     else fit
                 )
-                if seg_fit:
-                    ox, oz, ww, hh = world_placement_in_cell(cell, seg_fit)
-                else:
-                    wr = float(fit.get("width_ratio", ratios.get("width_ratio", default_wr)))
-                    hr = float(fit.get("height_ratio", ratios.get("height_ratio", default_hr)))
-                    ww = float(cell["w"] * wr)
-                    hh = float(cell["h"] * hr)
-                    cx_ratio = cell_cx_ratio_world(cell, float(fit.get("cx_ratio", 0.5)))
-                    cy_ratio = float(fit.get("cy_ratio", 0.5))
-                    ox = float(cell["x0"]) + cx_ratio * float(cell["w"]) - ww / 2.0
-                    cz = float(cell["z1"]) - cy_ratio * float(cell["h"])
-                    oz = cz - hh / 2.0
+                if not seg_fit:
+                    seg_fit = {
+                        "width_ratio": float(
+                            fit.get("width_ratio", ratios.get("width_ratio", default_wr))
+                        ),
+                        "height_ratio": float(
+                            fit.get("height_ratio", ratios.get("height_ratio", default_hr))
+                        ),
+                        "cx_ratio": float(fit.get("cx_ratio", 0.5)),
+                        "cy_ratio": float(fit.get("cy_ratio", 0.5)),
+                    }
+                ox, oz, ww, hh = world_placement_in_cell(cell, seg_fit)
                 out.append(
                     {
                         "row": r,
                         "col": c,
                         "name": tok,
-                        "kind": "door",
                         "type_id": type_id_from_name(tok),
-                        "x0": ox,
-                        "z0": max(0.0, oz) if floor_id != ground_floor_id else 0.0,
-                        "x1": ox + ww,
-                        "z1": oz + max(0.35, hh),
+                        "tok": tok,
+                        "slot": slot,
+                        "span": span,
+                        "ox": ox,
+                        "oz": oz,
+                        "ww": ww,
+                        "hh": hh,
                     }
                 )
-                c += span
-                continue
-            seg_fit = (
-                placement_fit_for_instance(facade, inst, r, c)
-                if inst is not None
-                else fit
-            )
-            if not seg_fit:
-                seg_fit = {
-                    "width_ratio": float(
-                        fit.get("width_ratio", ratios.get("width_ratio", default_wr))
-                    ),
-                    "height_ratio": float(
-                        fit.get("height_ratio", ratios.get("height_ratio", default_hr))
-                    ),
-                    "cx_ratio": float(fit.get("cx_ratio", 0.5)),
-                    "cy_ratio": float(fit.get("cy_ratio", 0.5)),
-                }
-            ox, oz, ww, hh = world_placement_in_cell(cell, seg_fit)
-            out.append(
-                {
-                    "row": r,
-                    "col": c,
-                    "name": tok,
-                    "type_id": type_id_from_name(tok),
-                    "tok": tok,
-                    "span": span,
-                    "ox": ox,
-                    "oz": oz,
-                    "ww": ww,
-                    "hh": hh,
-                }
-            )
             c += span
     wins = [w for w in out if w.get("kind") != "door"]
     if bool(pp.get("unify_type_size", True)):
@@ -281,6 +285,8 @@ def planned_windows(facade: dict) -> list[dict]:
         )
     if bool(pp.get("align_type_bottom", True)):
         align_type_bottoms(wins, row_key="row")
+    if align_columns_enabled(pp):
+        align_column_centers(wins, row_key="row", tol=float(pp.get("align_column_tol", 0.25)))
     for w in wins:
         ox, oz, ww, hh = (w.pop(k) for k in ("ox", "oz", "ww", "hh"))
         w.pop("tok")
@@ -547,12 +553,7 @@ def main() -> None:
     )
     facade_path = out_dir / "facade_compile.json"
     facade_path.write_text(json.dumps(facade, indent=2) + "\n", encoding="utf-8")
-    n_win = sum(
-        1
-        for row in facade.get("placement") or []
-        for tok in row
-        if tok not in (None, "", "empty")
-    )
+    n_win = sum(len(cell_tokens(tok)) for row in facade.get("placement") or [] for tok in row)
     print(
         f"wrote {facade_path}  "
         f"types={len(facade.get('windows') or {})}  placed={n_win}"

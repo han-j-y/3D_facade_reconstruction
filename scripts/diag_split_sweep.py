@@ -142,8 +142,8 @@ def main() -> None:
             photo = Image.open(ROOT / dsl["meta"]["image"]).convert("RGB")
             feats = describe_all(pred, [photo.crop(tuple(int(v) for v in b)) for b in boxes])
             with pred.pkgs:
-                keys = [rp.structure_fingerprint(u["structure_ir_member"]) for u in units]
-                toks = [ir_to_structure_tokens(u["structure_ir_member"]) for u in units]
+                keys = [rp.structure_fingerprint(u.get("pred_ir", u.get("structure_ir_member"))) for u in units]
+                toks = [ir_to_structure_tokens(u.get("pred_ir", u.get("structure_ir_member"))) for u in units]
             matched = []
             for r in rows:
                 j = max(range(len(units)), key=lambda k: iou(boxes[k], r["e2e_box_xyxy"]))

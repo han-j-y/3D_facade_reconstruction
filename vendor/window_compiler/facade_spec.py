@@ -5,6 +5,8 @@ See ``facade_compile.py`` for scene compilation.
 
 from __future__ import annotations
 
+import os
+
 import copy
 from typing import Any
 
@@ -149,21 +151,18 @@ def normalize_facade_spec(
     placement_spans_src = layout.get("placement_spans") or []
     for r in range(n_floors):
         src = placement_src[r] if r < len(placement_src) else []
-        row: list[str | None] = []
+        row: list[str | list[str] | None] = []
         for c in range(n_bays):
-            tok = src[c] if c < len(src) else None
-            if tok in EMPTY_TOKENS:
-                row.append(None)
-                continue
-            key = str(tok)
-            name = type_names.get(key)
-            if name is None:
-                dropped += 1
-                row.append(None)
-                continue
-            if name not in windows and name not in doors:
-                missing_ir += 1
-            row.append(name)
+            names = []
+            for tok in cell_tokens(src[c] if c < len(src) else None):  # a cell may stack several items
+                name = type_names.get(str(tok))
+                if name is None:
+                    dropped += 1
+                    continue
+                if name not in windows and name not in doors:
+                    missing_ir += 1
+                names.append(name)
+            row.append(None if not names else names[0] if len(names) == 1 else names)
         placement.append(row)
     placement_spans: list[list[int]] = []
     for r in range(n_floors):
@@ -266,13 +265,22 @@ def normalize_facade_spec(
         cy_ratio = min(0.98, max(0.02, float(cy_ratio)))
 
         acc.setdefault(name, []).append((wr, hr))
-        placement_fit[r][c] = {
+        fit = {
             "width_ratio": wr,
             "height_ratio": hr,
             "cx_ratio": cx_ratio,
             "cy_ratio": cy_ratio,
             "box_aspect": round(bw / max(1.0, bh), 4),
         }
+        n_slots = len(cell_tokens(placement[r][c]))
+        if n_slots > 1:  # stacked cell: one fit per slot, in the order of the cell's token list
+            if not isinstance(placement_fit[r][c], list):
+                placement_fit[r][c] = [None] * n_slots
+            slot = int(inst.get("slot", 0))
+            if 0 <= slot < n_slots:
+                placement_fit[r][c][slot] = fit
+        else:
+            placement_fit[r][c] = fit
 
     for name, pairs in acc.items():
         type_ratios[name] = {
@@ -292,6 +300,38 @@ def normalize_facade_spec(
             image_extent = {}
         image_extent["y0"] = float(floors_y[0][0])
         image_extent["y1"] = float(floors_y[-1][1])
+
+    # balconies (balcony_pipeline merge): type library + placements in grid coordinates; ported from
+    # hiroo/balcony-pipeline unchanged, so balcony_layout / balcony_compile read the same fields
+    balcony_lib: dict[str, Any] = {}
+    for bt in spec.get("balcony_types") or []:
+        bname = str(bt.get("name") or f"balc_type_{int(bt.get('type_id', 0)):02d}")
+        bir = bt.get("structure_ir")
+        if isinstance(bir, dict):
+            balcony_lib[bname] = copy.deepcopy(bir)
+    balcony_placement: list[dict[str, Any]] = []
+    for rec in (spec.get("layout") or {}).get("balconies") or []:
+        bname = str(rec.get("type") or "")
+        if bname not in balcony_lib:
+            continue
+        try:
+            rr = floor_id_to_row[int(rec["floor"])]
+            cc0 = bay_id_to_col[int(rec["bay_start"])]
+            cc1 = bay_id_to_col[int(rec["bay_end"])]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if cc1 < cc0:
+            cc0, cc1 = cc1, cc0
+        item: dict[str, Any] = {"row": rr, "col0": cc0, "col1": cc1, "type": bname}
+        for k in ("width_norm", "cx_norm", "window_cx_norm", "bay_cx_norm"):
+            if rec.get(k) is not None:
+                item[k] = float(rec[k])
+        for k in ("bays", "bays_center"):
+            if rec.get(k):
+                item[k] = [int(b) for b in rec[k]]
+        if rec.get("structure"):
+            item["structure"] = str(rec["structure"])
+        balcony_placement.append(item)
 
     return {
         "type": "facade",
@@ -318,6 +358,8 @@ def normalize_facade_spec(
         "placement_fit": placement_fit,
         "windows": windows,
         "doors": doors,
+        "balconies": balcony_lib,
+        "balcony_placement": balcony_placement,
         "instances": list(spec.get("instances") or []),
         "floor_ids": [int(f["id"]) for f in floors],
         "image_extent": image_extent,
@@ -330,6 +372,8 @@ def normalize_facade_spec(
             "unify_type_size_across_spans": bool(
                 meta.get("unify_type_size_across_spans", True)
             ),
+            # each bay's windows on one centre x (align_column_centers); the pipeline sets it in meta
+            "align_column_center": bool(meta.get("align_column_center", False)),
         },
     }
 
@@ -420,14 +464,28 @@ def box_xyxy_to_world_z(
     return z_bot, z_top
 
 
-def build_instance_map(spec: dict[str, Any]) -> dict[tuple[int, int], dict[str, Any]]:
-    """Map (floor_id, start_bay) → instance for image-anchored placement."""
+def cell_tokens(tok: Any) -> list[str]:
+    """Tokens of a placement cell: none for an empty cell, one, or several stacked top → bottom (a list)."""
+    if isinstance(tok, (list, tuple)):
+        return [str(t) for t in tok if t not in EMPTY_TOKENS]
+    return [] if tok in EMPTY_TOKENS else [str(tok)]
+
+
+def cell_fit(fit_cell: Any, slot: int) -> dict[str, Any]:
+    """Fit of slot ``slot`` of a placement_fit cell (a dict for one item, a list for a stacked cell)."""
+    if isinstance(fit_cell, list):
+        return dict(fit_cell[slot] or {}) if slot < len(fit_cell) else {}
+    return dict(fit_cell or {}) if slot == 0 else {}
+
+
+def build_instance_map(spec: dict[str, Any]) -> dict[tuple[int, int, int], dict[str, Any]]:
+    """Map (floor_id, start_bay, slot) → instance for image-anchored placement (slot 0 unless stacked)."""
     floor_ids = spec.get("floor_ids") or []
-    out: dict[tuple[int, int], dict[str, Any]] = {}
+    out: dict[tuple[int, int, int], dict[str, Any]] = {}
     for inst in spec.get("instances") or []:
         floor_id = int(inst["floor"])
         bay = int(inst["bay"])
-        out[(floor_id, bay)] = inst
+        out[(floor_id, bay, int(inst.get("slot", 0)))] = inst
     if not floor_ids and out:
         floor_ids = sorted({k[0] for k in out})
     return out
@@ -613,7 +671,9 @@ def placement_fit_for_instance(
     if row_idx < len(placement_fit):
         fit_row = placement_fit[row_idx]
         if col_idx < len(fit_row) and fit_row[col_idx]:
-            return dict(fit_row[col_idx])
+            fit = cell_fit(fit_row[col_idx], int(inst.get("slot", 0)))
+            if fit:
+                return fit
     box = inst.get("box_xyxy")
     if not box or len(box) < 4:
         return None
@@ -707,6 +767,61 @@ def align_type_bottoms(items: list[dict[str, Any]], *, row_key: str = "r") -> No
         z = bottoms[len(bottoms) // 2]
         for p in members:
             p["oz"] = z
+
+
+def _median(v: list[float]) -> float:
+    s = sorted(v)
+    n = len(s)
+    return s[n // 2] if n % 2 else 0.5 * (s[n // 2 - 1] + s[n // 2])
+
+
+def align_column_centers(items: list[dict[str, Any]], *, row_key: str = "r", tol: float = 0.25) -> list[list[dict]]:
+    """Snap each vertical bay of windows to one centre x, so it lines up instead of copying the photo's lean.
+
+    Bays are found from the windows' x midpoints, not the grid columns (a column can hold two bays, e.g. a stepped
+    façade or a balcony window beside a pier window): windows sorted by centre join the current bay while their centre
+    is within ``tol`` × the narrower width of the bay's median centre and the bay has no window on their floor yet;
+    otherwise they start a new bay. Each bay snaps to its median centre; a window the snap would make overlap
+    another window keeps its own centre. Returns the bays (for diagnostics)."""
+    cen = {id(p): float(p["ox"]) + float(p["ww"]) / 2.0 for p in items}
+    bays: list[list[dict[str, Any]]] = []
+    for p in sorted(items, key=lambda q: cen[id(q)]):
+        best = None
+        for bay in bays:  # nearest open bay that accepts p (a bay on the left may still be open for another floor)
+            cx = _median([cen[id(q)] for q in bay])
+            ww = min(float(p["ww"]), _median([float(q["ww"]) for q in bay]))
+            d = abs(cen[id(p)] - cx)
+            if d <= tol * ww and all(q[row_key] != p[row_key] for q in bay) and (best is None or d < best[0]):
+                best = (d, bay)
+        if best is None:
+            bays.append([p])
+        else:
+            best[1].append(p)
+    for bay in bays:
+        cx = _median([cen[id(q)] for q in bay])
+        for p in bay:
+            p["ox"] = cx - float(p["ww"]) / 2.0
+
+    def hits(a: dict[str, Any], b: dict[str, Any]) -> bool:
+        return (min(a["ox"] + a["ww"], b["ox"] + b["ww"]) - max(a["ox"], b["ox"]) > 1e-6
+                and min(a["oz"] + a["hh"], b["oz"] + b["hh"]) - max(a["oz"], b["oz"]) > 1e-6)
+
+    changed = True
+    while changed:  # undo snaps that collide, until none do
+        changed = False
+        for p in items:
+            own = cen[id(p)] - float(p["ww"]) / 2.0
+            if abs(p["ox"] - own) > 1e-9 and any(hits(p, q) for q in items if q is not p):
+                p["ox"] = own
+                changed = True
+    return bays
+
+
+def align_columns_enabled(pp: dict[str, Any]) -> bool:
+    env = os.environ.get("FACADE_DSL_ALIGN_COLUMNS", "").strip().lower()
+    if env:
+        return env not in ("0", "false", "no")
+    return bool(pp.get("align_column_center", False))
 
 
 def unified_pixel_scale(spec: dict[str, Any], total_w: float) -> float:
