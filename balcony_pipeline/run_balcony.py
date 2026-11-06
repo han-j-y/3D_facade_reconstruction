@@ -541,20 +541,27 @@ def mark_rooftop_units(
     *,
     image_height: int,
 ) -> None:
-    """Set ``unit["rooftop"]`` on the top floor when no window in its bays lies above it.
+    """Set ``unit["rooftop"]`` on the top floor when no window in its bays lies above it and it stands above the row.
 
     The floor of such a balcony is the roof below it. It is set from the
     window grid, not from the crop, and only on the placement: the balcony
-    keeps its type, and the type vote stays projecting / juliet.
+    keeps its type, and the type vote stays projecting / juliet. A balcony
+    level with the top row's windows is a normal one in a bay without a window.
     """
     instances = windows_dsl.get("instances") or []
     floor_y, _bay_x = _bands_from_windows_dsl(windows_dsl)
     top = min(floor_y, key=lambda f: floor_y[f][0]) if floor_y else None
+    row_tops = sorted(
+        float(w["box_xyxy"][1]) for w in instances
+        if w.get("kind", "window") == "window" and top is not None and int(w["floor"]) == int(top)
+    )
+    row_top = row_tops[len(row_tops) // 2] if row_tops else None
     for u in units:
         u["rooftop"] = bool(
             top is not None
             and int(u["floor"]) == int(top)
             and no_window_above(u["box_xyxy"], instances, ih=int(image_height))
+            and (row_top is None or float(u["box_xyxy"][3]) <= row_top)
         )
 
 

@@ -25,6 +25,7 @@ from door_scene import (
     make_prism,
 )
 from facade_spec import (
+    wall_world_extent,
     EMPTY_TOKENS,
     align_type_bottoms,
     build_instance_map,
@@ -67,17 +68,17 @@ __all__ = [
 def _build_wall(spec: dict[str, Any], parent: bpy.types.Collection) -> bpy.types.Object:
     grid = spec["grid"]
     wall = spec.get("wall") or {}
-    total_w, total_h = total_grid_size(grid)
+    xmin, xmax, zmin, zmax = wall_world_extent(spec, mirror_x=bool((spec.get("placement_params") or {}).get("mirror_x", True)))
     depth = float(wall.get("depth", 0.42))
     front_y = float(wall.get("base_front_y", 0.0))
-    cx = 0.0
-    cz = total_h / 2.0
+    cx = 0.5 * (xmin + xmax)
+    cz = 0.5 * (zmin + zmax)
     cy = front_y - depth / 2.0
 
     bpy.ops.mesh.primitive_cube_add(location=(cx, cy, cz))
     obj = bpy.context.active_object
     obj.name = "FacadeWall"
-    obj.scale = (total_w / 2.0, depth / 2.0, total_h / 2.0)
+    obj.scale = ((xmax - xmin) / 2.0, depth / 2.0, (zmax - zmin) / 2.0)
     bpy.ops.object.transform_apply(scale=True)
     mat = MATS.get(wall.get("material", "wall"), MATS.get("wall"))
     if mat is not None:
@@ -712,7 +713,7 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
     _glaze_railing_panels()
     _cut_curved_openings(curved_cuts)
 
-    bounds = (-total_w / 2.0, total_w / 2.0, 0.0, total_h)
+    bounds = wall_world_extent(spec, mirror_x=bool(pp.get("mirror_x", True)))
     print(
         f"compiled façade: {n_placed} windows, {n_doors} doors, {n_balc} balconies, {n_segments} muntin segments, "
         f"size={total_w:.2f}×{total_h:.2f}m"

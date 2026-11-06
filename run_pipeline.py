@@ -64,6 +64,7 @@ from facade_recovery.box_cluster import (  # noqa: E402
     cluster_within_groups,
 )
 from facade_recovery.cmp_windows import load_cmp_labelmap_windows, load_cmp_xml_windows  # noqa: E402
+from facade_recovery.facade_region import choose_facade_region, detect_facade_boxes  # noqa: E402
 from facade_recovery.merge_guard import (  # noqa: E402
     filter_indices,
     spanning_box_indices,
@@ -214,6 +215,11 @@ def parse_args() -> argparse.Namespace:
         help="comma SAM3 prompts for non-façade objects; windows/doors on them are dropped ('' = off)",
     )
     ap.add_argument("--exclude-threshold", type=float, default=0.5)
+    ap.add_argument(
+        "--no-facade-region",
+        action="store_true",
+        help="the wall ends at the outermost windows, instead of at SAM3's facade region",
+    )
     ap.add_argument(
         "--exclude-min-cover",
         type=float,
@@ -2516,6 +2522,11 @@ def run_one(
         door_units=door_units,
         door_types=door_types_out,
     )
+    if not args.no_facade_region:
+        boxes = [u["box_xyxy"] for u in dsl["instances"]]
+        region, region_source = choose_facade_region(detect_facade_boxes(facade, device=device), boxes, facade.size)
+        dsl["meta"]["facade_region_xyxy"] = [round(v, 1) for v in region]
+        dsl["meta"]["facade_region_source"] = region_source
     if structure_model_note:
         dsl["meta"]["structure_ckpt"] = structure_model_note
     if args.structure_glass_margin:

@@ -11,6 +11,8 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from merge_dsl import (  # noqa: E402
+    floor_of_top_edge,
+    outer_bay_center,
     _move_stacks_together,
     _mean_bay_center_norm,
     _photo_norms,
@@ -270,6 +272,54 @@ class PhotoNormTests(unittest.TestCase):
         recs = [self._rec(0, [100, 0, 200, 9], cx_norm=0.15), self._rec(1, [100, 0, 200, 9], window_cx_norm=0.2)]
         _move_stacks_together(recs, 1000)
         self.assertEqual(recs[0]["cx_norm"], 0.15)
+
+    def _outer_meta(self) -> dict:
+        return {"columns_xy": [[100, 300], [300, 500]], "facade_region_xyxy": [0, 0, 1000, 400]}
+
+    def _win(self) -> list[dict]:
+        return [{"box_xyxy": [120, 10, 160, 60], "kind": "window"}]
+
+    def test_box_past_the_grid_is_in_the_outer_bay(self) -> None:
+        self.assertEqual(outer_bay_center([700, 0, 900, 50], self._outer_meta(), self._win()), ("right", 750.0))
+        self.assertEqual(outer_bay_center([0, 0, 60, 50], self._outer_meta(), self._win()), ("left", 50.0))
+
+    def test_box_on_the_grid_has_no_outer_bay(self) -> None:
+        self.assertIsNone(outer_bay_center([200, 0, 380, 50], self._outer_meta(), self._win()))
+
+    def test_no_region_no_outer_bay(self) -> None:
+        self.assertIsNone(outer_bay_center([700, 0, 900, 50], {"columns_xy": [[100, 500]]}, self._win()))
+
+    def test_thin_margin_is_no_bay(self) -> None:
+        meta = {"columns_xy": [[100, 500]], "facade_region_xyxy": [90, 0, 510, 400]}
+        self.assertIsNone(outer_bay_center([505, 0, 509, 50], meta, self._win()))
+
+    def test_merge_places_balcony_in_its_outer_bay_not_on_a_window(self) -> None:
+        dsl = {
+            "meta": {"image_size": [1000, 400], **self._outer_meta()},
+            "layout": {"floors": [{"name": "F0", "id": 0, "h_norm": 1.0}],
+                       "bays": [{"name": "B0", "id": 0, "w_norm": 0.5}, {"name": "B1", "id": 1, "w_norm": 0.5}],
+                       "placement": [[None, None]]},
+            "window_types": [],
+            "instances": [{"unit_id": 0, "floor": 0, "bay": 1, "box_xyxy": [320, 10, 360, 60], "type_id": 0}],
+        }
+        unit = {"type_id": 0, "floor": 0, "bay_start": 1, "bay_end": 1, "bay": 1, "bays": [1], "bays_center": [1],
+                "box_xyxy": [700, 40, 900, 90], "structure_ir": {}}
+        rec = merge_balcony_into_windows_dsl(dsl, balcony_types=[], units=[unit], center_mode="window")["layout"]["balconies"][0]
+        self.assertEqual(rec["outer_bay"], "right")
+        self.assertAlmostEqual(rec["bay_cx_norm"], 0.75)
+        self.assertNotIn("window_cx_norm", rec)
+
+    def test_floor_follows_the_top_edge(self) -> None:
+        floors = {0: (0, 100), 1: (100, 200)}
+        self.assertEqual(floor_of_top_edge([0, 80, 9, 130], floors, 1), 0)  # most of it hangs below, into floor 1
+        self.assertEqual(floor_of_top_edge([0, 150, 9, 180], floors, 0), 1)
+        self.assertEqual(floor_of_top_edge([0, 500, 9, 520], floors, 1), 1)
+
+    def test_two_outer_balconies_on_one_floor_both_stay(self) -> None:
+        recs = [self._rec(2, [770, 637, 843, 708], bay_cx_norm=0.8, outer_bay="right"),
+                self._rec(2, [768, 784, 843, 854], bay_cx_norm=0.8, outer_bay="right")]
+        _move_stacks_together(recs, 1000)
+        self.assertEqual([r["bay_cx_norm"] for r in recs], [0.8, 0.8])
 
     def test_mean_bay_center_norm(self) -> None:
         bay_x = {0: (0, 100), 1: (100, 300), 2: (300, 400)}

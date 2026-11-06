@@ -73,6 +73,38 @@ def _normalize_center_mode(center_mode: str) -> str:
 
 
 STACK_MIN_WIDTH_RATIO = 0.6
+OUTER_BAY_MIN_WINDOW_WIDTHS = 0.5
+
+
+def floor_of_top_edge(box: list[float], floor_y: dict[int, tuple[int, int]], default: int) -> int:
+    """The floor whose band holds ``box``'s top edge, else ``default``."""
+    top = float(box[1])
+    for fid, (y0, y1) in floor_y.items():
+        if float(y0) <= top < float(y1):
+            return int(fid)
+    return default
+
+
+def outer_bay_center(box: list[float], meta: dict[str, Any], instances: list[dict[str, Any]]) -> tuple[str, float] | None:
+    """``(side, center_px)`` of the bay between the window grid and the facade region's edge that holds ``box``.
+
+    None when the box's center is on the grid, there is no region, or the margin is too thin to be a bay.
+    """
+    region, cols = meta.get("facade_region_xyxy"), meta.get("columns_xy")
+    if not region or not cols:
+        return None
+    cx = 0.5 * (float(box[0]) + float(box[2]))
+    if cx < float(cols[0][0]):
+        side, lo, hi = "left", float(region[0]), float(cols[0][0])
+    elif cx > float(cols[-1][1]):
+        side, lo, hi = "right", float(cols[-1][1]), float(region[2])
+    else:
+        return None
+    widths = [u["box_xyxy"][2] - u["box_xyxy"][0] for u in instances if u.get("kind", "window") == "window"]
+    typical = statistics.median(widths) if widths else 0.0
+    if hi - lo < OUTER_BAY_MIN_WINDOW_WIDTHS * typical:
+        return None
+    return side, 0.5 * (lo + hi)
 
 
 def _open_center(rec: dict[str, Any]) -> float | None:
@@ -128,7 +160,7 @@ def _move_stacks_together(records: list[dict[str, Any]], image_width: float) -> 
         return c - w / 2.0, c + w / 2.0
 
     for rec in movable:
-        if "bay_cx_norm" not in rec:
+        if "bay_cx_norm" not in rec or "outer_bay" in rec:
             continue
         lo, hi = span(rec)
         if any(
@@ -161,7 +193,7 @@ def merge_balcony_into_windows_dsl(
     # sharing a bay with an enclosed volume uses its own box below, so it cannot drift into the volume.
     open_mode = mode
     instances = [u for u in windows_dsl.get("instances") or [] if not u.get("side_face")]
-    _, bay_x = _bands_from_windows_dsl(windows_dsl)
+    floor_y, bay_x = _bands_from_windows_dsl(windows_dsl)
     iw = 1.0
     ih = 800.0
     if image_size and len(image_size) >= 1:
@@ -192,14 +224,22 @@ def merge_balcony_into_windows_dsl(
         span_bays = _bay_ids(u)
         center_bays = _center_bay_ids(u)
         place_mode = mode if volume else open_mode
+        outer = None if volume else outer_bay_center(box, meta, instances)
+        if outer is not None:
+            # Floors come from windows and a balcony hangs below its window, so its top edge names the floor.
+            floor_i = floor_of_top_edge(box, floor_y, floor_i)
         # An open balcony that shares a bay with a block sits beside it: the bay centre would put it inside.
         if not volume and any(
             int(e["floor"]) == floor_i and set(_bay_ids(e)) & set(span_bays) for e in enclosed_units
         ):
             place_mode = "photo"
 
+        partners: list[dict[str, Any]] = []
+        pids: tuple = ()
         if volume:
             key = (floor_i, tuple(span_bays), name)
+        elif outer is not None:
+            key = (floor_i, outer[0], int(box[1]), name)
         elif place_mode == "photo":
             key = (floor_i, int(round(cx_norm * 1000)), name)
         elif place_mode == "bay":
@@ -245,6 +285,9 @@ def merge_balcony_into_windows_dsl(
             bay_cx = _mean_bay_center_norm(span_bays, bay_x, iw)
             if bay_cx is not None:
                 rec["bay_cx_norm"] = round(bay_cx, 6)
+        elif outer is not None:
+            rec["outer_bay"] = outer[0]
+            rec["bay_cx_norm"] = round(outer[1] / iw, 6)
         elif place_mode == "photo":
             rec["cx_norm"] = round(cx_norm, 6)
         elif place_mode == "bay":

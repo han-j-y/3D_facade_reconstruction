@@ -24,7 +24,7 @@ from balcony_plan import (
     slab_outline,
     support_polyline,
 )
-from facade_spec import get_cell, image_facade_extent_x, total_grid_size
+from facade_spec import get_cell, image_facade_extent_x, image_facade_extent_y, total_grid_size, wall_world_extent
 
 STACKABLE = frozenset({"half_enclosed", "enclosed"})
 OUTLINE_SHAPES = frozenset({"triangle", "circle"})
@@ -123,8 +123,13 @@ def photo_x_span(
     iw = iw if iw > 0 else 1.0
     grid_w = max(1e-6, xr - xl)
 
+    # The wall can reach past the grid, so a balcony beyond the outermost windows keeps its place on it.
+    wmin, wmax, _, _ = wall_world_extent(spec, mirror_x=mirror_x)
+    n_lo = (-wmax / total_w + 0.5) if mirror_x else (wmin / total_w + 0.5)
+    n_hi = (0.5 - wmin / total_w) if mirror_x else (wmax / total_w + 0.5)
+
     def to_grid(norm: float) -> float:
-        return min(1.0, max(0.0, (norm * iw - xl) / grid_w))
+        return min(n_hi, max(n_lo, (norm * iw - xl) / grid_w))
 
     span_w = max(0.25, min(total_w * 0.98, w_norm_f * iw / grid_w * total_w))
     if cx_norm_f is not None:
@@ -152,13 +157,12 @@ def photo_x_span(
         cx = (cx_n - 0.5) * total_w
     x0 = cx - span_w / 2.0
     x1 = cx + span_w / 2.0
-    half = total_w / 2.0
-    if x0 < -half:
-        x1 += -half - x0
-        x0 = -half
-    if x1 > half:
-        x0 -= x1 - half
-        x1 = half
+    if x0 < wmin:
+        x1 += wmin - x0
+        x0 = wmin
+    if x1 > wmax:
+        x0 -= x1 - wmax
+        x1 = wmax
     return x0, x1, 0.5 * (x0 + x1)
 
 
@@ -204,6 +208,9 @@ def _frame(
     depth = float(DEFAULT_SLAB_DEPTH_M)
 
     sill_z = z0 + cell_h * bottom_m
+    if rec.get("photo_bottom_y") is not None:
+        yt, yb = image_facade_extent_y(spec)
+        sill_z = (yb - float(rec["photo_bottom_y"])) / max(1e-6, yb - yt) * total_grid_size(grid)[1]
     if structure == "free_standing":
         deck_h = float(params.get("height") or 0.0)
         if deck_h > 0.05:

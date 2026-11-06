@@ -332,6 +332,9 @@ def normalize_facade_spec(
                 item[k] = [int(b) for b in rec[k]]
         if rec.get("structure"):
             item["structure"] = str(rec["structure"])
+        if rec.get("outer_bay") and rec.get("box_xyxy"):
+            # Past the window grid its floors are not this grid's: it keeps its height on the photo.
+            item["photo_bottom_y"] = float(rec["box_xyxy"][3])
         balcony_placement.append(item)
 
     return {
@@ -364,6 +367,7 @@ def normalize_facade_spec(
         "instances": list(spec.get("instances") or []),
         "floor_ids": [int(f["id"]) for f in floors],
         "image_extent": image_extent,
+        "wall_margins": wall_margins_from_region(meta.get("facade_region_xyxy"), image_extent, total_w, total_h),
         "placement_params": {
             "width_ratio": 0.55,
             "height_ratio": 0.60,
@@ -384,6 +388,33 @@ def total_grid_size(grid: dict[str, Any]) -> tuple[float, float]:
         float(sum(c["w"] for c in grid["cols"])),
         float(sum(r["h"] for r in grid["rows"])),
     )
+
+
+def wall_margins_from_region(
+    region: Any, image_extent: dict[str, float] | None, total_w: float, total_h: float
+) -> dict[str, float] | None:
+    """Wall around the grid, in metres per photo side, from the facade region in photo pixels (None without one).
+
+    The grid's own scale applies, and a region edge inside the grid adds nothing: the wall always holds the grid.
+    """
+    if not region or len(region) < 4 or not image_extent or not all(k in image_extent for k in ("x0", "x1", "y0", "y1")):
+        return None
+    sx = total_w / max(1e-6, image_extent["x1"] - image_extent["x0"])
+    sy = total_h / max(1e-6, image_extent["y1"] - image_extent["y0"])
+    return {
+        "left": max(0.0, image_extent["x0"] - float(region[0])) * sx,
+        "right": max(0.0, float(region[2]) - image_extent["x1"]) * sx,
+        "top": max(0.0, image_extent["y0"] - float(region[1])) * sy,
+        "bottom": max(0.0, float(region[3]) - image_extent["y1"]) * sy,
+    }
+
+
+def wall_world_extent(spec: dict[str, Any], *, mirror_x: bool) -> tuple[float, float, float, float]:
+    """World ``(xmin, xmax, zmin, zmax)`` of the wall: the grid plus its margins. With mirror_x, photo left is +x."""
+    total_w, total_h = total_grid_size(spec["grid"])
+    m = spec.get("wall_margins") or {}
+    to_min, to_max = (m.get("right", 0.0), m.get("left", 0.0)) if mirror_x else (m.get("left", 0.0), m.get("right", 0.0))
+    return -total_w / 2.0 - to_min, total_w / 2.0 + to_max, -m.get("bottom", 0.0), total_h + m.get("top", 0.0)
 
 
 def image_facade_extent_x(spec: dict[str, Any]) -> tuple[float, float]:

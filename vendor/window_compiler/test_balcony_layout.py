@@ -10,6 +10,7 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
+from facade_spec import wall_margins_from_region, wall_world_extent
 from balcony_layout import (
     _fit_spans,
     side_wall_targets,  # noqa: E402
@@ -346,6 +347,25 @@ class PhotoSpanTest(unittest.TestCase):
         self.assertAlmostEqual(cx, (0.5 - 0.1) * 7.8)
         self.assertAlmostEqual(x1 - x0, 0.125 * 7.8)
 
+    def test_balcony_past_the_grid_stays_on_the_wall_margin(self) -> None:
+        spec = _spec([], {})
+        spec["meta"] = {"image_size": [1000, 800]}
+        spec["image_extent"] = {"x0": 100.0, "x1": 900.0}
+        total_w = sum(float(c["w"]) for c in spec["grid"]["cols"])
+        spec["wall_margins"] = {"left": total_w / 8.0, "right": 0.0, "top": 0.0, "bottom": 0.0}
+        rec = {"width_norm": 0.04, "window_cx_norm": 0.05}  # 50 px, left of the grid, inside the margin
+        _, _, cx = photo_x_span(spec, rec, mirror_x=True, bay_x0=0.0, bay_x1=1.0, row=0, col0=0, col1=0)
+        self.assertAlmostEqual(cx, total_w / 2.0 + total_w * 50.0 / 800.0)
+
+    def test_without_margins_a_balcony_stays_in_the_grid(self) -> None:
+        spec = _spec([], {})
+        spec["meta"] = {"image_size": [1000, 800]}
+        spec["image_extent"] = {"x0": 100.0, "x1": 900.0}
+        total_w = sum(float(c["w"]) for c in spec["grid"]["cols"])
+        rec = {"width_norm": 0.04, "window_cx_norm": 0.05}
+        x0, x1, _ = photo_x_span(spec, rec, mirror_x=True, bay_x0=0.0, bay_x1=1.0, row=0, col0=0, col1=0)
+        self.assertLessEqual(x1, total_w / 2.0 + 1e-9)
+
     def test_no_image_size_keeps_norms(self) -> None:
         x0, x1, cx = self._span(_spec([], {}))
         self.assertAlmostEqual(cx, (0.5 - 0.18) * 7.8)
@@ -452,6 +472,41 @@ class SideWallTest(unittest.TestCase):
         fits = _fit_spans(frames, [front, self.win(0, 2.0, side_face=True), self.win(2, 9.0, side_face=True)])
         self.assertEqual(front["ox"], 5.5)
         self.assertEqual(fits[1], (5.25, 6.75))
+
+
+class OuterBayHeightTest(unittest.TestCase):
+    def _frame(self, rec: dict) -> dict:
+        spec = _spec([rec | {"type": "balc"}], {"balc": {"floor": {"shape": "rectangle"}}})
+        spec["image_extent"] = {"x0": 0.0, "x1": 100.0, "y0": 100.0, "y1": 500.0}
+        return balcony_frames(spec)[0]
+
+    def test_keeps_its_photo_height(self) -> None:
+        f = self._frame({"row": 0, "col0": 0, "col1": 0, "photo_bottom_y": 300.0})
+        self.assertAlmostEqual(f["sill_z"], 6.0)  # halfway down the 12 m grid, whatever floor it was given
+
+    def test_others_keep_their_floor(self) -> None:
+        f = self._frame({"row": 0, "col0": 0, "col1": 0})
+        self.assertAlmostEqual(f["sill_z"], 9.0 + 3.0 * 0.14)
+
+
+class WallMarginTest(unittest.TestCase):
+    EXT = {"x0": 100.0, "x1": 900.0, "y0": 50.0, "y1": 450.0}
+
+    def test_margins_use_the_grid_scale(self) -> None:
+        m = wall_margins_from_region([0, 0, 1000, 500], self.EXT, 8.0, 4.0)
+        self.assertEqual(m, {"left": 1.0, "right": 1.0, "top": 0.5, "bottom": 0.5})
+
+    def test_region_inside_the_grid_adds_nothing(self) -> None:
+        m = wall_margins_from_region([200, 100, 800, 400], self.EXT, 8.0, 4.0)
+        self.assertEqual(set(m.values()), {0.0})
+
+    def test_no_region_no_margins(self) -> None:
+        self.assertIsNone(wall_margins_from_region(None, self.EXT, 8.0, 4.0))
+
+    def test_photo_left_is_plus_x_when_mirrored(self) -> None:
+        spec = {"grid": {"rows": [{"h": 4.0}], "cols": [{"w": 8.0}]}, "wall_margins": {"left": 1.0, "right": 2.0, "top": 0.5, "bottom": 0.0}}
+        self.assertEqual(wall_world_extent(spec, mirror_x=True), (-6.0, 5.0, 0.0, 4.5))
+        self.assertEqual(wall_world_extent(spec, mirror_x=False), (-5.0, 6.0, 0.0, 4.5))
 
 
 class SeatTest(unittest.TestCase):

@@ -151,6 +151,9 @@ recovery_meta = "{", [ '"facade_id": ', json_string ],
                      [ ',"inter_bay_gaps_px"' | ',"inter_bay_gap_norm"'
                        | ',"inter_floor_gaps_px"' | ',"inter_floor_gap_norm"', ": [...]" ],
                      [ ',"synthetic": true' ],               (* template-instantiated *)
+                     [ ',"facade_region_xyxy": [x0, y0, x1, y1]', ',"facade_region_source": ', json_string ],
+                                                             (* photo px; SAM3 box grown around the elements ("sam3"),
+                                                                or the whole image ("image") *)
                      [ ',"n_units" | "n_types" | "n_doors" | "n_door_types"'
                        | ',"n_balcony_units" | "n_balcony_types"'
                        | ',"balcony_center_mode"' | ',"notes" | ...' ],
@@ -231,7 +234,8 @@ balcony_instance = "{", '"floor": ', json_int,                 (* layout.floors[
                      [ ',"bay_cx_norm": ', json_number ],      (* center mode bay, and enclosed volumes *)
                      [ ',"window_cx_norm": ', json_number ],   (* center mode window *)
                      [ ',"partner_window_unit_ids": [', json_int, { ",", json_int }, "]" ],
-                     [ ',"structure": "rooftop"' ],             (* top floor, no window above in its bays *)
+                     [ ',"outer_bay": ', ( '"left"' | '"right"' ) ],  (* past the window grid: bay_cx_norm is that margin's center, and it keeps its photo height *)
+                     [ ',"structure": "rooftop"' ],             (* top floor, above that floor's windows, none above it in its bays *)
                 "}" ;
 (* One record per placed balcony. type must name a balcony_types entry or
    normalize_facade_spec drops it. Window placement tokens do not name balcony types. *)
@@ -269,6 +273,8 @@ balcony_instance = "{", '"floor": ', json_int,                 (* layout.floors[
     → placement_fit[row][bay] (cell_fit, §2). type_ratios = mean fit per type.
   Carried over: instances, floor_ids (= layout.floors[].id), image_extent
     (columns_xy / floors_y outer bounds), meta.columns_xy / floors_y / image_size.
+  Wall margins: facade_region_xyxy beyond the grid, at the grid's scale, gives wall_margins {left, right, top, bottom}
+    in metres. The wall and the render bounds grow by them; the grid and its cells do not move.
   Defaults: wall {depth 0.42, base_front_y 0, material "wall"},
     placement_params {width_ratio 0.55, height_ratio 0.60, recess 0.01,
     mirror_x true}.
