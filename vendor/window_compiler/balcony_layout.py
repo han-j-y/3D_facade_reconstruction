@@ -4,7 +4,7 @@
 (slab span, sill height, plan outline). It also links stacked balconies:
 a half-enclosed or enclosed balcony with a balcony directly above it
 takes that balcony's slab as its roof, and the upper slab is aligned to
-the lower footprint. A curtain-wall circle is different: touching cells
+the lower footprint. An enclosed circle is different: touching cells
 become one semicircular drum (depth = half the diameter) from the lowest
 sill to the top of the stack. ``front_window_targets`` moves windows that
 share a cell with an enclosed balcony onto that balcony's front face.
@@ -339,11 +339,10 @@ def link_stacks(
             f["top_z"] = _own_top_z(f, library.get(f["name"]) or {})
 
 
-def _is_curtain_circle(frame: dict[str, Any] | None) -> bool:
+def _is_enclosed_circle(frame: dict[str, Any] | None) -> bool:
     return bool(
         frame is not None
         and frame.get("enclosure") == "enclosed"
-        and frame.get("curtain_wall")
         and frame.get("shape") == "circle"
         and frame.get("outline") is not None
     )
@@ -358,18 +357,18 @@ def _component_neighbors(a: dict[str, Any], b: dict[str, Any]) -> bool:
     return False
 
 
-def fuse_curtain_circles(
+def fuse_enclosed_circles(
     frames: Sequence[dict[str, Any] | None],
     library: dict[str, Any],
 ) -> None:
-    """Turn each connected curtain-wall circle into one semicircular drum.
+    """Turn each connected enclosed circle into one semicircular drum, curtain wall or punched.
 
     The host is the lowest cell. Its plan spans every bay in the component,
-    its depth is half that width, and its glass runs up to the top of the
-    highest cell. The other cells stay in the list so their windows are still
-    dropped, but they draw nothing.
+    its depth is half that width, and its skin runs up to the top of the
+    highest cell. The other cells stay in the list but draw nothing. Cells only
+    join cells with the same skin.
     """
-    live = [f for f in frames if _is_curtain_circle(f)]
+    live = [f for f in frames if _is_enclosed_circle(f)]
     seen = [False] * len(live)
     for i in range(len(live)):
         if seen[i]:
@@ -383,12 +382,18 @@ def fuse_curtain_circles(
             for j, other in enumerate(live):
                 if seen[j] or not _component_neighbors(live[k], other):
                     continue
+                if bool(other.get("curtain_wall")) != bool(live[k].get("curtain_wall")):
+                    continue
                 seen[j] = True
                 stack.append(j)
-        _fuse_curtain_component(comp, library)
+        _fuse_circle_component(comp, frames, library)
 
 
-def _fuse_curtain_component(comp: list[dict[str, Any]], library: dict[str, Any]) -> None:
+def _fuse_circle_component(
+    comp: list[dict[str, Any]],
+    frames: Sequence[dict[str, Any] | None],
+    library: dict[str, Any],
+) -> None:
     bottom_row = max(int(fr["row"]) for fr in comp)
     top_row = min(int(fr["row"]) for fr in comp)
     bottoms = [fr for fr in comp if int(fr["row"]) == bottom_row]
@@ -410,7 +415,13 @@ def _fuse_curtain_component(comp: list[dict[str, Any]], library: dict[str, Any])
     host["depth"] = depth
     host["shape"] = "circle"
     host["span_w"] = width / 0.98
-    host["outline"] = curtain_circle_panes(bx0, bx1, float(host["y_wall"]), depth)
+    curtain = bool(host.get("curtain_wall"))
+    y_wall = float(host["y_wall"])
+    host["outline"] = (
+        curtain_circle_panes(bx0, bx1, y_wall, depth)
+        if curtain
+        else slab_outline("circle", x0=bx0, x1=bx1, y_wall=y_wall, depth=depth)
+    )
     host["col0"] = min(int(fr["col0"]) for fr in comp)
     host["col1"] = max(int(fr["col1"]) for fr in comp)
     host["row_lo"] = top_row
@@ -421,7 +432,8 @@ def _fuse_curtain_component(comp: list[dict[str, Any]], library: dict[str, Any])
         top_z = _own_top_z(host, library.get(host["name"]) or {})
     host["top_z"] = top_z
     host["roof"] = "own" if any(fr.get("roof") == "own" for fr in tops) else (tops[0].get("roof") or "own")
-    host["curtain_drum"] = True
+    host["curtain_drum"] = curtain
+    host["drum"] = True
     host["skip_body"] = False
     by_row: dict[int, list[dict[str, Any]]] = {}
     for fr in comp:
@@ -433,6 +445,10 @@ def _fuse_curtain_component(comp: list[dict[str, Any]], library: dict[str, Any])
         if fr is host:
             continue
         fr["skip_body"] = True
+    lids = {fr["above"] for fr in tops if fr.get("above") is not None}
+    for f in frames:  # a balcony on top of the drum keeps its footprint
+        if f is not None and f["index"] in lids and not any(f is fr for fr in comp):
+            _align_to(f, host)
 
 
 def _fit_spans(
@@ -507,7 +523,9 @@ def _fit_spans(
             continue
         for f in comp:
             x0, x1 = max(f["x0"], left), min(f["x1"], right)
-            out[f["index"]] = (x0, x1) if x1 - x0 >= MIN_FRONT_WIDTH_M else None
+            # a round block fuses into one drum, so a narrow cell must stay to keep it connected
+            keep = x1 - x0 >= MIN_FRONT_WIDTH_M or (not rectangular and x1 > x0)
+            out[f["index"]] = (x0, x1) if keep else None
     return out
 
 
@@ -551,7 +569,7 @@ def balcony_frames(
     library = spec.get("balconies") or {}
     frames = _plain_frames(spec, fits)
     link_stacks(frames, library)
-    fuse_curtain_circles(frames, library)
+    fuse_enclosed_circles(frames, library)
     return frames
 
 

@@ -247,7 +247,9 @@ def _curved_front_targets(
         for f in frames:
             if f is None or f.get("enclosure") != "enclosed" or f.get("outline") is None or f.get("curtain_wall"):
                 continue
-            if front_edge_x(f) is not None or f["row"] != r or c_hi < f["col0"] or c_lo > f["col1"]:
+            if f.get("skip_body") or not int(f.get("row_lo", f["row"])) <= r <= int(f.get("row_hi", f["row"])):
+                continue
+            if front_edge_x(f) is not None or c_hi < f["col0"] or c_lo > f["col1"]:
                 continue
             xs = [q[0] for q in f["outline"]]
             if not (min(xs) + margin < wcx < max(xs) - margin):
@@ -341,8 +343,10 @@ def _cut_curved_openings(cuts: list[dict[str, Any]]) -> int:
         for obj in list(coll.all_objects):
             if not obj.name.startswith(prefix) or "_wall_" not in obj.name or obj.type != "MESH":
                 continue
-            bx = [(obj.matrix_world @ v.co).x for v in obj.data.vertices]
-            if not bx or max(bx) < x0 or min(bx) > x1:
+            world = [obj.matrix_world @ v.co for v in obj.data.vertices]
+            if not world or max(v.x for v in world) < x0 or min(v.x for v in world) > x1:
+                continue
+            if max(v.z for v in world) < z0 or min(v.z for v in world) > z1:  # another floor of a drum
                 continue
             # box cutter from 0.08 m outside the shell to past its back face, bent like the window so the
             # opening's reveals are normal to the curve

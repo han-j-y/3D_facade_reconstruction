@@ -1195,14 +1195,16 @@ def add_balcony_meshes(
                 parent=balc_coll,
             )
 
-        if enclosure == "enclosed" and frame.get("curtain_drum"):
+        bands: list[tuple[float, float]] = [(z_floor_top, z_top)]
+        if frame.get("drum"):
             sills = sorted(float(z) for z in (frame.get("floor_sills") or [sill_z]))
-            bands: list[tuple[float, float]] = []
+            bands = []
             for n_floor, z_sill in enumerate(sills):
                 floor_top = z_sill + thick
                 ceiling = sills[n_floor + 1] if n_floor + 1 < len(sills) else z_top
                 if ceiling - floor_top > 0.05:
                     bands.append((floor_top, ceiling))
+        if enclosure == "enclosed" and frame.get("curtain_drum"):
             _add_curtain_circle_shell(
                 prefix=prefix,
                 outline=outline,
@@ -1215,20 +1217,21 @@ def add_balcony_meshes(
             infill = str((ir.get("walls") or {}).get("infill") or "glass")
             if openings:
                 infill = "wall"
-            _add_enclosed_shell(
-                prefix=prefix,
-                outline=outline,
-                y_wall=y_wall,
-                z_lo=z_floor_top,
-                z_hi=z_top,
-                infill=infill,
-                wall_mat=wall_mat,
-                openings=openings,
-                cut_opening=cut_opening,
-                cut_opening_poly=cut_opening_poly,
-                parent=balc_coll,
-                cut_side_opening=cut_side_opening,
-            )
+            for band_lo, band_hi in bands:  # a drum's floor slabs share its outline, so its wall stops at each one
+                _add_enclosed_shell(
+                    prefix=prefix,
+                    outline=outline,
+                    y_wall=y_wall,
+                    z_lo=band_lo,
+                    z_hi=band_hi,
+                    infill=infill,
+                    wall_mat=wall_mat,
+                    openings=openings,
+                    cut_opening=cut_opening,
+                    cut_opening_poly=cut_opening_poly,
+                    parent=balc_coll,
+                    cut_side_opening=cut_side_opening,
+                )
         elif kind == "open_work":
             _add_open_work_guard(
                 prefix=prefix,

@@ -15,6 +15,7 @@ from balcony_layout import (
     _fit_spans,
     side_wall_targets,  # noqa: E402
     balcony_frames,
+    enclosed_window_fits,
     column_points,
     front_edge_x,
     front_window_targets,
@@ -284,16 +285,46 @@ class CurtainCircleTests(unittest.TestCase):
         self.assertFalse(a.get("skip_body"))
         self.assertFalse(b.get("skip_body"))
 
-    def test_punched_circle_stays_a_stack_of_floors(self) -> None:
+    def test_punched_circle_is_one_drum(self) -> None:
         spec = _spec(
-            [_at(3, 1, "c"), _at(2, 1, "c")],
+            [_at(3, 0, "c"), _at(3, 1, "c"), _at(2, 0, "c")],
             {"c": _ir("enclosed", shape="circle", width=2.4)},
         )
-        lower, upper = balcony_frames(spec)
-        self.assertFalse(lower.get("curtain_drum"))
-        self.assertFalse(upper.get("skip_body"))
-        self.assertAlmostEqual(lower["depth"], 1.5)
-        self.assertEqual(upper["roof"], "own")
+        host, side, upper = balcony_frames(spec)
+        self.assertTrue(host["drum"])
+        self.assertFalse(host["curtain_drum"])
+        self.assertFalse(host.get("skip_body"))
+        self.assertTrue(side["skip_body"])
+        self.assertTrue(upper["skip_body"])
+        self.assertEqual((host["col0"], host["col1"]), (0, 1))
+        self.assertEqual((host["row_lo"], host["row_hi"]), (2, 3))
+        self.assertEqual(len(host["floor_sills"]), 2)
+        self.assertAlmostEqual(host["depth"], (host["bx1"] - host["bx0"]) / 2.0)
+        self.assertAlmostEqual(max(y for _, y in host["outline"]) - host["y_wall"], host["depth"], places=3)
+
+    def test_narrow_middle_bay_does_not_split_a_punched_drum(self) -> None:
+        spec = _spec(
+            [_at(2, 0, "c"), _at(2, 1, "c"), _at(2, 2, "c")],
+            {"c": _ir("enclosed", shape="circle", width=2.4)},
+        )
+        spec["grid"]["cols"][1]["w"] = 0.2
+        outer = balcony_frames(spec)
+        win = lambda col, f: {"r": 2, "c": col, "span": 1, "ox": 0.5 * (f["bx0"] + f["bx1"]) - 0.4, "ww": 0.8}
+        fits = enclosed_window_fits(spec, [win(0, outer[0]), win(2, outer[0])])
+        self.assertTrue(all(v is not None for v in fits.values()))
+        frames = balcony_frames(spec, fits)
+        self.assertEqual(sum(1 for f in frames if not f.get("skip_body")), 1)
+
+    def test_punched_and_curtain_circles_stay_separate(self) -> None:
+        spec = _spec(
+            [_at(2, 0, "c"), _at(2, 1, "p")],
+            {"c": _curtain_circle(), "p": _ir("enclosed", shape="circle", width=2.4)},
+        )
+        a, b = balcony_frames(spec)
+        self.assertTrue(a["curtain_drum"])
+        self.assertFalse(b["curtain_drum"])
+        self.assertFalse(a.get("skip_body"))
+        self.assertFalse(b.get("skip_body"))
 
     def test_rectangle_curtain_does_not_become_a_drum(self) -> None:
         lib = {
