@@ -166,6 +166,7 @@ def _add_enclosed_shell(
     cut_opening: Callable[..., None],
     cut_opening_poly: Callable[..., None] | None,
     parent: bpy.types.Collection,
+    cut_side_opening: Callable[..., None] | None = None,
 ) -> None:
     """Faces on every outer edge of the slab, floor top to ``z_hi``.
 
@@ -203,9 +204,18 @@ def _add_enclosed_shell(
                 parent=parent,
             )
             is_front = abs(p0[1] - y_far) < 1e-4 and abs(p1[1] - y_far) < 1e-4
+            if panel is not None and not is_front and abs(ux) < 1e-4 and cut_side_opening is not None:
+                sign = 1 if p0[0] > mid[0] else -1
+                for o in openings:
+                    if o.get("side") == sign:
+                        cut_side_opening(
+                            panel, x_face=p0[0], sign=sign, y0=o["y0"], y1=o["y1"], z0=o["z0"], z1=o["z1"], depth=t
+                        )
             if panel is None or not is_front:
                 continue
             for o in openings:
+                if o.get("side"):
+                    continue
                 if o.get("outline") and cut_opening_poly is not None:
                     cut_opening_poly(panel, o["outline"], front_y=y_far, depth=t)
                 else:
@@ -901,6 +911,7 @@ def add_balcony_meshes(
     *,
     cut_opening: Callable[..., None],
     cut_opening_poly: Callable[..., None] | None = None,
+    cut_side_opening: Callable[..., None] | None = None,
     frames: list[dict[str, Any] | None] | None = None,
     front_openings: dict[int, list[dict[str, Any]]] | None = None,
 ) -> int:
@@ -1216,6 +1227,7 @@ def add_balcony_meshes(
                 cut_opening=cut_opening,
                 cut_opening_poly=cut_opening_poly,
                 parent=balc_coll,
+                cut_side_opening=cut_side_opening,
             )
         elif kind == "open_work":
             _add_open_work_guard(

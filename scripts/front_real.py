@@ -8,7 +8,7 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = Path("/local-scratch/localhome/jiyeonh/Research/arch/experiments/facade_e2e/vendor/window_compiler")
+ROOT = Path(__file__).resolve().parents[1] / "vendor" / "window_compiler"
 sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 

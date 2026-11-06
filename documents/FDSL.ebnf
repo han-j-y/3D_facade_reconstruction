@@ -155,7 +155,8 @@ recovery_meta = "{", [ '"facade_id": ', json_string ],
                        | ',"n_balcony_units" | "n_balcony_types"'
                        | ',"balcony_center_mode"' | ',"notes" | ...' ],
                      (* balcony_center_mode: "window" | "bay" | "photo".
-                        Enclosed volumes force "bay" when the run asked for "window". *)
+                        In "window" mode an open balcony sharing a floor and bay with an
+                        enclosed volume uses its own box (cx_norm). *)
                 "}" ;
 px_band       = "[", json_number, ",", json_number, "]" ;
 
@@ -196,6 +197,7 @@ instance      = "{", '"box_xyxy": [x0, y0, x1, y1]',                (* pixels *)
                      [ ',"colspan": ', json_int ],                  (* default 1 *)
                      ',"type_id": ', json_int,
                      [ ',"kind": ', ( '"window"' | '"door"' ) ],    (* default window *)
+                     [ ',"side_face": ', json_bool ],               (* --side-windows: on an enclosed block's side wall *)
                      [ ',"name": ', door_name ],
                      [ ',"shape": ', door_shape, ',"arch_rise_ratio": ', json_number ],
                                                                     (* door: overrides its type *)

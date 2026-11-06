@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+import math
 import os
 
 from typing import Any
 
 import bmesh
 import bpy
-from mathutils import Matrix
+from mathutils import Matrix, Vector
 
 from balcony_compile import ENCLOSED_WALL_M, add_balcony_meshes
-from balcony_layout import balcony_frames, front_edge_x, front_window_targets, windows_behind_glass
+from balcony_layout import balcony_frames, enclosed_window_fits, front_edge_x, front_window_targets, seat_on_window_bottoms, side_wall_targets, windows_behind_glass
 from balcony_plan import outer_edges
 from balcony_layout import front_y as balcony_front_y
 from blender_scene import build_blender_scene
@@ -118,6 +119,44 @@ def _cut_opening(
     )
     bpy.ops.object.transform_apply(scale=True)
     _apply_cutter(wall_obj, cutter)
+
+
+def _cut_side_opening(
+    panel: bpy.types.Object,
+    *,
+    x_face: float,
+    sign: int,
+    y0: float,
+    y1: float,
+    z0: float,
+    z1: float,
+    depth: float,
+    pad: float = 0.005,
+) -> None:
+    """Boolean-cut an opening through a panel square to the wall (YZ aperture, outer face at ``x_face``)."""
+    bpy.ops.mesh.primitive_cube_add(location=(x_face - sign * depth / 2.0, 0.5 * (y0 + y1), 0.5 * (z0 + z1)))
+    cutter = bpy.context.active_object
+    cutter.name = "OpeningCutter"
+    cutter.scale = (depth / 2.0 + 0.08, max(0.05, (y1 - y0) / 2.0 + pad), max(0.05, (z1 - z0) / 2.0 + pad))
+    bpy.ops.object.transform_apply(scale=True)
+    _apply_cutter(panel, cutter)
+
+
+def _turn_onto_side_wall(objs: list[bpy.types.Object], p: dict[str, Any], recess: float) -> None:
+    """A window is built facing +y from its origin; turn it about z to face out of the block's side wall."""
+    s = p["side"]
+    r_in = min(max(0.02, recess), 0.06)
+    pivot = Vector((p["ox"], p["oy"], p["oz"]))
+    if s["sign"] > 0:  # faces +x: local width runs towards the wall
+        to = Vector((s["edge_x"] - r_in, s["y0"] + p["ww"], p["oz"]))
+    else:
+        to = Vector((s["edge_x"] + r_in, s["y0"], p["oz"]))
+    turn = Matrix.Translation(to) @ Matrix.Rotation(-s["sign"] * math.pi / 2.0, 4, "Z") @ Matrix.Translation(-pivot)
+    bpy.context.view_layer.update()
+    inside = set(objs)
+    for o in objs:
+        if o.parent not in inside:
+            o.matrix_world = turn @ o.matrix_world
 
 
 def _cut_opening_poly(
@@ -497,24 +536,28 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
                         "ww": ww,
                         "hh": hh,
                         "seg_fit": seg_fit,
+                        "side_face": bool(inst and inst.get("side_face")),
                     }
                 )
             c += span
 
     planned_wins = [p for p in planned if p["kind"] == "window"]
+    # Side-wall windows look narrow only through foreshortening: they must not pull their type's sizes or columns.
+    front_wins = [p for p in planned_wins if not p.get("side_face")]
     if bool(pp.get("unify_type_size", True)):
         unify_type_sizes(
-            planned_wins,
+            front_wins,
             separate_spans=not bool(pp.get("unify_type_size_across_spans", True)),
         )
     if bool(pp.get("align_type_bottom", True)):
-        align_type_bottoms(planned_wins)
+        align_type_bottoms(front_wins)
     if align_columns_enabled(pp):
-        align_column_centers(planned_wins, tol=float(pp.get("align_column_tol", 0.25)))
+        align_column_centers(front_wins, tol=float(pp.get("align_column_tol", 0.25)))
 
     # balconies (hiroo/balcony-pipeline hooks), after type sizing and bay alignment: windows behind an enclosed
     # balcony's glass are dropped; windows on a balcony front move onto it (the balcony mesh cuts their opening)
-    frames = balcony_frames(spec) if spec.get("balcony_placement") else []
+    fits = enclosed_window_fits(spec, planned_wins) if spec.get("balcony_placement") else {}
+    frames = balcony_frames(spec, fits) if spec.get("balcony_placement") else []
     behind_glass = windows_behind_glass(frames, planned_wins)
     if behind_glass:
         drop_ids = {id(planned_wins[i]) for i in behind_glass}
@@ -530,7 +573,7 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
     # balcony meshes exist (see _cut_curved_openings)
     curved_cuts = _curved_front_targets(frames, planned_wins, set(flat_targets), recess)
 
-    frames = balcony_frames(spec) if spec.get("balcony_placement") else []
+    frames = balcony_frames(spec, fits) if spec.get("balcony_placement") else []
     behind_glass = windows_behind_glass(frames, planned_wins)
     if behind_glass:
         drop_ids = {id(planned_wins[i]) for i in behind_glass}
@@ -540,6 +583,16 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
         p = planned_wins[wi]
         p.update(ox=ox, oz=oz, ww=ww, hh=hh, on_balcony=fi)
         p["oy"] = balcony_front_y(frames[fi]) - max(0.0, recess)
+    mirrored: list[dict[str, Any]] = []
+    for wi, t in side_wall_targets(frames, planned_wins).items():
+        p = planned_wins[wi]
+        p.update(ww=t["ww"], oz=t["oz"], hh=t["hh"], on_balcony=t["frame"], side=t)
+        q = dict(p)
+        q.update(on_balcony=t["mirror"]["frame"], side=t["mirror"], slot=f"{p.get('slot', 0)}m")
+        planned.append(q)
+        mirrored.append(q)
+    planned_wins.extend(mirrored)
+    seat_on_window_bottoms(frames, planned_wins)
 
     for p in planned:
         if p["kind"] != "window":
@@ -562,6 +615,12 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
     front_openings: dict[int, list[dict[str, Any]]] = {}
     for p in planned_wins:
         if p.get("on_balcony") is None:
+            continue
+        if p.get("side"):
+            s = p["side"]
+            front_openings.setdefault(int(p["on_balcony"]), []).append(
+                {"side": s["sign"], "y0": s["y0"], "y1": s["y0"] + p["ww"], "z0": p["open_z0"], "z1": p["open_z1"]}
+            )
             continue
         front_openings.setdefault(int(p["on_balcony"]), []).append(
             {"x0": p["open_x0"], "x1": p["open_x1"], "z0": p["open_z0"], "z1": p["open_z1"],
@@ -632,6 +691,8 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
             parent_collection=windows_coll,
             origin=(p["ox"], p["oy"], p["oz"]),
         )
+        if p.get("side"):
+            _turn_onto_side_wall([o for o in bpy.data.objects if o not in before], p, recess)
         bend = next((c for c in curved_cuts if c["win"] is p), None)
         if bend is not None:
             _bend_to_curve([o for o in bpy.data.objects if o not in before], bend["frame"], bend["recess"])
@@ -644,6 +705,7 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
         facade_coll,
         cut_opening=_cut_opening,
         cut_opening_poly=_cut_opening_poly,
+        cut_side_opening=_cut_side_opening,
         frames=frames or None,
         front_openings=front_openings,
     )

@@ -24,7 +24,7 @@ from balcony_plan import (
     slab_outline,
     support_polyline,
 )
-from facade_spec import get_cell, total_grid_size
+from facade_spec import get_cell, image_facade_extent_x, total_grid_size
 
 STACKABLE = frozenset({"half_enclosed", "enclosed"})
 OUTLINE_SHAPES = frozenset({"triangle", "circle"})
@@ -36,6 +36,10 @@ FRONT_WINDOW_MARGIN_M = 0.08
 FRONT_WINDOW_MIN_FIT = 0.6
 MIN_FRONT_WIDTH_M = 0.4
 COLUMN_WIDTH_M = 0.25
+# Wall kept on each side of an enclosed block's outer windows, as a share of their median width.
+ENCLOSED_WINDOW_MARGIN = 0.25
+SIDE_WINDOW_MARGIN_M = 0.12
+SIDE_WALL_THICK_M = 0.12  # front panel the side window keeps clear of
 
 
 def span_xz(
@@ -113,13 +117,22 @@ def photo_x_span(
     if w_norm_f is None or w_norm_f <= 0:
         return bay_x0, bay_x1, bay_cx
 
-    span_w = max(0.25, min(total_w * 0.98, w_norm_f * total_w))
+    # The norms are fractions of image width, the wall spans only the grid's extent of the image.
+    iw = float(((spec.get("meta") or {}).get("image_size") or [0])[0] or 0.0)
+    xl, xr = image_facade_extent_x(spec) if iw > 0 else (0.0, 1.0)
+    iw = iw if iw > 0 else 1.0
+    grid_w = max(1e-6, xr - xl)
+
+    def to_grid(norm: float) -> float:
+        return min(1.0, max(0.0, (norm * iw - xl) / grid_w))
+
+    span_w = max(0.25, min(total_w * 0.98, w_norm_f * iw / grid_w * total_w))
     if cx_norm_f is not None:
-        cx_n = min(1.0, max(0.0, cx_norm_f))
+        cx_n = to_grid(cx_norm_f)
     elif window_cx_norm_f is not None:
-        cx_n = min(1.0, max(0.0, window_cx_norm_f))
+        cx_n = to_grid(window_cx_norm_f)
     elif bay_cx_norm_f is not None:
-        cx_n = min(1.0, max(0.0, bay_cx_norm_f))
+        cx_n = to_grid(bay_cx_norm_f)
     else:
         cx = bay_cx
         x0 = cx - span_w / 2.0
@@ -157,6 +170,7 @@ def _frame(
     *,
     mirror_x: bool,
     bottom_m: float,
+    x_span: tuple[float, float] | None = None,
 ) -> dict[str, Any] | None:
     grid = spec.get("grid") or {}
     n_rows = len(grid.get("rows") or [])
@@ -171,9 +185,13 @@ def _frame(
     wall = spec.get("wall") or {}
     front_y = float(wall.get("base_front_y", 0.0))
     x0, x1, z0, z1 = span_xz(spec, row, c0, c1, mirror_x=mirror_x)
-    x0, x1, cx = photo_x_span(
-        spec, rec, mirror_x=mirror_x, bay_x0=x0, bay_x1=x1, row=row, col0=c0, col1=c1
-    )
+    if x_span is not None:
+        x0, x1 = x_span
+        cx = 0.5 * (x0 + x1)
+    else:
+        x0, x1, cx = photo_x_span(
+            spec, rec, mirror_x=mirror_x, bay_x0=x0, bay_x1=x1, row=row, col0=c0, col1=c1
+        )
     span_w = max(0.3, x1 - x0)
     cell_h = max(0.3, z1 - z0)
     floor = ir.get("floor") or {}
@@ -219,6 +237,7 @@ def _frame(
     )
     return {
         "index": index,
+        "from_bays": rec.get("width_norm") is None,
         "name": str(rec.get("type") or ""),
         "row": row,
         "col0": min(c0, c1),
@@ -409,12 +428,91 @@ def _fuse_curtain_component(comp: list[dict[str, Any]], library: dict[str, Any])
         fr["skip_body"] = True
 
 
-def balcony_frames(spec: dict[str, Any]) -> list[dict[str, Any] | None]:
-    """One frame per ``balcony_placement`` entry (None when it cannot be placed)."""
+def _fit_spans(
+    frames: Sequence[dict[str, Any] | None],
+    windows: Sequence[dict[str, Any]],
+) -> dict[int, tuple[float, float] | None]:
+    """X span per enclosed cell, from the windows of its connected block; None removes the cell.
+
+    Cells placed from grid bays take the bay's whole width, wall included. Every row of a block gets the same outer
+    edges, so a stack stays straight. A block with no windows keeps its bays, and curtain walls are left alone.
+
+    A block with side-wall windows on one side has its true position between the front and side windows: the photo
+    shows the front face pushed away from the camera. It is centred on the span of both, as wide as the front face
+    (outer edge to the corner between the windows), on the front windows' column, and the front windows move with it
+    (``ox``, in place).
+    """
+    live = [
+        f for f in frames
+        if f is not None and f["enclosure"] == "enclosed" and f["from_bays"] and not f["curtain_wall"]
+    ]
+    out: dict[int, tuple[float, float] | None] = {}
+    seen: set[int] = set()
+    for start in live:
+        if start["index"] in seen:
+            continue
+        seen.add(start["index"])
+        comp, stack = [], [start]
+        while stack:
+            f = stack.pop()
+            comp.append(f)
+            for g in live:
+                if g["index"] not in seen and _component_neighbors(f, g):
+                    seen.add(g["index"])
+                    stack.append(g)
+        lo = min(f["x0"] for f in comp)
+        hi = max(f["x1"] for f in comp)
+        hits, sides = [], []
+        rectangular = all(f["shape"] == "rectangle" for f in comp)
+        for w in windows:
+            c_lo = int(w["c"])
+            c_hi = c_lo + max(1, int(w.get("span", 1))) - 1
+            cx = float(w["ox"]) + 0.5 * float(w["ww"])
+            if lo < cx < hi and any(f["row"] == w["r"] and c_lo <= f["col1"] and c_hi >= f["col0"] for f in comp):
+                (sides if w.get("side_face") and rectangular else hits).append(w)
+        if not hits:
+            continue
+        widths = sorted(float(w["ww"]) for w in hits)
+        margin = ENCLOSED_WINDOW_MARGIN * widths[len(widths) // 2]
+        left = max(lo, min(float(w["ox"]) for w in hits) - margin)
+        right = min(hi, max(float(w["ox"]) + float(w["ww"]) for w in hits) + margin)
+        front_cols = {int(w["c"]) for w in hits}
+        front_lo = min(float(w["ox"]) for w in hits)
+        front_hi = max(float(w["ox"]) + float(w["ww"]) for w in hits)
+        right_side = [w for w in sides if float(w["ox"]) + 0.5 * float(w["ww"]) > 0.5 * (front_lo + front_hi)]
+        if sides and len(front_cols) == 1 and len(right_side) in (0, len(sides)):
+            # Mirror the left case onto the right one: u runs from the block's outer edge towards its side wall.
+            sign = 1.0 if right_side else -1.0
+            def u_lo(w: dict[str, Any]) -> float:
+                return float(w["ox"]) if sign > 0 else -(float(w["ox"]) + float(w["ww"]))
+            def u_hi(w: dict[str, Any]) -> float:
+                return float(w["ox"]) + float(w["ww"]) if sign > 0 else -float(w["ox"])
+            outer = min(u_lo(w) for w in hits) - margin
+            corner = 0.5 * (max(u_hi(w) for w in hits) + min(u_lo(w) for w in sides))
+            centre = sign * 0.5 * (outer + max(u_hi(w) for w in sides) + margin)
+            half = 0.5 * (corner - outer)
+            shift = centre - 0.5 * (front_lo + front_hi)
+            for w in hits:
+                w["ox"] = float(w["ox"]) + shift
+            col = next(iter(front_cols))
+            for f in comp:
+                out[f["index"]] = (centre - half, centre + half) if f["col0"] <= col <= f["col1"] else None
+            continue
+        for f in comp:
+            x0, x1 = max(f["x0"], left), min(f["x1"], right)
+            out[f["index"]] = (x0, x1) if x1 - x0 >= MIN_FRONT_WIDTH_M else None
+    return out
+
+
+def _plain_frames(
+    spec: dict[str, Any],
+    fits: dict[int, tuple[float, float] | None] | None = None,
+) -> list[dict[str, Any] | None]:
     library = spec.get("balconies") or {}
     pp = spec.get("placement_params") or {}
     mirror_x = bool(pp.get("mirror_x", True))
     bottom_m = float(pp.get("bottom_margin_ratio", 0.14))
+    fits = fits or {}
     frames: list[dict[str, Any] | None] = []
     for i, rec in enumerate(spec.get("balcony_placement") or []):
         name = str(rec.get("type") or "")
@@ -423,10 +521,62 @@ def balcony_frames(spec: dict[str, Any]) -> list[dict[str, Any] | None]:
             print(f"warn: unknown balcony type {name!r}")
             frames.append(None)
             continue
-        frames.append(_frame(spec, i, rec, ir, mirror_x=mirror_x, bottom_m=bottom_m))
+        if i in fits and fits[i] is None:
+            frames.append(None)
+            continue
+        frames.append(_frame(spec, i, rec, ir, mirror_x=mirror_x, bottom_m=bottom_m, x_span=fits.get(i)))
+    return frames
+
+
+def enclosed_window_fits(
+    spec: dict[str, Any],
+    windows: Sequence[dict[str, Any]],
+) -> dict[int, tuple[float, float] | None]:
+    """Spans for ``balcony_frames``. Take them once, before any window moves onto a balcony front."""
+    return _fit_spans(_plain_frames(spec), windows)
+
+
+def balcony_frames(
+    spec: dict[str, Any],
+    fits: dict[int, tuple[float, float] | None] | None = None,
+) -> list[dict[str, Any] | None]:
+    """One frame per ``balcony_placement`` entry (None when it cannot be placed)."""
+    library = spec.get("balconies") or {}
+    frames = _plain_frames(spec, fits)
     link_stacks(frames, library)
     fuse_curtain_circles(frames, library)
     return frames
+
+
+def seat_on_window_bottoms(
+    frames: Sequence[dict[str, Any] | None],
+    windows: Sequence[dict[str, Any]],
+) -> None:
+    """An open balcony above its window's bottom drops down to it (in place); one at or below it stays.
+
+    Slab top on the lowest window bottom the balcony overlaps; a juliet railing, which has no slab, starts there.
+    Balconies with no window on their row keep their height, and so do rooftop railings and enclosures.
+    """
+    live = [f for f in frames if f is not None]
+    for f in live:
+        if f["enclosure"] != "open" or f["structure"] not in ("projecting", "juliet"):
+            continue
+        bottoms = [
+            float(w["oz"])
+            for w in windows
+            if w["r"] == f["row"] and "on_balcony" not in w
+            and min(f["bx1"], w["ox"] + w["ww"]) - max(f["bx0"], w["ox"]) > 0.0
+        ]
+        if not bottoms:
+            continue
+        drop = f["thick"] if f["structure"] != "juliet" else 0.0
+        target = max(0.0, min(bottoms) - drop)
+        if target >= f["sill_z"]:
+            continue
+        f["sill_z"] = target
+        for g in live:
+            if g.get("above") == f["index"]:
+                g["top_z"] = f["sill_z"]
 
 
 def front_edge_x(frame: dict[str, Any]) -> tuple[float, float] | None:
@@ -474,7 +624,7 @@ def front_window_targets(
         for f in frames:
             if f is None or f["enclosure"] != "enclosed" or f["outline"] is None:
                 continue
-            if f.get("curtain_wall"):
+            if f.get("curtain_wall") or (w.get("side_face") and f["shape"] == "rectangle"):
                 continue
             if f["row"] != r or c_hi < f["col0"] or c_lo > f["col1"]:
                 continue
@@ -493,6 +643,82 @@ def front_window_targets(
                 continue
             out[wi] = (f["index"], (x0, z0, x1 - x0, z1 - z0))
             break
+    return out
+
+
+def side_wall_targets(
+    frames: Sequence[dict[str, Any] | None],
+    windows: Sequence[dict[str, Any]],
+    *,
+    margin: float = SIDE_WINDOW_MARGIN_M,
+) -> dict[int, dict[str, Any]]:
+    """Windows flagged ``side_face``, placed on the nearest side wall of a rectangular punched block on their floor.
+
+    Returns ``{window_index: {frame, sign, edge_x, y0, ww, oz, hh, mirror}}``. ``sign`` is +1 on the block's max-x side.
+    The photo shows a side wall foreshortened, so the width is capped by the wall's length; height and bottom follow
+    the block's front window on that floor, as they would on a real bay. The photo cannot see the far side wall:
+    ``mirror`` (frame, sign, edge_x, y0) is the same window there, assuming a symmetric bay.
+    """
+    out: dict[int, dict[str, Any]] = {}
+    for wi, w in enumerate(windows):
+        if not w.get("side_face"):
+            continue
+        c = int(w["c"])
+        wcx = float(w["ox"]) + 0.5 * float(w["ww"])
+        near = [
+            f for f in frames
+            if f is not None and f["row"] == w["r"] and f["enclosure"] == "enclosed" and not f.get("curtain_wall")
+            and f["shape"] == "rectangle" and f["outline"] is not None and f["col0"] - 1 <= c <= f["col1"] + 1
+        ]
+        if not near:
+            continue
+        lo, hi = min(f["bx0"] for f in near), max(f["bx1"] for f in near)
+        sign = 1 if wcx > 0.5 * (lo + hi) else -1
+        f = max(near, key=lambda fr: sign * (fr["bx1"] if sign > 0 else fr["bx0"]))
+        # Walk across touching cells on this floor to the block's far wall.
+        row_cells = [
+            fr for fr in frames
+            if fr is not None and fr["row"] == w["r"] and fr["enclosure"] == "enclosed" and not fr.get("curtain_wall")
+            and fr["shape"] == "rectangle" and fr["outline"] is not None
+        ]
+        far = f
+        while True:
+            edge = far["bx0"] if sign > 0 else far["bx1"]
+            next_cell = next(
+                (fr for fr in row_cells if fr is not far and abs((fr["bx1"] if sign > 0 else fr["bx0"]) - edge) < 0.2),
+                None,
+            )
+            if next_cell is None:
+                break
+            far = next_cell
+        y_wall = float(f["y_wall"])
+        length = front_y(f) - y_wall
+        usable = length - 2.0 * margin - SIDE_WALL_THICK_M
+        ww = min(float(w["ww"]), usable)
+        if ww < 0.3:
+            continue
+        z_lo, z_hi = f["sill_z"] + f["thick"] + margin, float(f["top_z"]) - margin
+        front = [o for o in windows if o.get("on_balcony") == f["index"] and o["r"] == w["r"] and not o.get("side_face")]
+        oz, hh = (float(front[0]["oz"]), float(front[0]["hh"])) if front else (float(w["oz"]), float(w["hh"]))
+        oz = max(oz, z_lo)
+        hh = min(hh, z_hi - oz)
+        if hh < 0.3:
+            continue
+        out[wi] = {
+            "frame": int(f["index"]),
+            "sign": sign,
+            "edge_x": float(f["bx1"] if sign > 0 else f["bx0"]),
+            "y0": y_wall + margin + 0.5 * (usable - ww),
+            "ww": ww,
+            "oz": oz,
+            "hh": hh,
+            "mirror": {
+                "frame": int(far["index"]),
+                "sign": -sign,
+                "edge_x": float(far["bx0"] if sign > 0 else far["bx1"]),
+                "y0": y_wall + margin + 0.5 * (usable - ww),
+            },
+        }
     return out
 
 

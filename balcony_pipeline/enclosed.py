@@ -24,6 +24,8 @@ MIN_UPPER_FLOOR_COVER = 0.90
 MIN_COLUMN_COVER = 0.40
 # Drop an open railing if this fraction of its box sits on an enclosed volume.
 OPEN_ON_ENCLOSED_FRAC = 0.25
+# Same share as the compiler's ENCLOSED_WINDOW_MARGIN: wall kept beside a block's outer windows.
+ENCLOSED_WINDOW_MARGIN = 0.25
 
 ENCLOSED_IR: dict[str, Any] = {
     "type": "balcony",
@@ -215,6 +217,66 @@ def _intersect_over_a(
     return inter / area
 
 
+def enclosed_blocks(enclosed_units: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    """Connected blocks: units on one floor with touching bays, or on adjacent floors sharing a bay."""
+    blocks: list[list[dict[str, Any]]] = []
+    seen: set[int] = set()
+    for i in range(len(enclosed_units)):
+        if i in seen:
+            continue
+        seen.add(i)
+        comp, stack = [], [i]
+        while stack:
+            k = stack.pop()
+            a = enclosed_units[k]
+            comp.append(a)
+            for j, b in enumerate(enclosed_units):
+                if j in seen:
+                    continue
+                df = abs(int(a["floor"]) - int(b["floor"]))
+                ba, bb = _bay_set(a), _bay_set(b)
+                if (bool(ba & bb) if df == 1 else df == 0 and any(abs(p - q) <= 1 for p in ba for q in bb)):
+                    seen.add(j)
+                    stack.append(j)
+        blocks.append(comp)
+    return blocks
+
+
+def fit_enclosed_boxes_to_windows(
+    enclosed_units: list[dict[str, Any]],
+    instances: list[dict[str, Any]],
+    *,
+    margin: float = ENCLOSED_WINDOW_MARGIN,
+) -> None:
+    """Set ``fit_box_xyxy`` on each enclosed unit (in place): its box cut to its block's windows plus a margin.
+
+    Photo-space counterpart of the compiler's ``_fit_spans``, so an open balcony beside a narrowed block is kept. An
+    empty box means the cell has no windows and will not be built. A block with no windows gets no fit box.
+    """
+    for comp in enclosed_blocks(enclosed_units):
+        lo = min(float(u["box_xyxy"][0]) for u in comp)
+        hi = max(float(u["box_xyxy"][2]) for u in comp)
+        hits = []
+        for w in instances:
+            if w.get("kind", "window") != "window":
+                continue
+            bays = set(range(int(w["bay"]), int(w["bay"]) + max(1, int(w.get("colspan", 1)))))
+            box = w["box_xyxy"]
+            if lo < 0.5 * (box[0] + box[2]) < hi and any(
+                int(u["floor"]) == int(w["floor"]) and _bay_set(u) & bays for u in comp
+            ):
+                hits.append(box)
+        if not hits:
+            continue
+        widths = sorted(b[2] - b[0] for b in hits)
+        pad = margin * widths[len(widths) // 2]
+        left = max(lo, min(b[0] for b in hits) - pad)
+        right = min(hi, max(b[2] for b in hits) + pad)
+        for u in comp:
+            x0, y0, x1, y1 = u["box_xyxy"][:4]
+            u["fit_box_xyxy"] = [max(float(x0), left), float(y0), min(float(x1), right), float(y1)]
+
+
 def open_conflicts_enclosed(
     open_u: dict[str, Any],
     enc_u: dict[str, Any],
@@ -229,12 +291,16 @@ def open_conflicts_enclosed(
     """
     if int(open_u.get("floor", -1)) != int(enc_u.get("floor", -2)):
         return False
-    if _bay_set(open_u) & _bay_set(enc_u):
-        return True
+    fit = enc_u.get("fit_box_xyxy")
+    if fit is not None and fit[2] <= fit[0]:
+        return False  # the compiler removes this cell: no windows in it
     ob = open_u.get("box_xyxy")
+    # Bay bands reach across the wall, so with a fitted block only the box says whether they touch.
+    if _bay_set(open_u) & _bay_set(enc_u) and (fit is None or not ob):
+        return True
     if not ob:
         return False
-    for key in ("box_xyxy", "volume_box_xyxy"):
+    for key in ("fit_box_xyxy",) if fit is not None else ("box_xyxy", "volume_box_xyxy"):
         eb = enc_u.get(key)
         if eb and _intersect_over_a(ob, eb) >= min_frac:
             return True

@@ -40,6 +40,7 @@ import run_pipeline as rp  # noqa: E402
 from enclosed import (  # noqa: E402
     assign_enclosed_plan,
     drop_open_under_enclosed,
+    fit_enclosed_boxes_to_windows,
     ensure_da3_depth,
     median_floor_height,
     apply_floor_majority,
@@ -70,6 +71,7 @@ from heuristic_ir import (  # noqa: E402
     structure_from_ir,
 )
 from merge_dsl import merge_balcony_into_windows_dsl  # noqa: E402
+from side_windows import flag_side_windows  # noqa: E402
 from recovery_profile import DEFAULT_PROFILE, PROFILES, resolve_profile  # noqa: E402
 from snap import _bands_from_windows_dsl, snap_units  # noqa: E402
 from unit_labels import ExternalUnitLabels, UnitLabelPredictor  # noqa: E402
@@ -222,6 +224,12 @@ def parse_args() -> argparse.Namespace:
             "default checkpoints/oriel_skin.joblib (user, 2026-11-03). Missing file or "
             "--no-oriel-skin-model falls back to the railing classifier's skin head"
         ),
+    )
+    ap.add_argument(
+        "--side-windows",
+        action="store_true",
+        help="windows on an enclosed block's side wall, found from a DA3 depth ramp, go on that wall and are mirrored "
+        "on the far one; the block takes its position and width from its front windows",
     )
     ap.add_argument(
         "--no-oriel-skin-model",
@@ -848,6 +856,17 @@ def run(args: argparse.Namespace) -> Path | None:
                 out_dir / f"s2b_enclosed_snap_{stem}.png",
             )
             print(f"  {draw_n} -> {len(enclosed_units)} floor placements")
+        if enclosed_units:
+            depth_path = None
+            if bool(getattr(args, "side_windows", False)):
+                depth_path = ensure_da3_depth(image_path, depth_dir, device=str(device))
+            if depth_path is not None:
+                depth = np.load(depth_path).astype(np.float32)
+                if depth.shape != (facade.size[1], facade.size[0]):
+                    depth = np.asarray(Image.fromarray(depth).resize(facade.size, Image.BILINEAR))
+                side = flag_side_windows(windows_dsl.get("instances") or [], enclosed_units, depth.astype(float))
+                print(f"  side-wall windows: {side}")
+            fit_enclosed_boxes_to_windows(enclosed_units, windows_dsl.get("instances") or [])
         if snapped and enclosed_units:
             snapped, dropped_open = drop_open_under_enclosed(snapped, enclosed_units)
             for u in dropped_open:

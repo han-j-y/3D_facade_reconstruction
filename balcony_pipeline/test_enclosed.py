@@ -15,6 +15,8 @@ if str(HERE) not in sys.path:
 from PIL import Image  # noqa: E402
 
 from enclosed import (  # noqa: E402
+    fit_enclosed_boxes_to_windows,
+    open_conflicts_enclosed,
     drop_open_under_enclosed,
     enclosed_ir,
     ensure_da3_depth,
@@ -253,7 +255,7 @@ class EnclosedPlaceTests(unittest.TestCase):
         self.assertEqual(units[0]["structure_ir"]["enclosure"], "enclosed")
         self.assertNotIn("railing", units[0]["structure_ir"])
 
-    def test_merge_open_uses_bay_center_when_enclosed_present(self) -> None:
+    def test_merge_open_without_a_window_stays_at_its_bay(self) -> None:
         dsl = _dsl()
         dsl["instances"] = [
             {"unit_id": 14, "floor": 1, "bay": 1, "box_xyxy": [110, 110, 190, 190]},
@@ -296,9 +298,8 @@ class EnclosedPlaceTests(unittest.TestCase):
         recs = out["layout"]["balconies"]
         open_rec = next(r for r in recs if r["type"] != "balc_enclosed")
         self.assertNotIn("window_cx_norm", open_rec)
-        self.assertIn("bay_cx_norm", open_rec)
         self.assertAlmostEqual(open_rec["bay_cx_norm"], 50 / 300, places=5)
-        self.assertEqual(out["meta"]["balcony_center_mode"], "bay")
+        self.assertEqual(out["meta"]["balcony_center_mode"], "window")
 
     def test_merge_drops_open_sitting_on_enclosed_box(self) -> None:
         units = [
@@ -403,6 +404,38 @@ class EnclosedPlaceTests(unittest.TestCase):
             photo.write_bytes(b"x")
             with patch("enclosed.subprocess.run", side_effect=OSError("no gpu")):
                 self.assertIsNone(ensure_da3_depth(photo, root / "depth"))
+
+
+class EnclosedFitBoxTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.cells = [
+            {"floor": 0, "bay_start": 1, "bay_end": 1, "box_xyxy": [100, 0, 200, 50]},
+            {"floor": 0, "bay_start": 2, "bay_end": 2, "box_xyxy": [200, 0, 300, 50]},
+        ]
+        self.windows = [{"floor": 0, "bay": 1, "kind": "window", "box_xyxy": [140, 10, 180, 40]}]
+
+    def test_cuts_to_windows_and_empties_windowless_cell(self) -> None:
+        fit_enclosed_boxes_to_windows(self.cells, self.windows)
+        self.assertEqual(self.cells[0]["fit_box_xyxy"], [130.0, 0.0, 190.0, 50.0])
+        self.assertLessEqual(self.cells[1]["fit_box_xyxy"][2], self.cells[1]["fit_box_xyxy"][0])
+
+    def test_open_balcony_beside_narrowed_block_survives(self) -> None:
+        neighbour = {"floor": 0, "bay_start": 0, "bay_end": 0, "box_xyxy": [60, 10, 125, 40]}
+        self.assertTrue(open_conflicts_enclosed(neighbour, self.cells[0]))
+        fit_enclosed_boxes_to_windows(self.cells, self.windows)
+        self.assertFalse(open_conflicts_enclosed(neighbour, self.cells[0]))
+
+    def test_same_bay_inside_fit_conflicts(self) -> None:
+        fit_enclosed_boxes_to_windows(self.cells, self.windows)
+        self.assertTrue(open_conflicts_enclosed({"floor": 0, "bay_start": 1, "bay_end": 1, "box_xyxy": [135, 10, 185, 40]}, self.cells[0]))
+
+    def test_same_bay_outside_fit_survives(self) -> None:
+        fit_enclosed_boxes_to_windows(self.cells, self.windows)
+        self.assertFalse(open_conflicts_enclosed({"floor": 0, "bay_start": 0, "bay_end": 1, "box_xyxy": [60, 10, 125, 40]}, self.cells[0]))
+
+    def test_no_windows_leaves_boxes(self) -> None:
+        fit_enclosed_boxes_to_windows(self.cells, [])
+        self.assertNotIn("fit_box_xyxy", self.cells[0])
 
 
 class RailingEnclosureTests(unittest.TestCase):

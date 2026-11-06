@@ -11,6 +11,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from merge_dsl import (  # noqa: E402
+    _move_stacks_together,
     _mean_bay_center_norm,
     _photo_norms,
     merge_balcony_into_windows_dsl,
@@ -183,6 +184,92 @@ class PhotoNormTests(unittest.TestCase):
         b = out["layout"]["balconies"][0]
         self.assertAlmostEqual(b["window_cx_norm"], 0.05)
         self.assertEqual(out["meta"]["balcony_center_mode"], "window")
+
+    def _enclosed_case(self, instances: list[dict]) -> dict:
+        units = [
+            {"type_id": 0, "floor": 0, "bay_start": 1, "bay_end": 1, "bay": 1, "bays": [1], "bays_center": [1],
+             "box_xyxy": [150, 60, 250, 100], "structure_ir": {"enclosure": "open"}},
+            {"type_id": 0, "floor": 0, "bay_start": 3, "bay_end": 3, "bay": 3, "bays": [3], "bays_center": [3],
+             "box_xyxy": [300, 0, 400, 100], "source": "enclosed_volume", "fit_box_xyxy": [300, 0, 400, 100],
+             "structure_ir": {"enclosure": "enclosed"}},
+        ]
+        dsl = {
+            "meta": {"image_size": [1000, 500], "columns_xy": [[0, 100], [100, 300], [300, 400], [400, 500]],
+                     "floors_y": [[0, 100]]},
+            "layout": {"floors": [{"name": "F0", "id": 0, "h_norm": 1.0}],
+                       "bays": [{"name": f"B{i}", "id": i, "w_norm": 0.25} for i in range(4)],
+                       "placement": [[None] * 4]},
+            "window_types": [], "instances": instances,
+        }
+        return merge_balcony_into_windows_dsl(
+            dsl, balcony_types=[{"name": "balc_type_00", "structure_ir": {}}], units=units, center_mode="window"
+        )
+
+    def test_enclosed_volume_does_not_change_the_open_balcony_center(self) -> None:
+        win = {"unit_id": 0, "floor": 0, "bay": 1, "box_xyxy": [170, 10, 230, 60], "type_id": 0}
+        rec = self._enclosed_case([win])["layout"]["balconies"][0]
+        self.assertAlmostEqual(rec["window_cx_norm"], 0.2)
+        self.assertNotIn("bay_cx_norm", rec)
+
+    def test_side_wall_window_is_no_partner(self) -> None:
+        front = {"unit_id": 0, "floor": 0, "bay": 1, "box_xyxy": [150, 10, 190, 60], "type_id": 0}
+        side = {"unit_id": 1, "floor": 0, "bay": 1, "box_xyxy": [210, 10, 240, 60], "type_id": 0, "side_face": True}
+        rec = self._enclosed_case([front, side])["layout"]["balconies"][0]
+        self.assertEqual(rec["partner_window_unit_ids"], [0])
+
+    def _rec(self, floor: int, box: list[int], **kw) -> dict:
+        return {"floor": floor, "type": "balc_type_00", "box_xyxy": box, "width_norm": 0.1} | kw
+
+    def test_stack_of_one_type_shares_the_median_window_center(self) -> None:
+        recs = [self._rec(0, [100, 0, 200, 9], window_cx_norm=0.14), self._rec(1, [102, 0, 200, 9], window_cx_norm=0.16),
+                self._rec(2, [101, 0, 200, 9], window_cx_norm=0.15)]
+        _move_stacks_together(recs, 1000)
+        self.assertEqual([r["window_cx_norm"] for r in recs], [0.15, 0.15, 0.15])
+
+    def test_floor_without_a_window_follows_its_stack(self) -> None:
+        recs = [self._rec(0, [100, 0, 200, 9], window_cx_norm=0.14), self._rec(1, [102, 0, 200, 9], bay_cx_norm=0.2)]
+        _move_stacks_together(recs, 1000)
+        self.assertEqual(recs[1]["window_cx_norm"], 0.14)
+        self.assertNotIn("bay_cx_norm", recs[1])
+
+    def test_stack_without_any_window_stays_at_its_bay(self) -> None:
+        recs = [self._rec(0, [100, 0, 200, 9], bay_cx_norm=0.2), self._rec(1, [102, 0, 200, 9], bay_cx_norm=0.2)]
+        _move_stacks_together(recs, 1000)
+        self.assertEqual([r["bay_cx_norm"] for r in recs], [0.2, 0.2])
+
+    def test_other_type_and_other_column_do_not_move_together(self) -> None:
+        recs = [self._rec(0, [100, 0, 200, 9], window_cx_norm=0.14),
+                self._rec(1, [100, 0, 200, 9], window_cx_norm=0.2, type="balc_type_01"),
+                self._rec(2, [700, 0, 800, 9], window_cx_norm=0.75)]
+        _move_stacks_together(recs, 1000)
+        self.assertEqual([r["window_cx_norm"] for r in recs], [0.14, 0.2, 0.75])
+
+    def test_balcony_at_its_bay_overlapping_another_uses_its_box(self) -> None:
+        recs = [self._rec(0, [100, 0, 200, 9], bay_cx_norm=0.5), self._rec(0, [500, 0, 600, 9], window_cx_norm=0.5, type="balc_type_01")]
+        _move_stacks_together(recs, 1000)
+        self.assertEqual(recs[0]["cx_norm"], 0.15)
+        self.assertNotIn("bay_cx_norm", recs[0])
+
+    def test_long_gallery_does_not_join_the_small_balconies_it_spans(self) -> None:
+        recs = [self._rec(0, [100, 0, 200, 9], window_cx_norm=0.15), self._rec(1, [100, 0, 800, 9], window_cx_norm=0.45),
+                self._rec(0, [600, 0, 700, 9], window_cx_norm=0.65), self._rec(2, [100, 0, 200, 9], window_cx_norm=0.16),
+                self._rec(2, [600, 0, 700, 9], window_cx_norm=0.66)]
+        _move_stacks_together(recs, 1000)
+        self.assertEqual(recs[1]["window_cx_norm"], 0.45)
+        self.assertEqual(recs[0]["window_cx_norm"], recs[3]["window_cx_norm"])
+        self.assertEqual(recs[2]["window_cx_norm"], recs[4]["window_cx_norm"])
+        self.assertLess(recs[0]["window_cx_norm"], 0.2)
+        self.assertGreater(recs[2]["window_cx_norm"], 0.6)
+
+    def test_one_floor_never_stacks_with_itself(self) -> None:
+        recs = [self._rec(0, [100, 0, 200, 9], window_cx_norm=0.14), self._rec(0, [120, 0, 220, 9], window_cx_norm=0.18)]
+        _move_stacks_together(recs, 1000)
+        self.assertEqual([r["window_cx_norm"] for r in recs], [0.14, 0.18])
+
+    def test_balcony_on_its_own_box_is_left_alone(self) -> None:
+        recs = [self._rec(0, [100, 0, 200, 9], cx_norm=0.15), self._rec(1, [100, 0, 200, 9], window_cx_norm=0.2)]
+        _move_stacks_together(recs, 1000)
+        self.assertEqual(recs[0]["cx_norm"], 0.15)
 
     def test_mean_bay_center_norm(self) -> None:
         bay_x = {0: (0, 100), 1: (100, 300), 2: (300, 400)}

@@ -43,13 +43,15 @@ def is_real_lfs_file(path: Path) -> bool:
     return path.is_file() and not path.open("rb").read(40).startswith(b"version https://git-lfs")
 
 
-def run_balconies(image: Path, out_dir: Path, device: str | None) -> Path | None:
+def run_balconies(image: Path, out_dir: Path, device: str | None, side_windows: bool = False) -> Path | None:
     """Balcony track on a finished window DSL; returns the merged DSL path (None if it produced none)."""
     cmd = [sys.executable, str(ROOT / "balcony_pipeline" / "run_balcony.py"),
            "--image", str(image), "--windows-dsl", str(out_dir / "facade_dsl.json"),
            "--out-dir", str(out_dir / "balcony")]
     if device:
         cmd += ["--device", device]
+    if side_windows:
+        cmd.append("--side-windows")
     # The default enclosed detector (cell_clf) needs the trained model (Git LFS); without it use the SAM3+DA3 detector.
     if not is_real_lfs_file(ROOT / "checkpoints" / "oriel_cell_gate.joblib"):
         print("warn: oriel_cell_gate.joblib missing, enclosed detection falls back to sam3")
@@ -70,10 +72,13 @@ if __name__ == "__main__":
     with_balconies = "--with-balconies" in sys.argv
     if with_balconies:
         sys.argv.remove("--with-balconies")
+    side_windows = "--side-windows" in sys.argv
+    if side_windows:
+        sys.argv.remove("--side-windows")
     run_pipeline.main()
     if with_balconies:
         image, out_dir = _arg(sys.argv, "--image"), _arg(sys.argv, "--out-dir")
         if not image or not out_dir:
             print("warn: --with-balconies needs --image and --out-dir; skipped")
         else:
-            run_balconies(Path(image), Path(out_dir), _arg(sys.argv, "--device"))
+            run_balconies(Path(image), Path(out_dir), _arg(sys.argv, "--device"), side_windows)

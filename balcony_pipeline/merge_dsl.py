@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import statistics
 from typing import Any
 
 from enclosed import drop_open_under_enclosed
@@ -71,6 +72,73 @@ def _normalize_center_mode(center_mode: str) -> str:
     return "window"
 
 
+STACK_MIN_WIDTH_RATIO = 0.6
+
+
+def _open_center(rec: dict[str, Any]) -> float | None:
+    for key in ("window_cx_norm", "bay_cx_norm"):
+        if key in rec:
+            return float(rec[key])
+    return None
+
+
+def _move_stacks_together(records: list[dict[str, Any]], image_width: float) -> None:
+    """Open balconies of one type stacked over each other share one center (in place).
+
+    The center is the median of the stack's window centers, so a floor whose window was not detected follows its
+    stack; a stack with no window at all stays at its bay. A balcony left at its bay that would then overlap another
+    one on its floor uses its own box. Balconies placed from their box (beside an enclosed volume) are left alone.
+    """
+    def x_span(rec: dict[str, Any]) -> tuple[float, float]:
+        return float(rec["box_xyxy"][0]), float(rec["box_xyxy"][2])
+
+    movable = [r for r in records if "width_norm" in r and "cx_norm" not in r and _open_center(r) is not None]
+    seen: set[int] = set()
+    for i, start in enumerate(movable):
+        if i in seen:
+            continue
+        seen.add(i)
+        stack, todo = [], [i]
+        while todo:
+            k = todo.pop()
+            stack.append(movable[k])
+            a0, a1 = x_span(movable[k])
+            for j, other in enumerate(movable):
+                if j in seen or other["type"] != movable[k]["type"]:
+                    continue
+                b0, b1 = x_span(other)
+                # A long gallery of the same type is not stacked with the small balconies it spans.
+                similar = min(a1 - a0, b1 - b0) >= STACK_MIN_WIDTH_RATIO * max(a1 - a0, b1 - b0)
+                free_floor = all(r["floor"] != other["floor"] for r in stack) and all(
+                    movable[q]["floor"] != other["floor"] for q in todo
+                )
+                if similar and free_floor and min(a1, b1) - max(a0, b0) >= 0.5 * min(a1 - a0, b1 - b0):
+                    seen.add(j)
+                    todo.append(j)
+        windows = [float(r["window_cx_norm"]) for r in stack if "window_cx_norm" in r]
+        key = "window_cx_norm" if windows else "bay_cx_norm"
+        center = statistics.median(windows or [float(r["bay_cx_norm"]) for r in stack])
+        for r in stack:
+            r.pop("window_cx_norm", None)
+            r.pop("bay_cx_norm", None)
+            r[key] = round(center, 6)
+
+    def span(rec: dict[str, Any]) -> tuple[float, float]:
+        c, w = _open_center(rec) if "cx_norm" not in rec else float(rec["cx_norm"]), float(rec["width_norm"])
+        return c - w / 2.0, c + w / 2.0
+
+    for rec in movable:
+        if "bay_cx_norm" not in rec:
+            continue
+        lo, hi = span(rec)
+        if any(
+            o is not rec and o["floor"] == rec["floor"] and "width_norm" in o and min(hi, span(o)[1]) > max(lo, span(o)[0])
+            for o in records
+        ):
+            del rec["bay_cx_norm"]
+            rec["cx_norm"] = round(0.5 * (rec["box_xyxy"][0] + rec["box_xyxy"][2]) / max(1.0, image_width), 6)
+
+
 def merge_balcony_into_windows_dsl(
     windows_dsl: dict[str, Any],
     *,
@@ -89,9 +157,10 @@ def merge_balcony_into_windows_dsl(
 
     mode = _normalize_center_mode(center_mode)
     enclosed_units = [u for u in units if u.get("source") == "enclosed_volume"]
-    # Partner-window centers drift into the gallery; with enclosed volumes use bay X.
-    open_mode = "bay" if enclosed_units and mode == "window" else mode
-    instances = windows_dsl.get("instances") or []
+    # A balcony's window is the one behind it, on every facade. Side-wall windows are not behind anything; a balcony
+    # sharing a bay with an enclosed volume uses its own box below, so it cannot drift into the volume.
+    open_mode = mode
+    instances = [u for u in windows_dsl.get("instances") or [] if not u.get("side_face")]
     _, bay_x = _bands_from_windows_dsl(windows_dsl)
     iw = 1.0
     ih = 800.0
@@ -123,6 +192,11 @@ def merge_balcony_into_windows_dsl(
         span_bays = _bay_ids(u)
         center_bays = _center_bay_ids(u)
         place_mode = mode if volume else open_mode
+        # An open balcony that shares a bay with a block sits beside it: the bay centre would put it inside.
+        if not volume and any(
+            int(e["floor"]) == floor_i and set(_bay_ids(e)) & set(span_bays) for e in enclosed_units
+        ):
+            place_mode = "photo"
 
         if volume:
             key = (floor_i, tuple(span_bays), name)
@@ -179,20 +253,24 @@ def merge_balcony_into_windows_dsl(
                 rec["bay_cx_norm"] = round(bay_cx, 6)
         else:
             win_cx = mean_window_center_norm(partners, iw)
-            if win_cx is None:
-                win_cx = _mean_bay_center_norm(center_bays, bay_x, iw)
             if win_cx is not None:
                 rec["window_cx_norm"] = round(win_cx, 6)
+            else:  # no window detected behind it: it stays at its bay
+                bay_cx = _mean_bay_center_norm(center_bays, bay_x, iw)
+                if bay_cx is not None:
+                    rec["bay_cx_norm"] = round(bay_cx, 6)
             if pids:
                 rec["partner_window_unit_ids"] = list(pids)
 
         balc_place.append(rec)
 
+    if mode == "window":
+        _move_stacks_together(balc_place, iw)
     layout["balconies"] = balc_place
     dsl["balcony_types"] = balcony_types
     meta["n_balcony_units"] = len(units)
     meta["n_balcony_types"] = len(balcony_types)
-    meta["balcony_center_mode"] = open_mode if enclosed_units else mode
+    meta["balcony_center_mode"] = mode
     notes = str(meta.get("notes") or "")
     if per_unit_railing and per_unit_floor:
         mode_label = "per-unit railing and floor IR"

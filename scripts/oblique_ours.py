@@ -1,14 +1,14 @@
 """Blender: build our façade from a recovery DSL (as window_compiler/main.py) and render an oblique orthographic view
 like Astra's 'oblique' camera (up and to the right of the façade, ortho scale 1.27 x max(W, H)), transparent film.
 
-blender -b -P oblique_ours.py -- <facade_dsl.json> <out.png> [res]
+blender -b -P oblique_ours.py -- <facade_dsl.json> <out.png> [res] [left]
 """
 import math
 import os
 import sys
 from pathlib import Path
 
-ROOT = Path("/local-scratch/localhome/jiyeonh/Research/arch/experiments/facade_e2e/vendor/window_compiler")
+ROOT = Path(__file__).resolve().parents[1] / "vendor" / "window_compiler"
 sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
@@ -24,6 +24,7 @@ from render_setup import configure_render, setup_camera_for_facade  # noqa: E402
 argv = sys.argv[sys.argv.index("--") + 1:]
 dsl, out = argv[0], argv[1]
 res = int(argv[2]) if len(argv) > 2 else 1200
+from_left = len(argv) > 3 and argv[3] == "left"  # default: from the photo's right
 
 spec = load_spec(Path(dsl))
 clear_scene()
@@ -44,7 +45,7 @@ cam_data.ortho_scale = max(W, H) * 1.27
 cam_data.clip_end = 1000.0
 cam = bpy.data.objects.new("oblique", cam_data)
 scene.collection.objects.link(cam)
-cam.location = (cx - 0.9 * W, 38.0, z0 + 0.83 * H)
+cam.location = (cx + (0.9 if from_left else -0.9) * W, 38.0, z0 + 0.83 * H)
 target = Vector((cx, 0.0, z0 + 0.48 * H))
 cam.rotation_euler = (target - cam.location).to_track_quat("-Z", "Y").to_euler()
 scene.camera = cam

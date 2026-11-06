@@ -10,11 +10,15 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from balcony_layout import (  # noqa: E402
+from balcony_layout import (
+    _fit_spans,
+    side_wall_targets,  # noqa: E402
     balcony_frames,
     column_points,
     front_edge_x,
     front_window_targets,
+    photo_x_span,
+    seat_on_window_bottoms,
     windows_behind_glass,
 )
 from facade_spec import get_cell  # noqa: E402
@@ -325,6 +329,177 @@ class ColumnTests(unittest.TestCase):
         for x, y in column_points(rect):
             self.assertGreater(y, rect["y_wall"])
             self.assertTrue(rect["bx0"] < x < rect["bx1"])
+
+
+class PhotoSpanTest(unittest.TestCase):
+    """Photo norms are fractions of image width; the wall spans only the grid's extent."""
+
+    def _span(self, spec: dict) -> tuple[float, float, float]:
+        rec = {"width_norm": 0.1, "window_cx_norm": 0.18}
+        return photo_x_span(spec, rec, mirror_x=True, bay_x0=0.0, bay_x1=1.0, row=0, col0=0, col1=0)
+
+    def test_maps_through_grid_extent(self) -> None:
+        spec = _spec([], {})
+        spec["meta"] = {"image_size": [1000, 800]}
+        spec["image_extent"] = {"x0": 100.0, "x1": 900.0}
+        x0, x1, cx = self._span(spec)  # 180 px is 10% into the grid, 100 px wide is 12.5% of it
+        self.assertAlmostEqual(cx, (0.5 - 0.1) * 7.8)
+        self.assertAlmostEqual(x1 - x0, 0.125 * 7.8)
+
+    def test_no_image_size_keeps_norms(self) -> None:
+        x0, x1, cx = self._span(_spec([], {}))
+        self.assertAlmostEqual(cx, (0.5 - 0.18) * 7.8)
+        self.assertAlmostEqual(x1 - x0, 0.1 * 7.8)
+
+
+class EnclosedFitTest(unittest.TestCase):
+    def frame(self, i: int, row: int, col: int, x0: float, x1: float, **kw) -> dict:
+        return dict(index=i, row=row, col0=col, col1=col, x0=x0, x1=x1, enclosure="enclosed", from_bays=True, curtain_wall=False, shape="rectangle") | kw
+
+    def win(self, r: int, c: int, ox: float, ww: float = 1.0) -> dict:
+        return dict(r=r, c=c, span=1, ox=ox, ww=ww)
+
+    def test_cuts_outer_edges_to_windows(self) -> None:
+        fits = _fit_spans([self.frame(0, 0, 0, 0.0, 4.0), self.frame(1, 0, 1, 4.0, 8.0)], [self.win(0, 0, 2.0), self.win(0, 1, 5.0)])
+        self.assertEqual(fits, {0: (1.75, 4.0), 1: (4.0, 6.25)})
+
+    def test_stack_keeps_one_width(self) -> None:
+        fits = _fit_spans([self.frame(0, 0, 0, 0.0, 4.0), self.frame(1, 1, 0, 0.0, 4.0)], [self.win(0, 0, 1.0)])
+        self.assertEqual(fits[0], fits[1])
+
+    def test_removes_column_without_windows(self) -> None:
+        fits = _fit_spans([self.frame(0, 0, 0, 0.0, 4.0), self.frame(1, 0, 1, 4.0, 8.0)], [self.win(0, 0, 1.0)])
+        self.assertIsNone(fits[1])
+
+    def test_no_windows_keeps_bays(self) -> None:
+        self.assertEqual(_fit_spans([self.frame(0, 0, 0, 0.0, 4.0)], []), {})
+
+    def test_ignores_window_centred_outside_block(self) -> None:
+        fits = _fit_spans([self.frame(0, 0, 0, 0.0, 4.0)], [self.win(0, 0, 1.0), self.win(0, 0, 3.5, 5.0)])
+        self.assertEqual(fits[0], (0.75, 2.25))
+
+    def test_never_wider_than_bays(self) -> None:
+        self.assertEqual(_fit_spans([self.frame(0, 0, 0, 0.0, 4.0)], [self.win(0, 0, 0.1)])[0], (0.0, 1.35))
+
+    def test_skips_curtain_wall_and_photo_width(self) -> None:
+        frames = [self.frame(0, 0, 0, 0.0, 4.0, curtain_wall=True), self.frame(1, 2, 0, 0.0, 4.0, from_bays=False)]
+        self.assertEqual(_fit_spans(frames, [self.win(0, 0, 1.0), self.win(2, 0, 1.0)]), {})
+
+
+class SideWallTest(unittest.TestCase):
+    def frame(self, col: int, x0: float, x1: float) -> dict:
+        return dict(
+            index=col, row=0, col0=col, col1=col, enclosure="enclosed", curtain_wall=False, shape="rectangle",
+            outline=[(x0, 0.0), (x0, 1.5), (x1, 1.5), (x1, 0.0)], y_wall=0.0, bx0=x0, bx1=x1, x0=x0, x1=x1,
+            sill_z=0.0, thick=0.1, top_z=3.0, from_bays=True,
+        )
+
+    def win(self, c: int, ox: float, ww: float = 1.0, **kw) -> dict:
+        return dict(r=0, c=c, span=1, ox=ox, oz=1.0, ww=ww, hh=1.2, **kw)
+
+    def test_goes_on_the_near_side(self) -> None:
+        t = side_wall_targets([self.frame(3, 0.0, 2.0)], [self.win(4, 2.5, side_face=True)])[0]
+        self.assertEqual((t["sign"], t["edge_x"]), (1, 2.0))
+        t = side_wall_targets([self.frame(3, 0.0, 2.0)], [self.win(2, -1.5, side_face=True)])[0]
+        self.assertEqual((t["sign"], t["edge_x"]), (-1, 0.0))
+
+    def test_mirror_on_the_far_wall(self) -> None:
+        t = side_wall_targets([self.frame(3, 0.0, 2.0)], [self.win(4, 2.5, side_face=True)])[0]
+        self.assertEqual((t["mirror"]["sign"], t["mirror"]["edge_x"], t["mirror"]["y0"]), (-1, 0.0, t["y0"]))
+
+    def test_mirror_crosses_touching_cells(self) -> None:
+        frames = [dict(self.frame(2, -2.0, 0.0), index=9), self.frame(3, 0.0, 2.0)]
+        t = side_wall_targets(frames, [self.win(4, 2.5, side_face=True)])[0]
+        self.assertEqual((t["mirror"]["frame"], t["mirror"]["edge_x"]), (9, -2.0))
+
+    def test_width_capped_by_the_wall(self) -> None:
+        t = side_wall_targets([self.frame(3, 0.0, 2.0)], [self.win(4, 2.5, ww=3.0, side_face=True)])[0]
+        self.assertAlmostEqual(t["ww"], 1.5 - 0.24 - 0.12)
+        self.assertGreaterEqual(t["y0"], 0.12)
+
+    def test_takes_height_of_front_window(self) -> None:
+        front = dict(self.win(3, 0.5), on_balcony=3, oz=0.8, hh=1.6)
+        t = side_wall_targets([self.frame(3, 0.0, 2.0)], [front, self.win(4, 2.5, side_face=True)])[1]
+        self.assertEqual((t["oz"], t["hh"]), (0.8, 1.6))
+
+    def test_only_flagged_windows(self) -> None:
+        self.assertEqual(side_wall_targets([self.frame(3, 0.0, 2.0)], [self.win(4, 2.5)]), {})
+
+    def test_skips_curtain_wall_and_far_blocks(self) -> None:
+        curtain = dict(self.frame(3, 0.0, 2.0), curtain_wall=True)
+        self.assertEqual(side_wall_targets([curtain], [self.win(4, 2.5, side_face=True)]), {})
+        self.assertEqual(side_wall_targets([self.frame(3, 0.0, 2.0)], [self.win(6, 9.0, side_face=True)]), {})
+
+    def test_block_sits_between_front_and_side_windows(self) -> None:
+        frames = [self.frame(0, 0.0, 4.0), self.frame(1, 4.0, 8.0)]
+        front = self.win(0, 1.0)
+        fits = _fit_spans(frames, [front, self.win(1, 5.0, side_face=True)])
+        self.assertEqual(fits[0], (2.125, 4.875))  # centre 3.5 = middle of 0.75..6.25; width 0.75..3.5
+        self.assertIsNone(fits[1])
+        self.assertEqual(front["ox"], 3.0)
+
+    def test_mirrored_side_window(self) -> None:
+        frames = [self.frame(0, 0.0, 4.0), self.frame(1, 4.0, 8.0)]
+        front = self.win(1, 6.0)
+        fits = _fit_spans(frames, [front, self.win(0, 2.0, side_face=True)])
+        self.assertEqual(fits[1], (3.125, 5.875))
+        self.assertIsNone(fits[0])
+        self.assertEqual(front["ox"], 4.0)
+
+    def test_sides_on_both_flanks_keep_the_centre(self) -> None:
+        frames = [self.frame(i, 4.0 * i, 4.0 * i + 4.0) for i in range(3)]
+        front = self.win(1, 5.5)
+        fits = _fit_spans(frames, [front, self.win(0, 2.0, side_face=True), self.win(2, 9.0, side_face=True)])
+        self.assertEqual(front["ox"], 5.5)
+        self.assertEqual(fits[1], (5.25, 6.75))
+
+
+class SeatTest(unittest.TestCase):
+    def _frame(self, **kw) -> dict:
+        f = {"index": 0, "row": 1, "bx0": 0.0, "bx1": 2.0, "thick": 0.2, "sill_z": 5.0,
+             "enclosure": "open", "structure": "projecting"}
+        return {**f, **kw}
+
+    def _window(self, **kw) -> dict:
+        return {"r": 1, "ox": 0.5, "ww": 1.0, "oz": 4.0, **kw}
+
+    def test_slab_top_on_window_bottom(self) -> None:
+        f = self._frame()
+        seat_on_window_bottoms([f], [self._window()])
+        self.assertAlmostEqual(f["sill_z"] + f["thick"], 4.0)
+
+    def test_slab_below_window_bottom_stays(self) -> None:
+        f = self._frame(sill_z=3.0)
+        seat_on_window_bottoms([f], [self._window()])
+        self.assertEqual(f["sill_z"], 3.0)
+
+    def test_juliet_starts_at_window_bottom(self) -> None:
+        f = self._frame(structure="juliet")
+        seat_on_window_bottoms([f], [self._window()])
+        self.assertAlmostEqual(f["sill_z"], 4.0)
+
+    def test_lowest_of_several_windows(self) -> None:
+        f = self._frame()
+        seat_on_window_bottoms([f], [self._window(), self._window(ox=1.5, ww=0.4, oz=3.5)])
+        self.assertAlmostEqual(f["sill_z"] + f["thick"], 3.5)
+
+    def test_keeps_height_without_a_window(self) -> None:
+        f, g = self._frame(), self._frame(structure="rooftop")
+        seat_on_window_bottoms([f, g], [self._window(r=2), self._window(ox=3.0)])
+        self.assertEqual(f["sill_z"], 5.0)
+        seat_on_window_bottoms([g], [self._window()])
+        self.assertEqual(g["sill_z"], 5.0)
+
+    def test_skips_window_moved_onto_a_balcony(self) -> None:
+        f = self._frame()
+        seat_on_window_bottoms([f], [self._window(on_balcony=0)])
+        self.assertEqual(f["sill_z"], 5.0)
+
+    def test_enclosure_below_follows_the_slab(self) -> None:
+        f = self._frame()
+        below = self._frame(index=1, row=2, enclosure="enclosed", above=0, top_z=5.0)
+        seat_on_window_bottoms([f, below], [self._window()])
+        self.assertAlmostEqual(below["top_z"], f["sill_z"])
 
 
 if __name__ == "__main__":
