@@ -350,48 +350,73 @@ def vote_enclosed_floor_shape(shapes: list[str | None]) -> tuple[str, dict[str, 
     return winner, counts
 
 
-def vote_open_floor_shape(shapes: list[str | None]) -> tuple[str, dict[str, int]]:
+def vote_open_floor_shape(
+    shapes: list[str | None],
+    probs: list[dict[str, float] | None] | None = None,
+) -> tuple[str, dict[str, int]]:
     """One plan for an open-balcony type, triangle kept as its own shape.
 
-    A circle or a triangle wins only with more votes than each of the other
-    two shapes. Every other outcome, ties included, is ``rectangle``. Unknown
-    labels count as ``rectangle``; ``None`` (no plan, e.g. juliet) is skipped.
+    The shape with the most votes wins. A tie between the top shapes goes to the one with the higher mean
+    classifier probability over the voting members (``probs``: per voter {shape: probability}; user,
+    2026-11-07, as the structure tie rule). Without probabilities a tie is ``rectangle``, as before.
+    Unknown labels count as ``rectangle``; ``None`` (no plan, e.g. juliet) is skipped.
     """
     counts = {"rectangle": 0, "circle": 0, "triangle": 0}
-    for raw in shapes:
+    tie_probs: list[dict[str, float]] = []
+    for k, raw in enumerate(shapes):
         if raw is None:
             continue
         kind = str(raw).strip().lower()
         counts[kind if kind in counts else "rectangle"] += 1
-    for shape in ("circle", "triangle"):
-        if all(counts[shape] > counts[o] for o in counts if o != shape):
-            return shape, counts
+        if probs is not None and k < len(probs) and probs[k]:
+            tie_probs.append(probs[k])
+    top = max(counts.values())
+    best = [sh for sh in ("rectangle", "circle", "triangle") if counts[sh] == top]
+    if len(best) == 1:
+        return best[0], counts
+    if tie_probs:
+        mean = {sh: sum(float(pp.get(sh, 0.0)) for pp in tie_probs) / len(tie_probs) for sh in best}
+        return max(best, key=lambda sh: (mean[sh], sh == "rectangle")), counts
     return "rectangle", counts
 
 
-def vote_structure(structures: list[str | None]) -> tuple[str, dict[str, int]]:
-    """Structure of an open-balcony type: juliet on a strict majority.
+def vote_structure(
+    structures: list[str | None],
+    juliet_probs: list[float | None] | None = None,
+) -> tuple[str, dict[str, int]]:
+    """Structure of an open-balcony type: majority of projecting / juliet.
 
-    Only projecting / juliet are voted. Rooftop is a placement flag set from
-    the window grid, so it is not a vote option here (a ``rooftop`` label
-    counts as projecting). ``None`` (untrained head) is skipped.
+    A tie goes to the side with the higher mean classifier probability (mean P(juliet) over the voting
+    members > 0.5 → juliet; user, 2026-11-07). Without ``juliet_probs`` (or no probability for any
+    voter) a tie stays projecting, as before. Rooftop is a placement flag set from the window grid, so
+    it is not a vote option here (a ``rooftop`` label counts as projecting). ``None`` (untrained head)
+    is skipped.
     """
     counts = {"projecting": 0, "juliet": 0}
-    for raw in structures:
+    tie_probs: list[float] = []
+    for k, raw in enumerate(structures):
         s = str(raw or "").strip().lower()
         if not s:
             continue
         counts["juliet" if s == "juliet" else "projecting"] += 1
-    winner = "juliet" if counts["juliet"] > counts["projecting"] else "projecting"
+        if juliet_probs is not None and k < len(juliet_probs) and juliet_probs[k] is not None:
+            tie_probs.append(float(juliet_probs[k]))
+    if counts["juliet"] != counts["projecting"]:
+        winner = "juliet" if counts["juliet"] > counts["projecting"] else "projecting"
+    elif tie_probs and counts["juliet"] > 0:
+        winner = "juliet" if sum(tie_probs) / len(tie_probs) > 0.5 else "projecting"
+    else:
+        winner = "projecting"
     return winner, counts
 
 
 def apply_floor_majority(
     ir: dict[str, Any] | None,
     shapes: list[str | None],
+    probs: list[dict[str, float] | None] | None = None,
 ) -> tuple[dict[str, Any] | None, str, dict[str, int]]:
-    """Copy ``ir`` and set its floor to the majority plan. The input is unchanged."""
-    shape, counts = vote_open_floor_shape(shapes)
+    """Copy ``ir`` and set its floor to the majority plan (ties by ``probs``). The input is unchanged."""
+    shape, counts = vote_open_floor_shape(shapes, probs)
     if not isinstance(ir, dict):
         return ir, shape, counts
     out = copy.deepcopy(ir)

@@ -203,6 +203,36 @@ class EnclosedPlaceTests(unittest.TestCase):
         winner, _counts = vote_structure([])
         self.assertEqual(winner, "projecting")
 
+    def test_floor_tie_goes_to_higher_mean_probability(self) -> None:
+        circ = {"rectangle": 0.2, "triangle": 0.0, "circle": 0.8}
+        rect = {"rectangle": 0.55, "triangle": 0.0, "circle": 0.45}
+        winner, counts = vote_open_floor_shape(["circle", "rectangle"], [circ, rect])
+        self.assertEqual(winner, "circle")
+        self.assertEqual(counts, {"rectangle": 1, "circle": 1, "triangle": 0})
+        winner, _ = vote_open_floor_shape(["circle", "rectangle"], [{"rectangle": 0.6, "triangle": 0, "circle": 0.4},
+                                                                     {"rectangle": 0.9, "triangle": 0, "circle": 0.1}])
+        self.assertEqual(winner, "rectangle")
+        # a clear majority is not overruled; no probabilities keeps the old tie -> rectangle
+        winner, _ = vote_open_floor_shape(["rectangle", "rectangle", "circle"], [rect, rect, circ])
+        self.assertEqual(winner, "rectangle")
+        winner, _ = vote_open_floor_shape(["circle", "rectangle"])
+        self.assertEqual(winner, "rectangle")
+        # juliet voters (None) are skipped together with their probabilities
+        winner, _ = vote_open_floor_shape([None, "circle", "rectangle"], [rect, circ, rect])
+        self.assertEqual(winner, "circle")
+
+    def test_structure_tie_goes_to_higher_mean_probability(self) -> None:
+        winner, _ = vote_structure(["juliet", "projecting"], [0.95, 0.40])
+        self.assertEqual(winner, "juliet")
+        winner, _ = vote_structure(["juliet", "projecting"], [0.55, 0.05])
+        self.assertEqual(winner, "projecting")
+        # a majority is not overruled by the probabilities
+        winner, _ = vote_structure(["projecting", "projecting", "juliet"], [0.49, 0.49, 1.0])
+        self.assertEqual(winner, "projecting")
+        # no probabilities: tie stays projecting
+        winner, _ = vote_structure(["juliet", "projecting"], [None, None])
+        self.assertEqual(winner, "projecting")
+
     def test_enclosed_floor_vote_maps_triangle_and_ties_to_rectangle(self) -> None:
         winner, counts = vote_enclosed_floor_shape(["circle", "triangle"])
         self.assertEqual(winner, "rectangle")

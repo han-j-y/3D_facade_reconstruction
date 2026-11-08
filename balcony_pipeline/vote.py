@@ -106,3 +106,47 @@ def vote_cluster_ir(
         },
         "members": members_out,
     }
+
+
+SOFT_KINDS = ("open_work", "surface_panel", "solid")       # balcony_train.labels.CLASSES order
+SOFT_MATERIALS = ("metal", "masonry")                      # MATERIALS order
+
+
+def soft_type_labels(probs: list[dict], floor_voters: list[int]) -> dict | None:
+    """Soft vote (pipeline default since 2026-11-07, user; chosen on val30): kind = argmax of the members' mean
+    kind softmax; material = argmax of the material softmax weighted by each member's P(open_work); floor =
+    argmax of the mean [rectangle + triangle, circle] over ``floor_voters`` (indices of members that are not
+    juliet), None without voters. ``probs``: ``RailingPredictor.predict_probs`` per member. None when a member
+    has no probabilities (e.g. external labels): the caller keeps the majority vote."""
+    import numpy as np
+
+    if not probs or any(p is None or p.get("kind") is None or p.get("material") is None for p in probs):
+        return None
+    kind = SOFT_KINDS[int(np.argmax(np.mean([p["kind"] for p in probs], axis=0)))]
+    w = np.array([p["kind"][0] for p in probs], dtype=float) + 1e-6
+    material = SOFT_MATERIALS[int(np.argmax(np.average([p["material"] for p in probs], axis=0, weights=w)))]
+    floor = None
+    fv = [i for i in floor_voters if probs[i].get("floor") is not None]
+    if fv:
+        fl = np.mean([[probs[i]["floor"][0] + probs[i]["floor"][1], probs[i]["floor"][2]] for i in fv], axis=0)
+        floor = "rectangle" if fl[0] >= fl[1] else "circle"
+    return {"kind": kind, "material": material if kind == "open_work" else None, "floor": floor}
+
+
+def apply_soft_labels(ir: dict | None, labels: dict | None) -> dict | None:
+    """Copy ``ir`` with the soft-voted railing kind / material and (when given) floor shape."""
+    import copy
+
+    if not isinstance(ir, dict) or not labels:
+        return ir
+    out = copy.deepcopy(ir)
+    rail = dict(out.get("railing") or {})
+    rail["kind"] = labels["kind"]
+    rail["material"] = labels["material"]
+    out["railing"] = rail
+    if labels.get("floor"):
+        fl = dict(out.get("floor") or {})
+        fl["shape"] = labels["floor"]
+        out["floor"] = fl
+    return out
+

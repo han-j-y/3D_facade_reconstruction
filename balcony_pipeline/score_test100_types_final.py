@@ -65,8 +65,9 @@ from heuristic_ir import (  # noqa: E402
     structure_from_ir,
 )
 from recovery_profile import DEFAULT_PROFILE  # noqa: E402
-from run_balcony import cluster_boxes, infer_unit_ir, snap_open_units  # noqa: E402
-from vote import vote_cluster_ir  # noqa: E402
+from run_balcony import cluster_boxes, floor_probs, infer_unit_ir, juliet_prob, snap_open_units  # noqa: E402
+from structure_depth import structure_from_depth  # noqa: E402
+from vote import soft_type_labels, vote_cluster_ir  # noqa: E402
 from balcony_train.labels import CLASSES, LABEL_STRUCTURES, MATERIALS  # noqa: E402
 from balcony_train.model import try_load_predictor  # noqa: E402
 from balcony_train.paths import DEFAULT_STRUCTURE_CKPT  # noqa: E402
@@ -131,7 +132,18 @@ def truth_from_record(rec: dict) -> dict:
     }
 
 
-def vote_types(units: list[dict], labels: np.ndarray, medoids: dict[int, int], unit_irs: list[dict]) -> list[dict]:
+def soft_labels(probs: list[dict], voters_floor: list[int]) -> dict:
+    """``vote.soft_type_labels`` (the pipeline's soft vote); floor rectangle without voters."""
+    out = soft_type_labels(probs, voters_floor)
+    return {**out, "floor": out["floor"] or "rectangle"}
+
+
+def vote_types(units: list[dict], labels: np.ndarray, medoids: dict[int, int], unit_irs: list[dict],
+               juliet_probs: list[float | None] | None = None,
+               floor_probs: list[dict | None] | None = None,
+               soft_probs: list[dict] | None = None) -> list[dict]:
+    """``soft_probs`` (per unit ``RailingPredictor.predict_probs``): trial soft vote for kind / material /
+    floor (``soft_labels``); structure keeps the majority + tie rule."""
     """Voted IR per unit, as ``run_balcony.run`` step 4 (vote on, floor majority on)."""
     profile = DEFAULT_PROFILE
     voted_ir: list[dict | None] = [None] * len(units)
@@ -141,29 +153,54 @@ def vote_types(units: list[dict], labels: np.ndarray, medoids: dict[int, int], u
             {"unit_id": int(units[i]["unit_id"]), "ir": unit_irs[i], "tokens": ir_to_tokens(unit_irs[i], profile_name=profile)}
             for i in idx
         ]
-        voted = vote_cluster_ir(member_preds, prefer_unit_id=med_i, profile_name=profile)
-        structure, _ = vote_structure([structure_from_ir(unit_irs[i]) for i in idx])
+        voted = vote_cluster_ir(member_preds, prefer_unit_id=int(units[med_i]["unit_id"]), profile_name=profile)
+        structure, _ = vote_structure([structure_from_ir(unit_irs[i]) for i in idx],
+                                      [juliet_probs[i] for i in idx] if juliet_probs is not None else None)
         ir = voted["structure_ir"]
         if isinstance(ir, dict):
             ir = copy.deepcopy(ir)
             ir["structure"] = structure
+        voters = [i for i in idx if isinstance(unit_irs[i], dict) and structure_from_ir(unit_irs[i]) != "juliet"]
         ir, _shape, _counts = apply_floor_majority(
             ir,
-            [floor_shape_from_ir(p["ir"]) for p in member_preds
-             if isinstance(p.get("ir"), dict) and structure_from_ir(p["ir"]) != "juliet"],
+            [floor_shape_from_ir(unit_irs[i]) for i in voters],
+            [floor_probs[i] for i in voters] if floor_probs is not None else None,
         )
+        if soft_probs is not None and isinstance(ir, dict):
+            sl = soft_labels([soft_probs[i] for i in idx], [k for k, i in enumerate(idx) if i in set(voters)])
+            ir = copy.deepcopy(ir)
+            rail = dict(ir.get("railing") or {})
+            rail["kind"] = sl["kind"]
+            rail["material"] = sl["material"]
+            ir["railing"] = rail
+            fl = dict(ir.get("floor") or {})
+            fl["shape"] = sl["floor"]
+            ir["floor"] = fl
         for i in idx:
             voted_ir[i] = copy.deepcopy(ir)
     return voted_ir
 
 
-def head_metrics(rows: list[dict], stage: str, head: str) -> dict:
+def conditional_skip(r: dict, stage: str, head: str) -> bool:
+    """Conditional scoring (user, 2026-11-07): material only where truth and prediction are both open work,
+    floor only where truth and prediction are both projecting. A wrong kind / structure is counted once, in
+    its own head, and leaves the dependent head out of the denominator."""
+    if head == "material":
+        return r[stage]["kind"] != "open_work"
+    if head == "floor":
+        return r[stage]["structure"] != "projecting"
+    return False
+
+
+def head_metrics(rows: list[dict], stage: str, head: str, conditional: bool = True) -> dict:
     names = HEADS[head]
     cols = names + ("none",) if head == "material" else names
     c = np.zeros((len(names), len(cols)), dtype=np.int64)
     for r in rows:
         t = r["truth"][head]
         if t is None:
+            continue
+        if conditional and conditional_skip(r, stage, head):
             continue
         p = r[stage][head]
         c[names.index(t), cols.index(p if p in cols else "none")] += 1
@@ -184,19 +221,25 @@ def head_metrics(rows: list[dict], stage: str, head: str) -> dict:
     }
 
 
-def report(rows: list[dict], header: list[str]) -> tuple[str, dict]:
+def report(rows: list[dict], header: list[str], conditional: bool = True) -> tuple[str, dict]:
     out = header[:]
-    metrics = {s: {h: head_metrics(rows, s, h) for h in HEADS} for s in STAGES}
-    out += ["## Summary (macro F1 / accuracy)", "", "| head | n | crop | unit (no vote) | final (voted) |", "|---|---|---|---|---|"]
+    metrics = {s: {h: head_metrics(rows, s, h, conditional) for h in HEADS} for s in STAGES}
+    out += ["## Summary (macro F1 / accuracy, n per stage)", "",
+            "| head | crop | unit (no vote) | final (voted) |", "|---|---|---|---|"]
     for h in HEADS:
-        cells = [f"{metrics[s][h]['macro_f1']:.3f} / {metrics[s][h]['acc']:.3f}" for s in STAGES]
-        out.append(f"| {TITLES[h]} | {metrics['final'][h]['n']} | " + " | ".join(cells) + " |")
+        cells = [f"{metrics[s][h]['macro_f1']:.3f} / {metrics[s][h]['acc']:.3f} ({metrics[s][h]['n']})" for s in STAGES]
+        out.append(f"| {TITLES[h]} | " + " | ".join(cells) + " |")
+    means = [f"{np.mean([metrics[s][h]['macro_f1'] for h in HEADS]):.3f} / "
+             f"{np.mean([metrics[s][h]['acc'] for h in HEADS]):.3f}" for s in STAGES]
+    out.append("| **mean of 4** | " + " | ".join(means) + " |")
     out += ["", "## Vote effect (unit → final, same crops)", "", "| head | fixed by vote | broken by vote | net |", "|---|---|---|---|"]
     for h in HEADS:
         fixed = broken = 0
         for r in rows:
             t = r["truth"][h]
             if t is None:
+                continue
+            if conditional and (conditional_skip(r, "unit", h) or conditional_skip(r, "final", h)):
                 continue
             u, f = r["unit"][h] == t, r["final"][h] == t
             fixed += (not u) and f
@@ -233,6 +276,22 @@ def main() -> None:
     ap.add_argument("--photos", type=Path, default=T100 / "photos")
     ap.add_argument("--railing-ckpt", type=Path, default=None, help="default: pipeline default (paths.py)")
     ap.add_argument("--cluster-mode", choices=("appearance", "box"), default="appearance")
+    ap.add_argument("--cluster-k1", action=argparse.BooleanOptionalAction, default=True,
+                    help="as run_balcony: allow k = 1 (--no-cluster-k1 = clustering before 2026-11-07)")
+    ap.add_argument("--k1-sil-min", type=float, default=0.25)
+    ap.add_argument("--k1-pair-sim-min", type=float, default=0.80)
+    ap.add_argument("--cluster-width-ratio", type=float, default=2.0, help="as run_balcony; 0 = off")
+    ap.add_argument("--majority-vote", action="store_true",
+                    help="old type vote for kind / material / floor (default: soft, as run_balcony --vote soft)")
+    ap.add_argument("--unconditional", action="store_true",
+                    help="old scoring: material with a wrong kind and floor with a wrong structure count as wrong "
+                    "(default: conditional, each attribute only where its prerequisite is right in truth and prediction)")
+    ap.add_argument("--structure-depth", type=float, default=0.10,
+                    help="as run_balcony --structure-depth (metres; default 0.10 as the pipeline; 0 = classifier)")
+    ap.add_argument("--cluster-label-split", type=float, default=0.0,
+                    help="as run_balcony --cluster-label-split (0 = off)")
+    ap.add_argument("--cluster-links", action=argparse.BooleanOptionalAction, default=True,
+                    help="as run_balcony --cluster-links (default on, as the pipeline; --no-cluster-links = off)")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--out", type=Path, default=T100 / "eval_test100_final_facade_v4.md")
     args = ap.parse_args()
@@ -241,7 +300,8 @@ def main() -> None:
     cargs = argparse.Namespace(
         cluster_mode=args.cluster_mode, dino="dinov2_vits14", facade_max_side=896, pca_dim=32, seed=42,
         k_max=8, k_max_box=6, twin_mirror_min=0.35, col_tol=0.04, row_tol=0.055,
-        spatial_strength=1.8, unary_weight=0.9,
+        spatial_strength=1.8, unary_weight=0.9, cluster_k1=args.cluster_k1, k1_sil_min=args.k1_sil_min,
+        k1_pair_sim_min=args.k1_pair_sim_min, cluster_width_ratio=args.cluster_width_ratio, cluster_links=args.cluster_links, cluster_label_split=args.cluster_label_split,
     )
     device = torch.device(args.device)
     gt = {r["stem"]: r["boxes"] for r in jl(args.gt)}
@@ -279,13 +339,25 @@ def main() -> None:
         type_of: dict[int, int] = {}
         medoids: dict[int, int] = {}
         if kept:
+            label_probs = ([pred.predict_probs(facade.crop(tuple(u["box_xyxy"]))) for u in kept]
+                           if args.cluster_label_split > 0 else None)
             clustered = cluster_boxes(facade, [u["box_xyxy"] for u in kept], [int(u["floor"]) for u in kept],
-                                      [int(u["bay"]) for u in kept], cargs, device)
+                                      [int(u["bay"]) for u in kept], cargs, device,
+                                      windows=dsl.get("instances"), label_probs=label_probs)
             labels = clustered["labels"]
             medoids = rp.pick_medoids(clustered["feats"], labels)
             unit_irs = [infer_unit_ir(facade.crop(tuple(u["box_xyxy"])), u, image_size=facade.size,
                                       profile_name=DEFAULT_PROFILE, predictor=pred) for u in kept]
-            voted = vote_types(kept, labels, medoids, unit_irs)
+            if args.structure_depth > 0:
+                for ir, u in zip(unit_irs, kept):
+                    st_d = structure_from_depth(depth, u["box_xyxy"], args.structure_depth)
+                    if st_d is not None:
+                        ir["structure"] = st_d
+            jprobs = [juliet_prob(pred, facade.crop(tuple(u["box_xyxy"]))) for u in kept]
+            fprobs = [floor_probs(pred, facade.crop(tuple(u["box_xyxy"]))) for u in kept]
+            sprobs = ([pred.predict_probs(facade.crop(tuple(u["box_xyxy"]))) for u in kept]
+                      if not args.majority_vote else None)
+            voted = vote_types(kept, labels, medoids, unit_irs, jprobs, fprobs, sprobs)
             for i, u in enumerate(kept):
                 uid = int(u["unit_id"])
                 unit_lab[uid] = labels_from_ir(unit_irs[i])
@@ -332,14 +404,20 @@ def main() -> None:
     header = [
         "# test100 balcony types: per crop vs final facade (after clustering + type vote)", "",
         f"- checkpoint `{ckpt.name}` sha256 {hashlib.sha256(ckpt.read_bytes()).hexdigest()[:12]}; "
-        f"cluster mode `{args.cluster_mode}`; oriel cells `{args.oriel_preds.parent.name}/{args.oriel_preds.name}`",
+        f"cluster mode `{args.cluster_mode}` (k=1 {'on' if args.cluster_k1 else 'off'}, "
+        f"width ratio {args.cluster_width_ratio or 'off'}, links {'on' if args.cluster_links else 'off'}, label split {args.cluster_label_split or 'off'}, structure depth {args.structure_depth or 'off'}, vote {'majority' if args.majority_vote else 'soft'}); oriel cells `{args.oriel_preds.parent.name}/{args.oriel_preds.name}`",
         f"- boxes after the live split: scored {counts['scored']}, no hand label {counts['no_label']}, "
         f"IoU < {args.gt_iou} with every GT box {counts['not_in_gt']}, removed by the oriel step "
         f"{counts['oriel_dropped']}, no unit {counts['no_unit']}",
         "- `crop`: classifier on the crop box; `unit`: on the snapped unit box, no vote; "
-        "`final`: voted type label in the DSL. Material `none` = predicted kind is not open_work.", "",
+        "`final`: voted type label in the DSL. Material `none` = predicted kind is not open_work.",
+        ("- scoring: unconditional (material with a wrong kind and floor with a wrong structure count as wrong)"
+         if args.unconditional else
+         "- scoring: conditional (default since 2026-11-07): material only where truth and prediction are both "
+         "open work, floor only where both are projecting; n differs per stage. Vote effect: crops that pass the "
+         "condition at both stages."), "",
     ]
-    text, metrics = report(rows, header)
+    text, metrics = report(rows, header, conditional=not args.unconditional)
     args.out.write_text(text, encoding="utf-8")
     args.out.with_suffix(".json").write_text(
         json.dumps({"counts": dict(counts), "metrics": metrics, "rows": rows, "photos": photos}, indent=1),

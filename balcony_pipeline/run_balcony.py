@@ -51,6 +51,7 @@ from enclosed import (  # noqa: E402
     vote_structure,
 )
 from cluster import cluster_balcony_boxes  # noqa: E402
+from structure_depth import structure_from_depth  # noqa: E402
 from draw import (  # noqa: E402
     draw_boxes,
     draw_cluster_overlay,
@@ -75,8 +76,9 @@ from side_windows import flag_side_windows  # noqa: E402
 from recovery_profile import DEFAULT_PROFILE, PROFILES, resolve_profile  # noqa: E402
 from snap import _bands_from_windows_dsl, snap_units  # noqa: E402
 from unit_labels import ExternalUnitLabels, UnitLabelPredictor  # noqa: E402
-from vote import vote_cluster_ir  # noqa: E402
+from vote import apply_soft_labels, soft_type_labels, vote_cluster_ir  # noqa: E402
 
+from balcony_train.labels import FLOOR_SHAPES, LABEL_STRUCTURES  # noqa: E402
 from balcony_train.model import try_load_predictor  # noqa: E402
 from balcony_train.paths import DEFAULT_RAILING_CKPT, DEFAULT_STRUCTURE_CKPT  # noqa: E402
 
@@ -116,6 +118,34 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     ap.add_argument("--k-max-box", type=int, default=6)
+    ap.add_argument(
+        "--cluster-k1",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="appearance: allow a single type (k = 1) when no split is clear; --no-cluster-k1 = old k >= 2",
+    )
+    ap.add_argument("--k1-sil-min", type=float, default=0.25,
+                    help="appearance: k = 1 when the best spectral split's cosine silhouette is below this (n >= 3)")
+    ap.add_argument("--k1-pair-sim-min", type=float, default=0.80,
+                    help="appearance: two units share one type when their DINOv2 ROI cosine is at least this (n = 2)")
+    ap.add_argument("--cluster-links", action=argparse.BooleanOptionalAction, default=True,
+                    help="appearance: must-link same-floor rows and adjacent-floor columns that sit the same way "
+                    "on their windows, then cluster those groups (cluster.linked_labels). Default on since "
+                    "2026-11-07 (user); --no-cluster-links = appearance clustering with k = 1 and the width rule only")
+    ap.add_argument("--vote", choices=("soft", "majority"), default="soft",
+                    help="type vote for kind / material / floor: soft (default since 2026-11-07, user: argmax of the "
+                    "members' mean classifier softmax, vote.soft_type_labels) or majority (the previous rule); "
+                    "structure is always the majority of the per-unit structure + its tie rule")
+    ap.add_argument("--structure-depth", type=float, default=0.10, metavar="M",
+                    help="open balconies: projecting / juliet from DA3 depth: projecting when the box sticks out of the "
+                    "wall beside it by more than M metres (structure_depth.py; default 0.10 since 2026-11-07, user). "
+                    "The railing classifier only where there is no wall strip; 0 = classifier for every unit")
+    ap.add_argument("--cluster-label-split", type=float, default=0.0, metavar="THR",
+                    help="appearance: split each type by the railing classifier's softmax outputs (average linkage, "
+                    "largest per-head total-variation distance, cut at THR; e.g. 0.5); 0 = off. Trial")
+    ap.add_argument("--cluster-width-ratio", type=float, default=2.0,
+                    help="appearance: units whose box widths differ by this factor or more never share a type "
+                    "(0 = off)")
     ap.add_argument(
         "--twin-mirror-min",
         type=float,
@@ -535,6 +565,22 @@ def infer_unit_ir(
     return ir
 
 
+def floor_probs(predictor, crop: Image.Image) -> dict[str, float] | None:
+    """Railing classifier floor-shape probabilities {rectangle, triangle, circle} for the floor tie-break."""
+    if predictor is None or not hasattr(predictor, "predict_probs"):
+        return None
+    fl = predictor.predict_probs(crop).get("floor")
+    return None if fl is None else {sh: float(v) for sh, v in zip(FLOOR_SHAPES, fl)}
+
+
+def juliet_prob(predictor, crop: Image.Image) -> float | None:
+    """Railing classifier P(juliet) for the structure tie-break; None without a probability head."""
+    if predictor is None or not hasattr(predictor, "predict_probs"):
+        return None
+    st = predictor.predict_probs(crop).get("structure")
+    return None if st is None else float(st[LABEL_STRUCTURES.index("juliet")])
+
+
 def mark_rooftop_units(
     units: list[dict],
     windows_dsl: dict,
@@ -629,7 +675,10 @@ def cluster_boxes(
     bays: list[int],
     args: argparse.Namespace,
     device: torch.device,
+    windows: list[dict] | None = None,
+    label_probs: list[dict] | None = None,
 ) -> dict:
+    """``windows``: window DSL ``instances`` (``--cluster-links`` uses them for rule B and the Potts weight)."""
     mode = getattr(args, "cluster_mode", "appearance")
     print(f"=== 3 Cluster balcony types ({mode}, {args.dino}) ===")
     dino = torch.hub.load("facebookresearch/dinov2", args.dino, pretrained=True)
@@ -654,7 +703,19 @@ def cluster_boxes(
         reemb=rp.reemb,
         cluster_mode=mode,
         k_max_box=getattr(args, "k_max_box", 6),
+        allow_k1=getattr(args, "cluster_k1", True),
+        k1_sil_min=getattr(args, "k1_sil_min", 0.25),
+        k1_pair_sim_min=getattr(args, "k1_pair_sim_min", 0.80),
+        width_ratio=getattr(args, "cluster_width_ratio", 2.0),
+        links=getattr(args, "cluster_links", False),
+        windows=windows,
+        label_probs=label_probs,
+        label_split_thr=float(getattr(args, "cluster_label_split", 0.0) or 0.0),
     )
+    if clustered.get("links"):
+        li = clustered["links"]
+        print(f"  links: {len(li['links'])} ({sum(k == 'row' for *_, k in li['links'])} row, "
+              f"{sum(k == 'column' for *_, k in li['links'])} column) -> {max(li['atoms']) + 1} atoms")
     if mode == "box":
         labels, sym_log = rp.apply_symmetry_repair(
             facade,
@@ -722,11 +783,11 @@ def run(args: argparse.Namespace) -> Path | None:
     )
     snapped: list[dict] = []
     early_predictor = None
+    side_depth = None
     if raw_boxes:
         print("=== 1a-2 Filter, unitize, snap open balconies to window grid ===")
         use_side_wall = not bool(getattr(args, "no_side_wall", False))
-        side_depth = None
-        if use_side_wall:
+        if use_side_wall or float(getattr(args, "structure_depth", 0.0) or 0.0) > 0:
             depth_path = ensure_da3_depth(
                 image_path,
                 Path(getattr(args, "depth_dir", ROOT / "runs" / "da3_enclosure")),
@@ -898,7 +959,14 @@ def run(args: argparse.Namespace) -> Path | None:
         merged_boxes = [u["box_xyxy"] for u in snapped]
         floors = [int(u["floor"]) for u in snapped]
         bays = [int(u["bay"]) for u in snapped]
-        clustered = cluster_boxes(facade, merged_boxes, floors, bays, args, device)
+        label_probs = None
+        if float(getattr(args, "cluster_label_split", 0.0) or 0.0) > 0:
+            if early_predictor is None:
+                early_predictor = resolve_railing_predictor(args, device)
+            if early_predictor is not None and hasattr(early_predictor, "predict_probs"):
+                label_probs = [early_predictor.predict_probs(facade.crop(tuple(bx))) for bx in merged_boxes]
+        clustered = cluster_boxes(facade, merged_boxes, floors, bays, args, device,
+                                  windows=windows_dsl.get("instances"), label_probs=label_probs)
         labels = clustered["labels"]
         feats = clustered["feats"]
         n_types = len(set(int(x) for x in labels.tolist()))
@@ -944,6 +1012,7 @@ def run(args: argparse.Namespace) -> Path | None:
                             "type_id": int(u["type_id"]),
                             "asset": u["asset"],
                             "floor": int(u["floor"]),
+                            "bay": int(u["bay"]),
                             "rooftop": bool(u.get("rooftop", False)),
                         }
                         for i, u in enumerate(units)
@@ -1020,16 +1089,29 @@ def run(args: argparse.Namespace) -> Path | None:
                     member_preds.append(
                         {"unit_id": int(u["unit_id"]), "ir": ir, "tokens": tokens}
                     )
+                    st_depth = structure_from_depth(side_depth, u["box_xyxy"],
+                                                    float(getattr(args, "structure_depth", 0.0) or 0.0))
+                    if st_depth is not None:
+                        ir["structure"] = st_depth
+                        u["structure_source"] = "depth"
                     u["structure_ir_member"] = ir
+                    up = _unit_predictor(u)
+                    u["probs"] = up.predict_probs(crop) if up is not None and hasattr(up, "predict_probs") else None
+                    st_p = (u["probs"] or {}).get("structure")
+                    fl_p = (u["probs"] or {}).get("floor")
+                    u["juliet_prob"] = None if st_p is None else float(st_p[LABEL_STRUCTURES.index("juliet")])
+                    u["floor_probs"] = None if fl_p is None else {sh: float(v) for sh, v in zip(FLOOR_SHAPES, fl_p)}
+                # ties prefer the medoid: med_i is an index into ``units``, the vote compares unit_id
                 voted = vote_cluster_ir(
-                    member_preds, prefer_unit_id=med_i, profile_name=profile_name
+                    member_preds, prefer_unit_id=int(units[med_i]["unit_id"]), profile_name=profile_name
                 )
                 vote = voted["vote"]
                 structure, structure_counts = vote_structure(
                     [
                         structure_from_ir(u["structure_ir_member"])
                         for u in member_units
-                    ]
+                    ],
+                    [u.get("juliet_prob") for u in member_units],
                 )
                 if isinstance(voted["structure_ir"], dict):
                     voted["structure_ir"] = copy.deepcopy(voted["structure_ir"])
@@ -1037,18 +1119,29 @@ def run(args: argparse.Namespace) -> Path | None:
                 vote["structure"] = structure
                 vote["structure_counts"] = structure_counts
                 if not per_unit_floor:
+                    floor_voters = [
+                        (p, u) for p, u in zip(member_preds, member_units)
+                        if isinstance(p.get("ir"), dict) and structure_from_ir(p["ir"]) != "juliet"
+                    ]
                     voted_ir, floor_shape, floor_counts = apply_floor_majority(
                         voted["structure_ir"],
-                        [
-                            floor_shape_from_ir(p["ir"])
-                            for p in member_preds
-                            if isinstance(p.get("ir"), dict)
-                            and structure_from_ir(p["ir"]) != "juliet"
-                        ],
+                        [floor_shape_from_ir(p["ir"]) for p, _u in floor_voters],
+                        [u.get("floor_probs") for _p, u in floor_voters],
                     )
                     voted["structure_ir"] = voted_ir
                     vote["floor_shape"] = floor_shape
                     vote["floor_counts"] = floor_counts
+                if getattr(args, "vote", "soft") == "soft":
+                    soft = soft_type_labels(
+                        [u.get("probs") for u in member_units],
+                        [] if per_unit_floor else
+                        [k for k, u in enumerate(member_units) if structure_from_ir(u["structure_ir_member"]) != "juliet"],
+                    )
+                    if soft is not None:
+                        voted["structure_ir"] = apply_soft_labels(voted["structure_ir"], soft)
+                        vote["soft"] = soft
+                        if soft.get("floor"):
+                            vote["floor_shape"] = soft["floor"]
                 for u in member_units:
                     if per_unit_floor:
                         ir_u = _with_unit_floor(

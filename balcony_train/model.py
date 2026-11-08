@@ -254,6 +254,23 @@ class RailingPredictor:
         }
 
     @torch.no_grad()
+    def predict_probs(self, crop: Image.Image) -> dict[str, list[float] | None]:
+        """Softmax per head (orders: ``CLASSES``, ``MATERIALS``, ``FLOOR_SHAPES``, ``LABEL_STRUCTURES``);
+        None for an untrained head. Used by the balcony clustering's label split."""
+        x = self.tfm(crop.convert("RGB")).unsqueeze(0).to(self.device)
+        kind_logits, mat_logits, floor_logits, _enc, _skin, structure_logits = self.model(x)
+
+        def sm(t):
+            return torch.softmax(t.float(), dim=1)[0].cpu().tolist()
+
+        return {
+            "kind": sm(kind_logits),
+            "material": sm(mat_logits) if getattr(self.model, "_material_trained", False) else None,
+            "floor": sm(floor_logits) if getattr(self.model, "_floor_trained", False) else None,
+            "structure": sm(structure_logits) if getattr(self.model, "_structure_trained", False) else None,
+        }
+
+    @torch.no_grad()
     def predict(self, crop: Image.Image) -> str:
         return str(self.predict_full(crop)["kind"])
 
