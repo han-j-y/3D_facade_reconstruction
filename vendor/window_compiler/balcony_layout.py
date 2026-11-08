@@ -12,6 +12,7 @@ share a cell with an enclosed balcony onto that balcony's front face.
 
 from __future__ import annotations
 
+import statistics
 from typing import Any, Sequence
 
 from balcony_plan import (
@@ -24,9 +25,12 @@ from balcony_plan import (
     slab_outline,
     support_polyline,
 )
-from facade_spec import get_cell, image_facade_extent_x, image_facade_extent_y, total_grid_size, wall_world_extent
+from facade_spec import JULIET_WINDOW_OVERLAP, get_cell, image_facade_extent_x, image_facade_extent_y, total_grid_size, wall_world_extent
 
 STACKABLE = frozenset({"half_enclosed", "enclosed"})
+PHOTO_RAIL_MIN_M = 0.3  # railing height from the photo box, clamped
+PHOTO_RAIL_MAX_M = 1.3
+STACK_OVERHANG_M = 0.5  # an open slab reaching this far past the enclosed block under it keeps its own span
 OUTLINE_SHAPES = frozenset({"triangle", "circle"})
 
 STACK_MIN_OVERLAP = 0.5
@@ -175,6 +179,7 @@ def _frame(
     mirror_x: bool,
     bottom_m: float,
     x_span: tuple[float, float] | None = None,
+    type_width: float | None = None,
 ) -> dict[str, Any] | None:
     grid = spec.get("grid") or {}
     n_rows = len(grid.get("rows") or [])
@@ -208,9 +213,27 @@ def _frame(
     depth = float(DEFAULT_SLAB_DEPTH_M)
 
     sill_z = z0 + cell_h * bottom_m
+    photo_rail_h = None
+    photo_top_z = None
     if rec.get("photo_bottom_y") is not None:
         yt, yb = image_facade_extent_y(spec)
-        sill_z = (yb - float(rec["photo_bottom_y"])) / max(1e-6, yb - yt) * total_grid_size(grid)[1]
+        to_z = total_grid_size(grid)[1] / max(1e-6, yb - yt)
+        sill_z = (yb - float(rec["photo_bottom_y"])) * to_z
+        if rec.get("photo_top_y") is not None:
+            slab = 0.0 if structure in ("juliet", "rooftop") else thick  # no slab under these railings
+            top_z = (yb - float(rec["photo_top_y"])) * to_z
+            photo_rail_h = min(PHOTO_RAIL_MAX_M, max(PHOTO_RAIL_MIN_M, top_z - sill_z - slab))
+            if top_z - sill_z - slab > PHOTO_RAIL_MAX_M:
+                rail_ir = min(PHOTO_RAIL_MAX_M, float((ir.get("railing") or {}).get("height") or 1.1))
+                if structure == "juliet" and float(rec.get("window_overlap") or 0.0) >= JULIET_WINDOW_OVERLAP:
+                    # A juliet whose window reaches into its box: the window stands behind the railing, so the
+                    # railing stands on the box bottom (above it the box is the opening).
+                    photo_rail_h = rail_ir
+                else:
+                    # Box taller than any railing (it holds the bracket below): hang from the box top.
+                    photo_rail_h = rail_ir
+                    sill_z = top_z - photo_rail_h - slab
+                    photo_top_z = top_z
     if structure == "free_standing":
         deck_h = float(params.get("height") or 0.0)
         if deck_h > 0.05:
@@ -220,6 +243,8 @@ def _frame(
     bx0, bx1 = x0 + pad, x1 - pad
     if shape in OUTLINE_SHAPES or enclosure in STACKABLE:
         tw = float(params.get("width") or params.get("diameter") or 0.0)
+        if type_width is not None and enclosure == "open":
+            tw = type_width  # measured on the photo at the facade's scale, not the IR's 12 m-image guess
         if tw > 0.3:
             tw = min(tw, span_w * 0.98)
             bx0 = cx - tw / 2.0
@@ -263,6 +288,9 @@ def _frame(
         "depth": depth,
         "thick": thick,
         "sill_z": sill_z,
+        "photo_z": rec.get("photo_bottom_y") is not None,
+        "photo_rail_h": photo_rail_h,
+        "photo_top_z": photo_top_z,
         "bx0": bx0,
         "bx1": bx1,
         "y_wall": front_y,
@@ -307,6 +335,26 @@ def _align_to(upper: dict[str, Any], lower: dict[str, Any]) -> None:
     upper["aligned"] = True
 
 
+def _block_footprint(lowers: list[dict[str, Any]], own: dict[str, float] | None = None) -> dict[str, Any]:
+    """Footprint of the slab over enclosed cells: every cell under it (an oriel cut into bays is one block), and the
+    slab's own photo span when that reaches further (a long balcony over two oriels keeps its length)."""
+    first = lowers[0]
+    lo, hi = min(f["bx0"] for f in lowers), max(f["bx1"] for f in lowers)
+    if own is not None and (own["bx0"] < lo - STACK_OVERHANG_M or own["bx1"] > hi + STACK_OVERHANG_M):
+        lo, hi = min(lo, own["bx0"]), max(hi, own["bx1"])
+    elif len(lowers) == 1:
+        return first
+    depth = max(f["depth"] for f in lowers)
+    shape = first["shape"] if first["shape"] in OUTLINE_SHAPES else "rectangle"
+    return {
+        "bx0": lo,
+        "bx1": hi,
+        "depth": depth,
+        "shape": first["shape"],
+        "outline": slab_outline(shape, x0=lo, x1=hi, y_wall=first["y_wall"], depth=depth, structure=first["structure"]),
+    }
+
+
 def link_stacks(
     frames: Sequence[dict[str, Any] | None],
     library: dict[str, Any],
@@ -317,6 +365,8 @@ def link_stacks(
     The highest member of a chain keeps its own roof slab.
     """
     live = [f for f in frames if f is not None]
+    carried: dict[int, list[dict[str, Any]]] = {}
+    own = {g["index"]: {"bx0": g["bx0"], "bx1": g["bx1"]} for g in live}  # spans before any alignment
     for f in sorted(live, key=lambda fr: -fr["row"]):
         if f["enclosure"] not in STACKABLE or f["outline"] is None:
             continue
@@ -325,7 +375,7 @@ def link_stacks(
         for g in live:
             if g["row"] != f["row"] - 1 or g["outline"] is None:
                 continue
-            ov = _x_overlap(f, g)
+            ov = _x_overlap(own[f["index"]], own[g["index"]])
             if ov >= best_ov:
                 best, best_ov = g, ov
         if best is not None and best["sill_z"] > f["sill_z"] + f["thick"] + MIN_CLEAR_H_M:
@@ -333,7 +383,8 @@ def link_stacks(
             f["above"] = best["index"]
             f["top_z"] = best["sill_z"]
             best["carries_stack"] = True
-            _align_to(best, f)
+            carried.setdefault(best["index"], []).append(f)
+            _align_to(best, _block_footprint(carried[best["index"]], own[best["index"]]))
         else:
             f["roof"] = "own"
             f["top_z"] = _own_top_z(f, library.get(f["name"]) or {})
@@ -550,7 +601,24 @@ def _plain_frames(
             frames.append(None)
             continue
         frames.append(_frame(spec, i, rec, ir, mirror_x=mirror_x, bottom_m=bottom_m, x_span=fits.get(i)))
+    widths = _outline_type_widths(frames)
+    if widths:
+        recs = spec.get("balcony_placement") or []
+        for k, f in enumerate(frames):
+            if f is not None and f["name"] in widths:
+                frames[k] = _frame(spec, k, recs[k], library[f["name"]], mirror_x=mirror_x, bottom_m=bottom_m,
+                                   x_span=fits.get(k), type_width=widths[f["name"]])
     return frames
+
+
+def _outline_type_widths(frames: Sequence[dict[str, Any] | None]) -> dict[str, float]:
+    """One width per open round/triangle type: the median photo width of its members (metres on this facade)."""
+    by_type: dict[str, list[float]] = {}
+    for f in frames:
+        if f is None or f["shape"] not in OUTLINE_SHAPES or f["enclosure"] != "open" or f["from_bays"] or f["structure"] == "rooftop":
+            continue
+        by_type.setdefault(f["name"], []).append(f["x1"] - f["x0"])
+    return {name: float(statistics.median(ws)) for name, ws in by_type.items()}
 
 
 def enclosed_window_fits(
@@ -573,6 +641,43 @@ def balcony_frames(
     return frames
 
 
+def center_on_windows(
+    frames: Sequence[dict[str, Any] | None],
+    placements: Sequence[dict[str, Any]],
+    windows: Sequence[dict[str, Any]],
+) -> None:
+    """Windows are the reference: an open balcony moves sideways (in place) onto the centre of its own window(s)
+    as compiled, after type sizing and column alignment. Height and width stay. Balconies without a window,
+    rooftop railings, slabs that carry an enclosure stack and galleries with other windows over them keep their
+    place."""
+    by_unit: dict[str, list[dict[str, Any]]] = {}
+    for w in windows:
+        if w.get("unit_id") is not None and not w.get("side_face"):
+            by_unit.setdefault(str(w["unit_id"]), []).append(w)
+    for f in frames:
+        if f is None or f["enclosure"] != "open" or f["structure"] == "rooftop" or f.get("aligned"):
+            continue
+        ids = (placements[f["index"]] if f["index"] < len(placements) else {}).get("window_unit_ids") or []
+        wins = [w for u in ids for w in by_unit.get(str(u), [])]
+        if not wins:
+            continue
+        rows = {w.get("r") for w in wins}
+        others = [
+            w for w in windows
+            if w.get("r") in rows and not w.get("side_face") and all(w is not v for v in wins)
+            and f["bx0"] < float(w["ox"]) + 0.5 * float(w["ww"]) < f["bx1"]
+        ]
+        if others:
+            continue  # a gallery under several windows is not any one window's balcony
+        cx = 0.5 * (min(float(w["ox"]) for w in wins) + max(float(w["ox"]) + float(w["ww"]) for w in wins))
+        dx = cx - 0.5 * (f["bx0"] + f["bx1"])
+        for key in ("x0", "x1", "cx", "bx0", "bx1"):
+            f[key] += dx
+        if f.get("outline"):
+            f["outline"] = [(x + dx, y) for x, y in f["outline"]]
+        f["window_dx"] = dx
+
+
 def seat_on_window_bottoms(
     frames: Sequence[dict[str, Any] | None],
     windows: Sequence[dict[str, Any]],
@@ -585,6 +690,8 @@ def seat_on_window_bottoms(
     live = [f for f in frames if f is not None]
     for f in live:
         if f["enclosure"] != "open" or f["structure"] not in ("projecting", "juliet"):
+            continue
+        if f.get("photo_z") and f.get("photo_top_z") is None:
             continue
         bottoms = [
             float(w["oz"])
@@ -599,6 +706,10 @@ def seat_on_window_bottoms(
         if target >= f["sill_z"]:
             continue
         f["sill_z"] = target
+        if f.get("photo_top_z") is not None:
+            # Hung from the box top but floating above its window bottom: floor on the window
+            # bottom, railing up towards the box top.
+            f["photo_rail_h"] = min(PHOTO_RAIL_MAX_M, max(PHOTO_RAIL_MIN_M, f["photo_top_z"] - target - drop))
         for g in live:
             if g.get("above") == f["index"]:
                 g["top_z"] = f["sill_z"]

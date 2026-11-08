@@ -24,6 +24,9 @@ MIN_UPPER_FLOOR_COVER = 0.90
 MIN_COLUMN_COVER = 0.40
 # Drop an open railing if this fraction of its box sits on an enclosed volume.
 OPEN_ON_ENCLOSED_FRAC = 0.25
+# Cells together (open_covered_by_enclosed): half the open box. 0.25 dropped real railings in front of bay windows
+# (v26 35%, c041 37-47%, a false oriel); r19's tower balconies (63-77%) and r17's curved box (52%) still go.
+OPEN_COVERED_BY_CELLS_FRAC = 0.5
 # Same share as the compiler's ENCLOSED_WINDOW_MARGIN: wall kept beside a block's outer windows.
 ENCLOSED_WINDOW_MARGIN = 0.25
 
@@ -316,6 +319,46 @@ def _bay_set(unit: dict[str, Any]) -> set[int]:
     return set(range(min(lo, hi), max(lo, hi) + 1))
 
 
+def open_covered_by_enclosed(open_u: dict[str, Any], enclosed_units: list[dict[str, Any]]) -> float:
+    """Share of the open box covered by all enclosed cells on its floor together.
+
+    One box can span several narrow cells (a round oriel cut into bays) that each cover only a little of it.
+    Fitted boxes stand for the cell when present; a cell the compiler removes (empty fit) covers nothing.
+    """
+    ob = open_u.get("box_xyxy")
+    if not ob:
+        return 0.0
+    ox0, oy0, ox1, oy1 = (float(v) for v in ob[:4])
+    area = max(0.0, ox1 - ox0) * max(0.0, oy1 - oy0)
+    if area <= 0.0:
+        return 0.0
+    rects = []
+    for e in enclosed_units:
+        if int(e.get("floor", -2)) != int(open_u.get("floor", -1)):
+            continue
+        eb = e.get("fit_box_xyxy") or e.get("box_xyxy")
+        if not eb or eb[2] <= eb[0]:
+            continue
+        x0, y0, x1, y1 = max(ox0, float(eb[0])), max(oy0, float(eb[1])), min(ox1, float(eb[2])), min(oy1, float(eb[3]))
+        if x1 > x0 and y1 > y0:
+            rects.append((x0, y0, x1, y1))
+    xs = sorted({v for r in rects for v in (r[0], r[2])})
+    covered = 0.0
+    for a, b in zip(xs, xs[1:]):  # union area: sweep x slabs, merge y spans
+        spans = sorted((r[1], r[3]) for r in rects if r[0] <= a and r[2] >= b)
+        lo = hi = None
+        for y0, y1 in spans:
+            if hi is None or y0 > hi:
+                if hi is not None:
+                    covered += (b - a) * (hi - lo)
+                lo, hi = y0, y1
+            else:
+                hi = max(hi, y1)
+        if hi is not None:
+            covered += (b - a) * (hi - lo)
+    return covered / area
+
+
 def drop_open_under_enclosed(
     open_units: list[dict[str, Any]],
     enclosed_units: list[dict[str, Any]],
@@ -328,7 +371,9 @@ def drop_open_under_enclosed(
     kept: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
     for u in open_units:
-        hit = any(open_conflicts_enclosed(u, e) for e in enclosed_units)
+        hit = any(open_conflicts_enclosed(u, e) for e in enclosed_units) or (
+            open_covered_by_enclosed(u, enclosed_units) >= OPEN_COVERED_BY_CELLS_FRAC
+        )
         if hit:
             dropped.append(u)
         else:

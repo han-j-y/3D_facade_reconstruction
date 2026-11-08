@@ -2556,6 +2556,10 @@ def run_one(
                 print(f"type fit: {len(fit_moves)} windows left a type they do not fit: "
                       f"{[(m['from'], m['to']) for m in fit_moves]}")
     n_types = len(dsl["window_types"]) if args.grid == "floor_bays" and args.type_fit else len(types_out)
+    # floor / bay order lists (vendor/window_compiler/grid_order.py): add, delete or reorder floors and bays by
+    # editing these two lists (1-2 words per edit)
+    dsl["layout"]["floor_order"] = [int(f["id"]) for f in dsl["layout"].get("floors") or []]
+    dsl["layout"]["bay_order"] = [int(b["id"]) for b in dsl["layout"].get("bays") or []]
     dsl_path = out_dir / "facade_dsl.json"
     dsl_path.write_text(json.dumps(dsl, indent=2) + "\n", encoding="utf-8")
 

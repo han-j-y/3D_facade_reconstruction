@@ -168,7 +168,13 @@ layout        = "{", '"floors": [', floor, { ",", floor }, "]",     (* top → b
                      ',"placement": ', matrix_tok,                  (* n_floors × n_bays *)
                      [ ',"placement_spans": ', matrix_int ],
                      [ ',"balconies": [', [ balcony_instance, { ",", balcony_instance } ], "]" ],
+                     [ ',"floor_order": [', json_int, { ",", json_int }, "]" ],   (* floor ids top -> bottom *)
+                     [ ',"bay_order": [', json_int, { ",", json_int }, "]" ],     (* bay ids left -> right *)
                 "}" ;
+(* floor_order / bay_order (written by the pipeline, 2026-11-08): edit them to add (repeat an id: a copy with
+   fresh ids), delete (leave an id out) or reorder floors and bays. grid_order.apply_grid_order lays the floors
+   and bays out again in photo pixels before normalisation; every element moves with its floor and first bay.
+   The recovered order is a no-op. *)
 floor         = "{", '"name": ', json_string, ',"id": ', json_int,
                      ',"h_norm": ', json_number,                    (* relative height *)
                      [ ',"h_m": ', json_number ],                   (* metres, see §4 *)

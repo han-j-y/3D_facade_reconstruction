@@ -49,6 +49,31 @@ def unwrap_window_ir(obj: Any) -> dict[str, Any] | None:
     return None
 
 
+JULIET_WINDOW_OVERLAP = 0.3  # below this a tall juliet box hangs from its top (its window is above the railing)
+
+
+def juliet_window_overlap(rec: dict[str, Any], instances: list[dict[str, Any]]) -> float:
+    """How much of a juliet box's height its window covers (0..1).
+
+    Its own (linked) window; without one, the median over the other windows on the same floor; 0 with no window.
+    A window that reaches into the box stands behind the railing, so the railing stands on the box bottom; a window
+    that ends above the box (overlap near 0) means the railing hangs just below it, at the box top.
+    """
+    y0, y1 = float(rec["box_xyxy"][1]), float(rec["box_xyxy"][3])
+    h = max(1.0, y1 - y0)
+
+    def ov(b: list) -> float:
+        return max(0.0, min(y1, float(b[3])) - max(y0, float(b[1]))) / h
+
+    wins = [u for u in instances if u.get("box_xyxy") and not u.get("side_face")]
+    linked = {str(i) for i in rec.get("partner_window_unit_ids") or []}
+    own = [ov(u["box_xyxy"]) for u in wins if str(u.get("unit_id")) in linked]
+    if own:
+        return max(own)
+    same = sorted(ov(u["box_xyxy"]) for u in wins if u.get("floor") == rec.get("floor"))
+    return same[len(same) // 2] if same else 0.0
+
+
 def normalize_facade_spec(
     spec: dict[str, Any],
     *,
@@ -62,6 +87,12 @@ def normalize_facade_spec(
         return out
 
     layout = spec.get("layout") or {}
+    if layout.get("floor_order") is not None or layout.get("bay_order") is not None:
+        # floors / bays added, deleted or reordered by their order lists (grid_order.py)
+        from grid_order import apply_grid_order
+
+        spec = apply_grid_order(spec)
+        layout = spec.get("layout") or {}
     floors = list(layout.get("floors") or [])
     bays = list(layout.get("bays") or [])
     placement_src = layout.get("placement") or []
@@ -332,9 +363,17 @@ def normalize_facade_spec(
                 item[k] = [int(b) for b in rec[k]]
         if rec.get("structure"):
             item["structure"] = str(rec["structure"])
-        if rec.get("outer_bay") and rec.get("box_xyxy"):
-            # Past the window grid its floors are not this grid's: it keeps its height on the photo.
+        if rec.get("partner_window_unit_ids"):
+            item["window_unit_ids"] = [str(u) for u in rec["partner_window_unit_ids"]]  # doors are "door_<n>"
+        enclosed = str((balcony_lib[bname] or {}).get("enclosure") or "open") in ("enclosed", "half_enclosed")
+        if rec.get("box_xyxy") and not enclosed:
+            # An open balcony sits where the photo shows it: slab at the box bottom, railing top at the box top.
+            # Its window link and floor only name where it belongs; adjustments come after.
             item["photo_bottom_y"] = float(rec["box_xyxy"][3])
+            item["photo_top_y"] = float(rec["box_xyxy"][1])
+            structure = str(rec.get("structure") or (balcony_lib[bname] or {}).get("structure") or "projecting")
+            if structure == "juliet":
+                item["window_overlap"] = round(juliet_window_overlap(rec, spec.get("instances") or []), 4)
         balcony_placement.append(item)
 
     return {

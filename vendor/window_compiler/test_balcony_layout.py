@@ -12,6 +12,8 @@ if str(HERE) not in sys.path:
 
 from facade_spec import wall_margins_from_region, wall_world_extent
 from balcony_layout import (
+    center_on_windows,
+    _outline_type_widths,
     _fit_spans,
     side_wall_targets,  # noqa: E402
     balcony_frames,
@@ -23,7 +25,7 @@ from balcony_layout import (
     seat_on_window_bottoms,
     windows_behind_glass,
 )
-from facade_spec import get_cell  # noqa: E402
+from facade_spec import get_cell, juliet_window_overlap  # noqa: E402
 
 
 def _ir(
@@ -68,6 +70,21 @@ class StackTests(unittest.TestCase):
             "open": _ir("open", width=2.4),
             "circ": _ir("enclosed", shape="circle", width=2.4),
         }
+
+    def test_slab_over_a_block_of_cells_takes_the_whole_block(self) -> None:
+        # An oriel cut into three bay cells under one open balcony that spans all three bays.
+        spec = _spec([_at(2, 0, "enc"), _at(2, 1, "enc"), _at(2, 2, "enc"), {"row": 1, "col0": 0, "col1": 2, "type": "wide"}],
+                     self.lib | {"wide": _ir("open", width=7.0)})
+        *cells, top = balcony_frames(spec)
+        self.assertAlmostEqual(top["bx0"], min(c["bx0"] for c in cells))
+        self.assertAlmostEqual(top["bx1"], max(c["bx1"] for c in cells))
+        self.assertTrue(all(c["roof"] == "shared" for c in cells))
+
+    def test_long_slab_over_a_block_keeps_its_length(self) -> None:
+        spec = _spec([_at(2, 1, "enc"), {"row": 1, "col0": 0, "col1": 2, "type": "wide"}], self.lib | {"wide": _ir("open", width=7.0)})
+        cell, top = balcony_frames(spec)
+        self.assertLess(top["bx0"], cell["bx0"] - 0.5)  # reaches well past the block: the photo span stays
+        self.assertGreater(top["bx1"], cell["bx1"] + 0.5)
 
     def test_column_of_enclosures_shares_floors(self) -> None:
         spec = _spec([_at(3, 1, "enc"), _at(2, 1, "enc"), _at(1, 1, "open")], self.lib)
@@ -363,6 +380,81 @@ class ColumnTests(unittest.TestCase):
             self.assertTrue(rect["bx0"] < x < rect["bx1"])
 
 
+class CenterOnWindowsTest(unittest.TestCase):
+    """Windows are the reference: an open balcony moves sideways onto its window's compiled centre."""
+
+    def _frame(self, rec: dict, kind: str = "open") -> dict:
+        spec = _spec([rec | {"type": "b"}], {"b": _ir(kind, width=2.0)})
+        return balcony_frames(spec)[0]
+
+    def test_moves_onto_its_window(self) -> None:
+        f = self._frame({"row": 1, "col0": 1, "col1": 1, "window_unit_ids": [7]})
+        w0 = f["bx1"] - f["bx0"]
+        center_on_windows([f], [{"window_unit_ids": [7]}], [{"unit_id": 7, "ox": 0.6, "ww": 1.0}])
+        self.assertAlmostEqual(0.5 * (f["bx0"] + f["bx1"]), 1.1)
+        self.assertAlmostEqual(f["bx1"] - f["bx0"], w0)  # width stays
+        self.assertAlmostEqual(min(x for x, _ in f["outline"]), f["bx0"])
+
+    def test_two_windows_take_their_midpoint(self) -> None:
+        f = self._frame({"row": 1, "col0": 0, "col1": 1})
+        wins = [{"unit_id": 1, "ox": -2.0, "ww": 1.0}, {"unit_id": 2, "ox": 1.0, "ww": 1.0}]
+        center_on_windows([f], [{"window_unit_ids": [1, 2]}], wins)
+        self.assertAlmostEqual(0.5 * (f["bx0"] + f["bx1"]), 0.0)
+
+    def test_gallery_under_several_windows_keeps_its_place(self) -> None:
+        f = self._frame({"row": 1, "col0": 0, "col1": 2})
+        cx = 0.5 * (f["bx0"] + f["bx1"])
+        wins = [{"unit_id": 1, "r": 1, "ox": -3.0, "ww": 1.0}, {"unit_id": 2, "r": 1, "ox": 0.5, "ww": 1.0}]
+        center_on_windows([f], [{"window_unit_ids": [1]}], wins)
+        self.assertAlmostEqual(0.5 * (f["bx0"] + f["bx1"]), cx)
+
+    def test_no_window_or_side_face_keeps_its_place(self) -> None:
+        f = self._frame({"row": 1, "col0": 1, "col1": 1})
+        cx = 0.5 * (f["bx0"] + f["bx1"])
+        center_on_windows([f], [{"window_unit_ids": [3]}], [{"unit_id": 3, "ox": 2.0, "ww": 0.2, "side_face": True}])
+        center_on_windows([f], [{}], [{"unit_id": 3, "ox": 2.0, "ww": 1.0}])
+        self.assertAlmostEqual(0.5 * (f["bx0"] + f["bx1"]), cx)
+
+
+class JulietOverlapTest(unittest.TestCase):
+    """How much of a juliet box its window covers: own window first, else the same floor's windows."""
+
+    BOX = {"box_xyxy": [0, 100, 100, 200], "floor": 2, "partner_window_unit_ids": [7]}
+
+    def test_own_window(self) -> None:
+        wins = [{"unit_id": 7, "floor": 2, "box_xyxy": [10, 20, 90, 160]}, {"unit_id": 8, "floor": 2, "box_xyxy": [200, 20, 290, 100]}]
+        self.assertAlmostEqual(juliet_window_overlap(self.BOX, wins), 0.6)
+
+    def test_same_floor_without_own_window(self) -> None:
+        box = dict(self.BOX, partner_window_unit_ids=[])
+        wins = [{"unit_id": 8, "floor": 2, "box_xyxy": [200, 120, 290, 200]}, {"unit_id": 9, "floor": 1, "box_xyxy": [0, 0, 9, 9]}]
+        self.assertAlmostEqual(juliet_window_overlap(box, wins), 0.8)
+
+    def test_no_window(self) -> None:
+        self.assertEqual(juliet_window_overlap(dict(self.BOX, partner_window_unit_ids=[]), []), 0.0)
+
+
+class OutlineTypeWidthTest(unittest.TestCase):
+    """Open round balconies share one width per type: the median photo width, at the facade's scale."""
+
+    def _frames(self, shape: str, enclosure: str = "open") -> list:
+        recs = [{"row": r, "col0": 1, "col1": 1, "type": "t", "width_norm": w, "window_cx_norm": 0.5}
+                for r, w in ((0, 0.2), (1, 0.22), (2, 0.2))]  # 200 / 220 / 200 px of an 800 px, 7.8 m grid
+        spec = _spec(recs, {"t": _ir(enclosure, shape=shape, width=1.0)})
+        spec["meta"] = {"image_size": [1000, 800]}
+        spec["image_extent"] = {"x0": 100.0, "x1": 900.0}
+        return balcony_frames(spec)
+
+    def test_round_type_takes_the_median_photo_width(self) -> None:
+        a, b, c = self._frames("circle")  # median 1.95 m, not the IR's 1.0 m; never wider than 98% of its own box
+        self.assertAlmostEqual(b["bx1"] - b["bx0"], 0.25 * 7.8)
+        self.assertAlmostEqual(a["bx1"] - a["bx0"], 0.98 * 0.25 * 7.8)
+
+    def test_enclosed_round_types_get_no_shared_width(self) -> None:
+        self.assertEqual(_outline_type_widths(self._frames("circle", "enclosed")), {})
+        self.assertEqual(set(_outline_type_widths(self._frames("circle"))), {"t"})
+
+
 class PhotoSpanTest(unittest.TestCase):
     """Photo norms are fractions of image width; the wall spans only the grid's extent."""
 
@@ -514,6 +606,58 @@ class OuterBayHeightTest(unittest.TestCase):
     def test_keeps_its_photo_height(self) -> None:
         f = self._frame({"row": 0, "col0": 0, "col1": 0, "photo_bottom_y": 300.0})
         self.assertAlmostEqual(f["sill_z"], 6.0)  # halfway down the 12 m grid, whatever floor it was given
+
+    def test_railing_top_follows_the_photo_box(self) -> None:
+        f = self._frame({"row": 0, "col0": 0, "col1": 0, "photo_bottom_y": 300.0, "photo_top_y": 260.0})
+        self.assertAlmostEqual(f["sill_z"], 6.0)
+        self.assertAlmostEqual(f["photo_rail_h"], 1.2 - f["thick"])  # 40 px = 1.2 m, less the slab
+
+    def test_photo_railing_height_is_clamped(self) -> None:
+        low = self._frame({"row": 0, "col0": 0, "col1": 0, "photo_bottom_y": 300.0, "photo_top_y": 298.0})
+        tall = self._frame({"row": 0, "col0": 0, "col1": 0, "photo_bottom_y": 300.0, "photo_top_y": 200.0})
+        self.assertEqual((low["photo_rail_h"], tall["photo_rail_h"]), (0.3, 1.1))
+
+    def test_tall_box_hangs_from_its_top(self) -> None:
+        f = self._frame({"row": 0, "col0": 0, "col1": 0, "photo_bottom_y": 300.0, "photo_top_y": 200.0})
+        self.assertAlmostEqual(f["photo_rail_h"], 1.1)  # the type's railing, not the 3 m box
+        self.assertAlmostEqual(f["sill_z"] + f["thick"] + f["photo_rail_h"], 9.0)  # railing top on the box top
+
+    def _juliet(self, overlap=None) -> dict:
+        rec = {"row": 0, "col0": 0, "col1": 0, "type": "j", "photo_bottom_y": 300.0, "photo_top_y": 200.0}
+        if overlap is not None:
+            rec["window_overlap"] = overlap
+        spec = _spec([rec], {"j": _ir("open", structure="juliet")})
+        spec["image_extent"] = {"x0": 0.0, "x1": 100.0, "y0": 100.0, "y1": 500.0}
+        return balcony_frames(spec)[0]
+
+    def test_tall_juliet_with_its_window_in_the_box_stands_on_the_bottom(self) -> None:
+        f = self._juliet(overlap=0.6)
+        self.assertAlmostEqual(f["sill_z"], 6.0)
+        self.assertAlmostEqual(f["photo_rail_h"], 1.1)
+
+    def test_tall_juliet_below_its_window_hangs_from_the_top(self) -> None:
+        for ov in (0.1, None):
+            f = self._juliet(overlap=ov)
+            self.assertAlmostEqual(f["sill_z"] + f["photo_rail_h"], 9.0)
+
+    def test_tall_box_floating_above_its_window_drops_to_it(self) -> None:
+        f = self._frame({"row": 0, "col0": 0, "col1": 0, "photo_bottom_y": 300.0, "photo_top_y": 200.0})
+        win = {"r": 0, "oz": 7.0, "ox": f["bx0"], "ww": f["bx1"] - f["bx0"]}
+        seat_on_window_bottoms([f], [win])
+        self.assertAlmostEqual(f["sill_z"] + f["thick"], 7.0)  # slab top on the window bottom
+        self.assertAlmostEqual(f["photo_rail_h"], 1.3)  # grows towards the box top, clamped
+
+    def test_tall_box_below_its_window_stays_on_top(self) -> None:
+        f = self._frame({"row": 0, "col0": 0, "col1": 0, "photo_bottom_y": 300.0, "photo_top_y": 200.0})
+        win = {"r": 0, "oz": 8.5, "ox": f["bx0"], "ww": f["bx1"] - f["bx0"]}
+        seat_on_window_bottoms([f], [win])
+        self.assertAlmostEqual(f["sill_z"] + f["thick"] + f["photo_rail_h"], 9.0)
+
+    def test_photo_placed_balcony_is_not_seated_on_a_window(self) -> None:
+        f = self._frame({"row": 0, "col0": 0, "col1": 0, "photo_bottom_y": 300.0, "photo_top_y": 260.0})
+        win = {"r": 0, "oz": 7.5, "ox": f["bx0"], "ww": f["bx1"] - f["bx0"]}
+        seat_on_window_bottoms([f], [win])
+        self.assertAlmostEqual(f["sill_z"], 6.0)
 
     def test_others_keep_their_floor(self) -> None:
         f = self._frame({"row": 0, "col0": 0, "col1": 0})

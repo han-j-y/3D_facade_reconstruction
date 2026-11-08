@@ -85,6 +85,36 @@ def floor_of_top_edge(box: list[float], floor_y: dict[int, tuple[int, int]], def
     return default
 
 
+WINDOW_ABOVE_MAX_FH = 0.4  # window bottom at most this many floor heights above the balcony top
+WINDOW_BELOW_MAX_FH = 0.1  # or reaching down behind the railing, at most this far past the balcony bottom
+
+
+def attach_to_window(
+    box: list[float],
+    partners: list[dict[str, Any]],
+    floor_i: int,
+    floor_y: dict[int, tuple[int, int]],
+) -> tuple[list[dict[str, Any]], int, list[Any]]:
+    """A balcony belongs to the window just above it: take that window's floor, if the window is attached.
+
+    Floors are bands between window rows, so a balcony hanging below a window whose row is offset (a corner bay)
+    can fall in the next band. The window is attached when its bottom is at most ``WINDOW_ABOVE_MAX_FH`` floor
+    heights above the balcony top, or reaches down behind the railing to at most ``WINDOW_BELOW_MAX_FH`` past
+    the balcony bottom. A window further away is not this balcony's: the link is dropped (ids returned) and the
+    balcony keeps its band floor.
+    """
+    wins = [w for w in partners if w.get("box_xyxy") and isinstance(w.get("floor"), int)]
+    if not wins or not floor_y:
+        return partners, floor_i, []
+    fh = statistics.median(float(y1 - y0) for y0, y1 in floor_y.values())
+    top, bottom = float(box[1]), float(box[3])
+    near = min(wins, key=lambda w: abs(top - float(w["box_xyxy"][3])))
+    wb = float(near["box_xyxy"][3])
+    if wb < top - WINDOW_ABOVE_MAX_FH * fh or wb > bottom + WINDOW_BELOW_MAX_FH * fh:
+        return [], floor_i, [w.get("unit_id") for w in partners]
+    return partners, int(near["floor"]), []
+
+
 def outer_bay_center(box: list[float], meta: dict[str, Any], instances: list[dict[str, Any]]) -> tuple[str, float] | None:
     """``(side, center_px)`` of the bay between the window grid and the facade region's edge that holds ``box``.
 
@@ -252,6 +282,7 @@ def merge_balcony_into_windows_dsl(
                 span_bays=span_bays,
                 image_size=(iw, ih),
             )
+            partners, floor_i, far_window_ids = attach_to_window(box, partners, floor_i, floor_y)
             pids = tuple(
                 # Door partners carry ids like "door_0": window ids first, then doors.
                 sorted(
@@ -259,7 +290,15 @@ def merge_balcony_into_windows_dsl(
                     key=lambda v: (isinstance(v, str), v if isinstance(v, int) else 0, str(v)),
                 )
             )
-            key = (floor_i, pids or tuple(center_bays), name)
+            # An unlinked balcony keys on the window it was paired with, as before, so it is not taken for a duplicate.
+            # Window ids and bay indices are different things: tag them, or window 1 and bay 1 look like one balcony.
+            if pids:
+                anchor = ("window", pids)
+            elif far_window_ids:
+                anchor = ("window", tuple(far_window_ids))
+            else:
+                anchor = ("bay", tuple(center_bays))
+            key = (floor_i, anchor, name)
 
         if key in seen:
             continue
@@ -304,6 +343,8 @@ def merge_balcony_into_windows_dsl(
                     rec["bay_cx_norm"] = round(bay_cx, 6)
             if pids:
                 rec["partner_window_unit_ids"] = list(pids)
+            if far_window_ids:
+                rec["far_window_unit_ids"] = far_window_ids
 
         balc_place.append(rec)
 
@@ -341,4 +382,7 @@ def merge_balcony_into_windows_dsl(
     extra = f" Balcony types appended by balcony_pipeline ({mode_label}); {placement_note}"
     if "Balcony types appended by balcony_pipeline" not in notes:
         meta["notes"] = (notes + extra).strip()
+    # floor / bay order lists for editing (vendor/window_compiler/grid_order.py); window DSLs from before them get them here
+    layout.setdefault("floor_order", [int(f["id"]) for f in layout.get("floors") or []])
+    layout.setdefault("bay_order", [int(b["id"]) for b in layout.get("bays") or []])
     return dsl

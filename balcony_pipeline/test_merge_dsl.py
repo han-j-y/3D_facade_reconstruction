@@ -11,6 +11,7 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from merge_dsl import (  # noqa: E402
+    attach_to_window,
     floor_of_top_edge,
     outer_bay_center,
     _move_stacks_together,
@@ -175,7 +176,7 @@ class PhotoNormTests(unittest.TestCase):
                 "bay_end": 0,
                 "bays_center": [0],
                 "bay": 0,
-                "box_xyxy": [30, 200, 70, 280],
+                "box_xyxy": [30, 150, 70, 230],  # hangs right under its window
             }
         ]
         out = merge_balcony_into_windows_dsl(
@@ -186,6 +187,32 @@ class PhotoNormTests(unittest.TestCase):
         b = out["layout"]["balconies"][0]
         self.assertAlmostEqual(b["window_cx_norm"], 0.05)
         self.assertEqual(out["meta"]["balcony_center_mode"], "window")
+
+    def test_window_id_and_bay_index_do_not_collide(self) -> None:
+        # Balcony A has no window behind it (keyed by its bay, 1); balcony B hangs under window unit 1.
+        dsl = {
+            "schema": "facade_recovery_dsl_v1",
+            "meta": {"image_size": [1000, 800]},
+            "layout": {"floors": [], "bays": [], "placement": []},
+            "window_types": [],
+            "instances": [{"unit_id": 1, "floor": 0, "bay": 2, "box_xyxy": [440, 50, 460, 150]}],
+        }
+        units = [
+            {"unit_id": 0, "type_id": 0, "floor": 0, "bay_start": 1, "bay_end": 1, "bays_center": [1], "bay": 1,
+             "box_xyxy": [130, 150, 170, 230]},
+            {"unit_id": 1, "type_id": 0, "floor": 0, "bay_start": 2, "bay_end": 2, "bays_center": [2], "bay": 2,
+             "box_xyxy": [430, 150, 470, 230]},
+        ]
+        out = merge_balcony_into_windows_dsl(
+            dsl, balcony_types=[{"type_id": 0, "name": "balc_type_00", "structure_ir": {}}], units=units
+        )
+        self.assertEqual(len(out["layout"]["balconies"]), 2)
+
+    def test_merged_dsl_carries_the_order_lists(self) -> None:
+        dsl = {"meta": {"image_size": [100, 100]}, "window_types": [], "instances": [],
+               "layout": {"floors": [{"id": 0}, {"id": 1}], "bays": [{"id": 0}, {"id": 1}, {"id": 2}], "placement": []}}
+        out = merge_balcony_into_windows_dsl(dsl, balcony_types=[], units=[])
+        self.assertEqual((out["layout"]["floor_order"], out["layout"]["bay_order"]), ([0, 1], [0, 1, 2]))
 
     def _enclosed_case(self, instances: list[dict]) -> dict:
         units = [
@@ -320,6 +347,29 @@ class PhotoNormTests(unittest.TestCase):
                 self._rec(2, [768, 784, 843, 854], bay_cx_norm=0.8, outer_bay="right")]
         _move_stacks_together(recs, 1000)
         self.assertEqual([r["bay_cx_norm"] for r in recs], [0.8, 0.8])
+
+    def test_balcony_takes_the_floor_of_the_window_above_it(self) -> None:
+        floors = {0: (0, 100), 1: (100, 200), 2: (200, 300)}
+        win = {"unit_id": 7, "floor": 0, "box_xyxy": [10, 40, 60, 95]}
+        # corner-bay balcony hanging under a floor-0 window, its centre in floor 1's band
+        partners, floor, far = attach_to_window([0, 100, 80, 150], [win], 1, floors)
+        self.assertEqual((floor, far, partners), (0, [], [win]))
+
+    def test_window_reaching_down_behind_the_railing_is_attached(self) -> None:
+        floors = {0: (0, 100), 1: (100, 200)}
+        door = {"unit_id": 3, "floor": 1, "box_xyxy": [10, 110, 60, 195]}
+        self.assertEqual(attach_to_window([0, 160, 80, 200], [door], 1, floors)[1:], (1, []))
+
+    def test_window_far_above_is_not_the_balconys(self) -> None:
+        floors = {0: (0, 100), 1: (100, 200), 2: (200, 300)}
+        win = {"unit_id": 5, "floor": 0, "box_xyxy": [10, 20, 60, 60]}  # 0.9 floor heights above the balcony
+        partners, floor, far = attach_to_window([0, 150, 80, 190], [win], 1, floors)
+        self.assertEqual((partners, floor, far), ([], 1, [5]))
+
+    def test_window_below_the_balcony_is_not_the_balconys(self) -> None:
+        floors = {0: (0, 100), 1: (100, 200), 2: (200, 300)}
+        win = {"unit_id": 9, "floor": 2, "box_xyxy": [10, 220, 60, 290]}
+        self.assertEqual(attach_to_window([0, 120, 80, 160], [win], 1, floors), ([], 1, [9]))
 
     def test_mean_bay_center_norm(self) -> None:
         bay_x = {0: (0, 100), 1: (100, 300), 2: (300, 400)}

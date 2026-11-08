@@ -951,7 +951,7 @@ def add_balcony_meshes(
         shape = frame["shape"]
         depth = frame["depth"]
         thick = frame["thick"]
-        rail_h = float((ir.get("railing") or {}).get("height") or 1.1)
+        rail_h = float(frame.get("photo_rail_h") or (ir.get("railing") or {}).get("height") or 1.1)
         kind = _rail_kind(str((ir.get("railing") or {}).get("kind") or "open_work"))
         rail_material = _rail_material((ir.get("railing") or {}).get("material"))
         structure = frame["structure"]
@@ -1109,7 +1109,7 @@ def add_balcony_meshes(
             if structure == "juliet":
                 y_rail, z_lo = front_y + JULIET_PROJECTION_M, sill_z
             else:
-                y_rail, z_lo = front_y + rail_t, frame["z1"]
+                y_rail, z_lo = front_y + rail_t, (sill_z if frame.get("photo_z") else frame["z1"])
             _add_front_railing(
                 prefix=prefix,
                 kind=kind,

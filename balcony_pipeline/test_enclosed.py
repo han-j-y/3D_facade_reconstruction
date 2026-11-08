@@ -18,6 +18,7 @@ from enclosed import (  # noqa: E402
     fit_enclosed_boxes_to_windows,
     open_conflicts_enclosed,
     drop_open_under_enclosed,
+    open_covered_by_enclosed,
     enclosed_ir,
     ensure_da3_depth,
     median_floor_height,
@@ -490,6 +491,32 @@ class RailingEnclosureTests(unittest.TestCase):
         )
         self.assertEqual(ir["enclosure"], "open")
         self.assertEqual(ir["floor"]["shape"], "circle")
+
+
+class CoveredByCellsTest(unittest.TestCase):
+    """An open box spanning several narrow oriel cells is dropped when they cover it together."""
+
+    CELLS = [{"floor": 2, "bay_start": b, "bay_end": b, "box_xyxy": [100 + 20 * b, 0, 120 + 20 * b, 100]} for b in range(5)]
+
+    def test_cells_together_cover_the_box(self) -> None:
+        u = {"floor": 2, "bay_start": 9, "bay_end": 9, "box_xyxy": [100, 0, 200, 150]}  # 5 x 20 px of 100, 2/3 high
+        self.assertAlmostEqual(open_covered_by_enclosed(u, self.CELLS), 2 / 3)
+        kept, dropped = drop_open_under_enclosed([u], self.CELLS)
+        self.assertEqual((kept, dropped), ([], [u]))
+
+    def test_a_third_covered_stays(self) -> None:
+        u = {"floor": 2, "bay_start": 9, "bay_end": 9, "box_xyxy": [100, 50, 400, 150]}  # 100 of 300 px wide, half high
+        kept, _ = drop_open_under_enclosed([u], self.CELLS)
+        self.assertEqual(kept, [u])
+
+    def test_other_floor_is_not_covered(self) -> None:
+        u = {"floor": 3, "bay_start": 9, "bay_end": 9, "box_xyxy": [90, 50, 210, 150]}
+        self.assertEqual(open_covered_by_enclosed(u, self.CELLS), 0.0)
+
+    def test_overlapping_cells_count_once(self) -> None:
+        cells = [{"floor": 0, "box_xyxy": [0, 0, 60, 10]}, {"floor": 0, "box_xyxy": [40, 0, 100, 10]}]
+        self.assertAlmostEqual(open_covered_by_enclosed({"floor": 0, "box_xyxy": [0, 0, 200, 10]}, cells), 0.5)
+
 
 
 if __name__ == "__main__":

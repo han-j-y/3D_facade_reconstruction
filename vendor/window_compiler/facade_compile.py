@@ -12,7 +12,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 from balcony_compile import ENCLOSED_WALL_M, add_balcony_meshes
-from balcony_layout import balcony_frames, enclosed_window_fits, front_edge_x, front_window_targets, seat_on_window_bottoms, side_wall_targets, windows_behind_glass
+from balcony_layout import balcony_frames, center_on_windows, enclosed_window_fits, front_edge_x, front_window_targets, seat_on_window_bottoms, side_wall_targets, windows_behind_glass
 from balcony_plan import outer_edges
 from balcony_layout import front_y as balcony_front_y
 from blender_scene import build_blender_scene
@@ -494,6 +494,7 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
                             "tok": tok,
                         "slot": slot,
                             "kind": "door",
+                            "unit_id": inst.get("unit_id") if inst else None,
                             "door_def": door_def,
                             "ox": ox,
                             "oy": oy,
@@ -542,6 +543,7 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
                         "hh": hh,
                         "seg_fit": seg_fit,
                         "side_face": bool(inst and inst.get("side_face")),
+                        "unit_id": inst.get("unit_id") if inst else None,
                     }
                 )
             c += span
@@ -584,6 +586,7 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
         drop_ids = {id(planned_wins[i]) for i in behind_glass}
         planned = [p for p in planned if id(p) not in drop_ids]
         planned_wins = [p for i, p in enumerate(planned_wins) if i not in behind_glass]
+    center_on_windows(frames, spec.get("balcony_placement") or [], [p for p in planned if p["kind"] in ("window", "door")])
     for wi, (fi, (ox, oz, ww, hh)) in front_window_targets(frames, planned_wins).items():
         p = planned_wins[wi]
         p.update(ox=ox, oz=oz, ww=ww, hh=hh, on_balcony=fi)
