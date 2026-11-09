@@ -363,6 +363,8 @@ def normalize_facade_spec(
                 item[k] = [int(b) for b in rec[k]]
         if rec.get("structure"):
             item["structure"] = str(rec["structure"])
+        if rec.get("column_aligned"):
+            item["column_aligned"] = True  # shares the median centre / width of its type's column: stays there
         if rec.get("partner_window_unit_ids"):
             item["window_unit_ids"] = [str(u) for u in rec["partner_window_unit_ids"]]  # doors are "door_<n>"
         enclosed = str((balcony_lib[bname] or {}).get("enclosure") or "open") in ("enclosed", "half_enclosed")

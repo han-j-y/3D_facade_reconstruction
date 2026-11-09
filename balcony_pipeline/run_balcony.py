@@ -136,6 +136,10 @@ def parse_args() -> argparse.Namespace:
                     help="type vote for kind / material / floor: soft (default since 2026-11-07, user: argmax of the "
                     "members' mean classifier softmax, vote.soft_type_labels) or majority (the previous rule); "
                     "structure is always the majority of the per-unit structure + its tie rule")
+    ap.add_argument("--no-parallax-fix", action="store_true",
+                    help="turn off the side-view parallax fix (parallax.py, default since 2026-11-08, user): when the "
+                         "wall tilt (DA3) and the window offsets agree on the camera side, a projecting balcony "
+                         "straddling two windows keeps the camera-side one and loses its side face from the width")
     ap.add_argument("--structure-depth", type=float, default=0.10, metavar="M",
                     help="open balconies: projecting / juliet from DA3 depth: projecting when the box sticks out of the "
                     "wall beside it by more than M metres (structure_depth.py; default 0.10 since 2026-11-07, user). "
@@ -1287,6 +1291,12 @@ def run(args: argparse.Namespace) -> Path | None:
         per_unit_floor=per_unit_floor,
         center_mode=str(getattr(args, "balcony_center", "window")),
     )
+    if not bool(getattr(args, "no_parallax_fix", False)) and side_depth is not None:
+        from parallax import fix_straddling_balconies
+
+        cam = fix_straddling_balconies(merged, side_depth)
+        merged["meta"]["parallax_camera"] = cam["side"]
+        print(f"  parallax: camera {cam['side']}, fixed {len(cam['fixed'])}")
     merged["meta"]["balcony_image"] = str(image_path)
     merged["meta"]["balcony_stem"] = stem
     merged["meta"]["balcony_recovery_profile"] = profile_name

@@ -201,6 +201,123 @@ def _move_stacks_together(records: list[dict[str, Any]], image_width: float) -> 
             rec["cx_norm"] = round(0.5 * (rec["box_xyxy"][0] + rec["box_xyxy"][2]) / max(1.0, image_width), 6)
 
 
+def assign_bays_to_balconies(
+    records: list[dict[str, Any]],
+    instances: list[dict[str, Any]],
+    bay_x: dict[int, tuple[int, int]],
+    image_width: float,
+) -> None:
+    """Each bay of a floor belongs to one window-placed open balcony; its windows become that balcony's partners.
+
+    A bay that two balconies span (e.g. bays [2, 3] and [3, 4]) goes to the one whose box covers more of the bay
+    (user, 2026-11-08); the other drops it from ``bays`` unless it is its only bay. Every balcony's partners are then the
+    windows on its floor, in its bays, that its box overlaps in x (windows the earlier pairing found stay), and its
+    centre is their mean. So a box over two bays lists both windows in the DSL, not only the window of its centre bay.
+    """
+    recs = [r for r in records if r.get("_window_mode")]
+    by_floor: dict[int, list[dict[str, Any]]] = {}
+    for r in recs:
+        by_floor.setdefault(int(r["floor"]), []).append(r)
+
+    def cover(r: dict[str, Any], bay: int) -> float:
+        band = bay_x.get(int(bay))
+        if band is None:
+            return 0.0
+        return _overlap_1d_px(float(r["box_xyxy"][0]), float(r["box_xyxy"][2]), float(band[0]), float(band[1]))
+
+    for rows in by_floor.values():
+        for bay in sorted({b for r in rows for b in r["bays"]}):
+            holders = [r for r in rows if bay in r["bays"]]
+            if len(holders) < 2:
+                continue
+            owner = max(holders, key=lambda r: cover(r, bay))
+            for r in holders:
+                if r is not owner and len(r["bays"]) > 1:
+                    r["bays"] = [b for b in r["bays"] if b != bay]
+                    r["bays_center"] = [b for b in r.get("bays_center") or [] if b != bay] or [
+                        max(r["bays"], key=lambda b: cover(r, b))
+                    ]
+                    r["bay_start"], r["bay_end"] = min(r["bays"]), max(r["bays"])
+                    if int(r.get("bay", bay)) == bay:
+                        r["bay"] = r["bays_center"][0]
+
+    by_id = {w.get("unit_id"): w for w in instances if w.get("unit_id") is not None}
+    for r in recs:
+        x0, x1 = float(r["box_xyxy"][0]), float(r["box_xyxy"][2])
+        bays = set(r["bays"])
+        old = [by_id[i] for i in r.get("partner_window_unit_ids") or [] if i in by_id]
+        # An earlier partner in a bay this balcony lost now belongs to the bay's owner.
+        old = [w for w in old if not isinstance(w.get("bay"), int) or w["bay"] in bays or not any(
+            o is not r and o["floor"] == r["floor"] and w["bay"] in o["bays"] for o in recs)]
+        if not old and not r.get("partner_window_unit_ids"):
+            continue  # unlinked (no window behind it, or a far window): leave it as paired
+        new = [
+            w for w in instances
+            if w.get("unit_id") is not None and w.get("floor") == r["floor"] and w.get("bay") in bays
+            and (w.get("kind") or "window") == "window" and w.get("box_xyxy")
+            and _overlap_1d_px(x0, x1, float(w["box_xyxy"][0]), float(w["box_xyxy"][2])) > 0.0
+        ]
+        partners = {id(w): w for w in old + new}.values()
+        ids = sorted(
+            (w["unit_id"] for w in partners),
+            key=lambda v: (isinstance(v, str), v if isinstance(v, int) else 0, str(v)),
+        )
+        if ids == list(r.get("partner_window_unit_ids") or []):
+            continue
+        r["partner_window_unit_ids"] = ids
+        cx = mean_window_center_norm(list(partners), image_width)
+        if cx is not None and "window_cx_norm" in r:
+            r["window_cx_norm"] = round(cx, 6)
+
+
+def _overlap_1d_px(a0: float, a1: float, b0: float, b1: float) -> float:
+    return max(0.0, min(a1, b1) - max(a0, b0))
+
+
+COLUMN_MAX_WIDTH_RATIO = 2.0
+
+
+def align_type_columns(records: list[dict[str, Any]], image_width: float) -> None:
+    """Open balconies of one type in the same bays (the same ``bays`` list, any floors, gaps allowed) share the
+    median centre and the median width (user, 2026-11-08), in place.
+
+    Balconies whose widths differ 2x or more are not one column: the widths are split where a balcony is at least
+    ``COLUMN_MAX_WIDTH_RATIO`` times the narrowest of the current run. Enclosed units, rooftop railings and outer-bay
+    balconies are left alone. Each balcony keeps its own centre key (window / bay / photo); aligned ones carry
+    ``column_aligned`` so the compiler does not move them back onto their own window."""
+    iw = max(1.0, float(image_width))
+    groups: dict[tuple, list[dict[str, Any]]] = {}
+    for r in records:
+        if "width_norm" not in r or "outer_bay" in r or r.get("structure") == "rooftop":
+            continue
+        groups.setdefault((r["type"], tuple(sorted(int(b) for b in r.get("bays") or []))), []).append(r)
+
+    def centre(r: dict[str, Any]) -> float | None:
+        return float(r["cx_norm"]) if "cx_norm" in r else _open_center(r)
+
+    for members in groups.values():
+        members = sorted(members, key=lambda r: float(r["width_norm"]))
+        runs: list[list[dict[str, Any]]] = []
+        for r in members:
+            if runs and float(r["width_norm"]) < COLUMN_MAX_WIDTH_RATIO * float(runs[-1][0]["width_norm"]):
+                runs[-1].append(r)
+            else:
+                runs.append([r])
+        for run in runs:
+            if len(run) < 2 or len({int(r["floor"]) for r in run}) < 2:
+                continue
+            cs = [c for c in (centre(r) for r in run) if c is not None]
+            if not cs:
+                continue
+            c = round(statistics.median(cs), 6)
+            w = round(statistics.median(float(r["width_norm"]) for r in run), 6)
+            for r in run:
+                key = "cx_norm" if "cx_norm" in r else next((k for k in ("window_cx_norm", "bay_cx_norm") if k in r), "cx_norm")
+                r[key] = c
+                r["width_norm"] = w
+                r["column_aligned"] = True
+
+
 def merge_balcony_into_windows_dsl(
     windows_dsl: dict[str, Any],
     *,
@@ -345,11 +462,16 @@ def merge_balcony_into_windows_dsl(
                 rec["partner_window_unit_ids"] = list(pids)
             if far_window_ids:
                 rec["far_window_unit_ids"] = far_window_ids
+            rec["_window_mode"] = True
 
         balc_place.append(rec)
 
+    assign_bays_to_balconies(balc_place, instances, bay_x, iw)
+    for rec in balc_place:
+        rec.pop("_window_mode", None)
     if mode == "window":
         _move_stacks_together(balc_place, iw)
+    align_type_columns(balc_place, iw)
     layout["balconies"] = balc_place
     dsl["balcony_types"] = balcony_types
     meta["n_balcony_units"] = len(units)

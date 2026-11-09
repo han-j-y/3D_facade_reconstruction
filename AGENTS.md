@@ -62,6 +62,7 @@ Photo → detected elements → typed, voted structure → JSON DSL → parametr
   - Per-cell features (DA3 depth, SAM3, DINOv2) → HistGradientBoosting gate + cell model → rectangle decode (t 0.5) → four cell rules → photo gate ≥ 0.70 (457-photo model without test100, refit 2026-11-03 after the training label review).
   - Floor shape (railing classifier) and skin (oriel skin model `checkpoints/oriel_skin.joblib`, `balcony_train/oriel_skin.py`, default since 2026-11-03; `--no-oriel-skin-model` falls back to the railing classifier) are one majority vote per photo.
 - `merge_dsl.py` appends `balcony_types` and `layout.balconies`, giving `facade_dsl_with_balconies.json`.
+- After the merge (default since 2026-11-08): a projecting balcony straddling two windows is fixed for side-view parallax when the DA3 wall tilt and the window offsets agree on the camera side (`parallax.py`, `--no-parallax-fix`).
 
 **Compiler** (`vendor/window_compiler/`, runs inside Blender via `main.py`):
 - `facade_spec.normalize_facade_spec` maps the recovery DSL to `window_compiler_facade_v1`.

@@ -80,6 +80,16 @@ class StackTests(unittest.TestCase):
         self.assertAlmostEqual(top["bx1"], max(c["bx1"] for c in cells))
         self.assertTrue(all(c["roof"] == "shared" for c in cells))
 
+    def test_open_balcony_on_an_oriel_takes_the_oriel_width(self) -> None:
+        # val30 Copenhagen way288954202: the open balcony sits over one cell of a two-cell oriel.
+        # Cells fill their bays (one oriel); the balcony is one bay wide.
+        spec = _spec([_at(2, 1, "full"), _at(2, 2, "full"), _at(1, 2, "open")], self.lib | {"full": _ir("enclosed", width=2.6)})
+        left, right, top = balcony_frames(spec)
+        self.assertAlmostEqual(top["bx0"], min(left["bx0"], right["bx0"]))
+        self.assertAlmostEqual(top["bx1"], max(left["bx1"], right["bx1"]))
+        self.assertEqual((left["roof"], right["roof"]), ("shared", "shared"))
+        self.assertAlmostEqual(left["top_z"], top["sill_z"])
+
     def test_long_slab_over_a_block_keeps_its_length(self) -> None:
         spec = _spec([_at(2, 1, "enc"), {"row": 1, "col0": 0, "col1": 2, "type": "wide"}], self.lib | {"wide": _ir("open", width=7.0)})
         cell, top = balcony_frames(spec)
@@ -607,15 +617,25 @@ class OuterBayHeightTest(unittest.TestCase):
         f = self._frame({"row": 0, "col0": 0, "col1": 0, "photo_bottom_y": 300.0})
         self.assertAlmostEqual(f["sill_z"], 6.0)  # halfway down the 12 m grid, whatever floor it was given
 
-    def test_railing_top_follows_the_photo_box(self) -> None:
+    def test_projecting_railing_is_always_1_1(self) -> None:
         f = self._frame({"row": 0, "col0": 0, "col1": 0, "photo_bottom_y": 300.0, "photo_top_y": 260.0})
         self.assertAlmostEqual(f["sill_z"], 6.0)
-        self.assertAlmostEqual(f["photo_rail_h"], 1.2 - f["thick"])  # 40 px = 1.2 m, less the slab
+        self.assertAlmostEqual(f["photo_rail_h"], 1.1)  # not the 40 px = 1.2 m box (user, 2026-11-08)
 
-    def test_photo_railing_height_is_clamped(self) -> None:
-        low = self._frame({"row": 0, "col0": 0, "col1": 0, "photo_bottom_y": 300.0, "photo_top_y": 298.0})
-        tall = self._frame({"row": 0, "col0": 0, "col1": 0, "photo_bottom_y": 300.0, "photo_top_y": 200.0})
-        self.assertEqual((low["photo_rail_h"], tall["photo_rail_h"]), (0.3, 1.1))
+    def test_juliet_photo_railing_height_is_clamped(self) -> None:
+        def one(top):
+            spec = _spec([{"row": 0, "col0": 0, "col1": 0, "type": "j", "photo_bottom_y": 300.0, "photo_top_y": top}],
+                         {"j": _ir("open", structure="juliet")})
+            spec["image_extent"] = {"x0": 0.0, "x1": 100.0, "y0": 100.0, "y1": 500.0}
+            return balcony_frames(spec)[0]["photo_rail_h"]
+        self.assertEqual((one(298.0), one(200.0)), (0.3, 1.1))
+
+    def test_juliets_of_a_type_share_the_median_height(self) -> None:
+        recs = [{"row": 0, "col0": c, "col1": c, "type": "j", "photo_bottom_y": 300.0, "photo_top_y": t}
+                for c, t in ((0, 290.0), (1, 280.0), (2, 270.0))]  # 0.3, 0.6, 0.9 m
+        spec = _spec(recs, {"j": _ir("open", structure="juliet")})
+        spec["image_extent"] = {"x0": 0.0, "x1": 100.0, "y0": 100.0, "y1": 500.0}
+        self.assertEqual([round(f["photo_rail_h"], 6) for f in balcony_frames(spec)], [0.6, 0.6, 0.6])
 
     def test_tall_box_hangs_from_its_top(self) -> None:
         f = self._frame({"row": 0, "col0": 0, "col1": 0, "photo_bottom_y": 300.0, "photo_top_y": 200.0})
@@ -645,7 +665,7 @@ class OuterBayHeightTest(unittest.TestCase):
         win = {"r": 0, "oz": 7.0, "ox": f["bx0"], "ww": f["bx1"] - f["bx0"]}
         seat_on_window_bottoms([f], [win])
         self.assertAlmostEqual(f["sill_z"] + f["thick"], 7.0)  # slab top on the window bottom
-        self.assertAlmostEqual(f["photo_rail_h"], 1.3)  # grows towards the box top, clamped
+        self.assertAlmostEqual(f["photo_rail_h"], 1.1)  # the whole balcony moves down; railing stays 1.1 m
 
     def test_tall_box_below_its_window_stays_on_top(self) -> None:
         f = self._frame({"row": 0, "col0": 0, "col1": 0, "photo_bottom_y": 300.0, "photo_top_y": 200.0})

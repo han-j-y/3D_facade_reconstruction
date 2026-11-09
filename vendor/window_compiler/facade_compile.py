@@ -11,12 +11,12 @@ import bmesh
 import bpy
 from mathutils import Matrix, Vector
 
-from balcony_compile import ENCLOSED_WALL_M, add_balcony_meshes
-from balcony_layout import balcony_frames, center_on_windows, enclosed_window_fits, front_edge_x, front_window_targets, seat_on_window_bottoms, side_wall_targets, windows_behind_glass
-from balcony_plan import outer_edges
+from balcony_compile import ENCLOSED_WALL_M, _rail_kind, _rail_thickness, add_balcony_meshes
+from balcony_layout import balcony_frames, center_on_windows, enclosed_window_fits, front_edge_x, fit_juliet_windows, front_window_targets, seat_on_window_bottoms, side_wall_targets, windows_behind_glass
+from balcony_plan import JULIET_METAL_IN_OPENING_M, MULLION_WIDTH_M, TOP_RAIL_DIAMETER_M, WALL_WINDOW_RECESS_M, outer_edges
 from balcony_layout import front_y as balcony_front_y
 from blender_scene import build_blender_scene
-from compiler import compile_spec
+from compiler import compile_spec, output_params
 from door_scene import (
     build_default_door,
     door_opening_bounds,
@@ -601,6 +601,13 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
         mirrored.append(q)
     planned_wins.extend(mirrored)
     seat_on_window_bottoms(frames, planned_wins)
+    fit_juliet_windows(frames, spec.get("balcony_placement") or [], planned_wins, spec.get("balconies") or {})
+    # Windows in the wall sit WALL_WINDOW_RECESS_M deeper than the shallow default recess (reveal visible). Not
+    # windows on a balcony front or on a side wall: those live in thin shells.
+    wall_recess = float(pp.get("wall_window_recess", WALL_WINDOW_RECESS_M))
+    for p in planned_wins:
+        if p.get("on_balcony") is None and not p.get("side_face") and not p.get("side"):
+            p["oy"] = float(p["oy"]) - wall_recess
 
     for p in planned:
         if p["kind"] != "window":
@@ -619,6 +626,24 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
             p["outline"] = _padded_outline(
                 [(p["ox"] + q.x, p["oz"] + q.y) for q in contour_for_region(root)]
             )
+    # A metal juliet stands inside the opening: its window goes deeper if its muntins (they stand proud of the window
+    # face by their width) would reach into the railing.
+    lib = spec.get("balconies") or {}
+    for f in frames:
+        if f is None or not f.get("juliet_in_opening"):
+            continue
+        ir = lib.get(f["name"]) or {}
+        kind = _rail_kind(str((ir.get("railing") or {}).get("kind") or "open_work"))
+        if kind == "open_work":
+            rail_back = front_y - JULIET_METAL_IN_OPENING_M - TOP_RAIL_DIAMETER_M - 0.005
+        else:  # solid / surface panel: outer face on the wall face
+            depth = _rail_thickness(ir, kind) if kind == "solid" else max(_rail_thickness(ir, kind), MULLION_WIDTH_M)
+            rail_back = front_y - depth - 0.005
+        for p in f.get("juliet_windows") or []:
+            if p.get("ctx") is None:
+                continue
+            proud = float(output_params(p["ctx"].spec, p["ctx"].region("root"))["muntin_width"])
+            p["oy"] = min(float(p["oy"]), rail_back - proud)
 
     front_openings: dict[int, list[dict[str, Any]]] = {}
     for p in planned_wins:

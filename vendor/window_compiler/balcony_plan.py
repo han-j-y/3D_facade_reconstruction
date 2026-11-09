@@ -29,6 +29,24 @@ MASONRY_TOP_RAIL_HEIGHT_M = 0.15
 # Inset entire masonry railing (posts + balusters + top rail) from slab edge.
 MASONRY_RAIL_INSET_M = 0.15
 
+# Juliet open_work + masonry (window balustrade): thicker piers, slimmer and denser balusters,
+# lighter top rail than the projecting catalog above. Keys override the MASONRY_* constants.
+JULIET_MASONRY_DIMS = {
+    "post": 0.20,
+    "baluster_d": 0.10,
+    "baluster_gap": 0.06,  # pitch 0.16
+    "top_w": 0.20,
+    "top_h": 0.10,
+    "bot_w": 0.20,  # bottom rail under the balusters
+    "bot_h": 0.10,
+}
+# Every window in the wall sits this much deeper than the shallow default recess (reveal visible).
+WALL_WINDOW_RECESS_M = 0.10
+# A metal open_work juliet stands inside the window opening: outer face this far behind the wall face, its ends this
+# far inside the opening's sides.
+JULIET_METAL_IN_OPENING_M = 0.05
+JULIET_METAL_SIDE_CLEAR_M = 0.01
+
 CIRCLE_ARC_STEPS = 24
 
 Point = tuple[float, float]

@@ -12,6 +12,9 @@ from mathutils import Vector
 from balcony_plan import (  # noqa: E402
     BALUSTER_DIAMETER_M,
     BALUSTER_SPACING_M,
+    JULIET_MASONRY_DIMS,
+    JULIET_METAL_IN_OPENING_M,
+    JULIET_METAL_SIDE_CLEAR_M,
     MASONRY_BALUSTER_DIAMETER_M,
     MASONRY_BALUSTER_GAP_M,
     MASONRY_BALUSTER_SPACING_M,
@@ -576,8 +579,12 @@ def _add_masonry_openwork_guard(
     parent: bpy.types.Collection,
     mat_key: str = "slab",
     front_only: bool = False,
+    dims: dict | None = None,
 ) -> None:
     """Masonry open_work: 250 mm posts, φ150 balusters (100 mm gaps), 300×150 top rail.
+
+    ``dims`` (e.g. ``JULIET_MASONRY_DIMS``) overrides post / baluster_d /
+    baluster_gap / top_w / top_h.
 
     Builds one inset open-U frame (shared corners) so each corner has a single
     post. Front top rail spans to the slab left/right edges; side rails butt
@@ -585,14 +592,20 @@ def _add_masonry_openwork_guard(
     """
     if len(outline) < 2:
         return
-    post = float(MASONRY_POST_M)
+    d = dims or {}
+    post = float(d.get("post", MASONRY_POST_M))
     half_post = post / 2.0
-    bal_r = float(MASONRY_BALUSTER_DIAMETER_M) / 2.0
-    pitch = float(MASONRY_BALUSTER_SPACING_M)
-    top_w = float(MASONRY_TOP_RAIL_WIDTH_M)
-    top_h = float(MASONRY_TOP_RAIL_HEIGHT_M)
+    bal_d = float(d.get("baluster_d", MASONRY_BALUSTER_DIAMETER_M))
+    bal_gap = float(d.get("baluster_gap", MASONRY_BALUSTER_GAP_M))
+    bal_r = bal_d / 2.0
+    pitch = bal_d + bal_gap
+    top_w = float(d.get("top_w", MASONRY_TOP_RAIL_WIDTH_M))
+    top_h = float(d.get("top_h", MASONRY_TOP_RAIL_HEIGHT_M))
+    # Optional bottom rail (plinth) under the balusters; 0 = balusters stand on the slab.
+    bot_w = float(d.get("bot_w", 0.0))
+    bot_h = float(d.get("bot_h", 0.0))
     rail_inset = float(MASONRY_RAIL_INSET_M)
-    clear_h = max(0.2, float(rail_h) - top_h)
+    clear_h = max(0.2 + bot_h, float(rail_h) - top_h)
     z_post_top = z_slab_top + clear_h
     z_rail0 = z_post_top
     z_rail1 = z_rail0 + top_h
@@ -659,14 +672,27 @@ def _add_masonry_openwork_guard(
                 mat_key=mat_key,
                 parent=parent,
             )
+        # Bottom rail between the post faces (overlapping the posts gives coplanar faces).
+        bot_seg = shorten_segment_end(p0, p1, trim0=half_post, trim1=half_post) if bot_h > 0.0 else None
+        if bot_seg is not None and bot_w > 0.0:
+            _box_along_xy(
+                name=f"{prefix}_m_bot_{e}",
+                p0=bot_seg[0],
+                p1=bot_seg[1],
+                z_lo=z_slab_top,
+                z_hi=z_slab_top + bot_h,
+                thickness=bot_w,
+                mat_key=mat_key,
+                parent=parent,
+            )
 
-        end_clear = half_post + bal_r + float(MASONRY_BALUSTER_GAP_M) * 0.5
+        end_clear = half_post + bal_r + bal_gap * 0.5
         for x, y in masonry_baluster_centers(
             p0, p1, end_clear=end_clear, pitch=pitch
         ):
             _cylinder_between(
                 name=f"{prefix}_m_bal_{bal_i}",
-                p0=(x, y, z_slab_top),
+                p0=(x, y, z_slab_top + bot_h),
                 p1=(x, y, z_post_top),
                 radius=bal_r,
                 mat_key=mat_key,
@@ -698,6 +724,7 @@ def _add_open_work_guard(
     material: str = "metal",
     mat_key: str = "railing",
     front_only: bool = False,
+    masonry_dims: dict | None = None,
 ) -> None:
     if _rail_material(material) == "masonry":
         _add_masonry_openwork_guard(
@@ -709,6 +736,7 @@ def _add_open_work_guard(
             parent=parent,
             mat_key="slab",
             front_only=front_only,
+            dims=masonry_dims,
         )
         return
     _add_baluster_guard(
@@ -737,6 +765,7 @@ def _add_front_railing(
     rail_t: float,
     mat_key: str,
     parent: bpy.types.Collection,
+    masonry_dims: dict | None = None,
 ) -> None:
     """One straight railing from ``x0`` to ``x1`` whose outer face is at ``y_front``."""
     if kind == "open_work":
@@ -750,6 +779,7 @@ def _add_front_railing(
             material=material,
             mat_key=mat_key,
             front_only=True,
+            masonry_dims=masonry_dims,
         )
     elif kind == "surface_panel":
         _add_surface_panel_guard(
@@ -1106,16 +1136,32 @@ def add_balcony_meshes(
             # Rooftop: railing on the top edge of its storey, its back face on
             # the wall plane (a coplanar front face would z-fight the wall).
             sx_rail = span_w * 0.98
+            rx0, rx1 = cx - sx_rail / 2.0, cx + sx_rail / 2.0
             if structure == "juliet":
                 y_rail, z_lo = front_y + JULIET_PROJECTION_M, sill_z
+                wins = frame.get("juliet_windows") or []
+                if wins:
+                    # Juliet as wide as its window(s) (user, 2026-11-08).
+                    rx0 = min(float(w["ox"]) for w in wins)
+                    rx1 = max(float(w["ox"]) + float(w["ww"]) for w in wins)
+                if wins and kind == "open_work" and rail_material == "masonry":
+                    # Post outer faces on the window's left / right edges. The juliet railing is too shallow for the
+                    # masonry inset (masonry_inset_rail_frame drops it), so post centres sit on the railing ends.
+                    half_post = float(JULIET_MASONRY_DIMS.get("post", MASONRY_POST_M)) / 2.0
+                    rx0, rx1 = rx0 + half_post, rx1 - half_post
+                elif wins and frame.get("juliet_in_opening"):
+                    # Metal, solid, surface panel: inside the window opening, in front of the recessed window. Metal's
+                    # outer face JULIET_METAL_IN_OPENING_M behind the wall face, solid / panel on it.
+                    y_rail = front_y - (JULIET_METAL_IN_OPENING_M if kind == "open_work" else 0.0)
+                    rx0, rx1 = rx0 + JULIET_METAL_SIDE_CLEAR_M, rx1 - JULIET_METAL_SIDE_CLEAR_M
             else:
                 y_rail, z_lo = front_y + rail_t, (sill_z if frame.get("photo_z") else frame["z1"])
             _add_front_railing(
                 prefix=prefix,
                 kind=kind,
                 material=rail_material,
-                x0=cx - sx_rail / 2.0,
-                x1=cx + sx_rail / 2.0,
+                x0=rx0,
+                x1=rx1,
                 y_front=y_rail,
                 y_wall=front_y,
                 z_lo=z_lo,
@@ -1123,6 +1169,7 @@ def add_balcony_meshes(
                 rail_t=rail_t,
                 mat_key=rail_mat,
                 parent=balc_coll,
+                masonry_dims=JULIET_MASONRY_DIMS if structure == "juliet" else None,
             )
             n += 1
             continue

@@ -18,6 +18,7 @@ from typing import Any, Sequence
 from balcony_plan import (
     DEFAULT_SLAB_DEPTH_M,
     ENCLOSED_CLEAR_H_M,
+    JULIET_MASONRY_DIMS,
     centroid,
     curtain_circle_panes,
     even_along_polyline,
@@ -30,6 +31,7 @@ from facade_spec import JULIET_WINDOW_OVERLAP, get_cell, image_facade_extent_x, 
 STACKABLE = frozenset({"half_enclosed", "enclosed"})
 PHOTO_RAIL_MIN_M = 0.3  # railing height from the photo box, clamped
 PHOTO_RAIL_MAX_M = 1.3
+PROJECTING_RAIL_M = 1.1  # a projecting balcony's railing is always this high (user, 2026-11-08)
 STACK_OVERHANG_M = 0.5  # an open slab reaching this far past the enclosed block under it keeps its own span
 OUTLINE_SHAPES = frozenset({"triangle", "circle"})
 
@@ -215,6 +217,7 @@ def _frame(
     sill_z = z0 + cell_h * bottom_m
     photo_rail_h = None
     photo_top_z = None
+    rail_measured = False  # railing height read off the photo box (juliets vote it per type)
     if rec.get("photo_bottom_y") is not None:
         yt, yb = image_facade_extent_y(spec)
         to_z = total_grid_size(grid)[1] / max(1e-6, yb - yt)
@@ -223,6 +226,7 @@ def _frame(
             slab = 0.0 if structure in ("juliet", "rooftop") else thick  # no slab under these railings
             top_z = (yb - float(rec["photo_top_y"])) * to_z
             photo_rail_h = min(PHOTO_RAIL_MAX_M, max(PHOTO_RAIL_MIN_M, top_z - sill_z - slab))
+            rail_measured = top_z - sill_z - slab <= PHOTO_RAIL_MAX_M
             if top_z - sill_z - slab > PHOTO_RAIL_MAX_M:
                 rail_ir = min(PHOTO_RAIL_MAX_M, float((ir.get("railing") or {}).get("height") or 1.1))
                 if structure == "juliet" and float(rec.get("window_overlap") or 0.0) >= JULIET_WINDOW_OVERLAP:
@@ -234,6 +238,12 @@ def _frame(
                     photo_rail_h = rail_ir
                     sill_z = top_z - photo_rail_h - slab
                     photo_top_z = top_z
+            if structure == "projecting" and enclosure == "open":
+                # Fixed railing height; the slab stays where the photo puts it (or under the box top when the box
+                # holds the bracket below).
+                if photo_top_z is not None:
+                    sill_z = photo_top_z - PROJECTING_RAIL_M - slab
+                photo_rail_h = PROJECTING_RAIL_M
     if structure == "free_standing":
         deck_h = float(params.get("height") or 0.0)
         if deck_h > 0.05:
@@ -290,6 +300,7 @@ def _frame(
         "sill_z": sill_z,
         "photo_z": rec.get("photo_bottom_y") is not None,
         "photo_rail_h": photo_rail_h,
+        "rail_measured": rail_measured,
         "photo_top_z": photo_top_z,
         "bx0": bx0,
         "bx1": bx1,
@@ -388,6 +399,54 @@ def link_stacks(
         else:
             f["roof"] = "own"
             f["top_z"] = _own_top_z(f, library.get(f["name"]) or {})
+    _open_on_oriel_takes_its_width(live, carried, own)
+
+
+ORIEL_BLOCK_GAP_M = 0.3  # enclosed cells side by side closer than this are one oriel
+ORIEL_BLOCK_SILL_TOL_M = 0.3
+
+
+def _open_on_oriel_takes_its_width(
+    live: list[dict[str, Any]], carried: dict[int, list[dict[str, Any]]], own: dict[int, dict[str, float]]
+) -> None:
+    """An open balcony on an oriel is exactly as wide as the oriel (user, 2026-11-08), in place.
+
+    The oriel is every enclosed cell on the row under the balcony that is joined side by side (gap below
+    ``ORIEL_BLOCK_GAP_M``, same sill) to a cell the balcony already carries. Cells the balcony did not pick up (too little
+    overlap) now carry it too, and the balcony takes the block's footprint, not its own photo span. A gallery whose photo
+    span reaches past the block by more than half a cell width on a side (it runs on over bays with no oriel) keeps its
+    length."""
+    by_index = {f["index"]: f for f in live}
+    for idx, lowers in carried.items():
+        top = by_index.get(idx)
+        if top is None or top["enclosure"] != "open":
+            continue
+        block = [f for f in lowers if f["enclosure"] in STACKABLE and f["enclosure"] != "open"]
+        if not block:
+            continue
+        row, sill = block[0]["row"], float(block[0]["sill_z"])
+        grown = True
+        while grown:
+            grown = False
+            for g in live:
+                if any(g is b for b in block) or g["row"] != row or g["enclosure"] == "open" or g["outline"] is None:
+                    continue
+                if g.get("above") is not None or abs(float(g["sill_z"]) - sill) > ORIEL_BLOCK_SILL_TOL_M:
+                    continue
+                if any(g["bx0"] <= b["bx1"] + ORIEL_BLOCK_GAP_M and b["bx0"] <= g["bx1"] + ORIEL_BLOCK_GAP_M for b in block):
+                    if top["sill_z"] <= g["sill_z"] + g["thick"] + MIN_CLEAR_H_M:
+                        continue
+                    g["roof"] = "shared"
+                    g["above"] = idx
+                    g["top_z"] = top["sill_z"]
+                    lowers.append(g)
+                    block.append(g)
+                    grown = True
+        lo, hi = min(b["bx0"] for b in block), max(b["bx1"] for b in block)
+        half_cell = 0.5 * statistics.median(b["bx1"] - b["bx0"] for b in block)
+        span = own.get(idx)
+        gallery = span is not None and (span["bx0"] < lo - half_cell or span["bx1"] > hi + half_cell)
+        _align_to(top, _block_footprint(block, span) if gallery else _block_footprint(block))
 
 
 def _is_enclosed_circle(frame: dict[str, Any] | None) -> bool:
@@ -629,6 +688,23 @@ def enclosed_window_fits(
     return _fit_spans(_plain_frames(spec), windows)
 
 
+def unify_juliet_rail_heights(frames: Sequence[dict[str, Any] | None], library: dict[str, Any]) -> None:
+    """Open juliets of one type share one railing height: the median of the heights read off their photo boxes
+    (user, 2026-11-08), in place. A type with no measured member uses its IR height (1.1 m). A juliet hung from its box
+    top keeps its top; the others keep their bottom."""
+    by_type: dict[str, list[dict[str, Any]]] = {}
+    for f in frames:
+        if f is not None and f["enclosure"] == "open" and f["structure"] == "juliet":
+            by_type.setdefault(f["name"], []).append(f)
+    for name, members in by_type.items():
+        measured = [float(f["photo_rail_h"]) for f in members if f.get("rail_measured") and f.get("photo_rail_h")]
+        h = statistics.median(measured) if measured else float(((library.get(name) or {}).get("railing") or {}).get("height") or 1.1)
+        for f in members:
+            if f.get("photo_top_z") is not None:
+                f["sill_z"] = float(f["photo_top_z"]) - h
+            f["photo_rail_h"] = h
+
+
 def balcony_frames(
     spec: dict[str, Any],
     fits: dict[int, tuple[float, float] | None] | None = None,
@@ -636,6 +712,7 @@ def balcony_frames(
     """One frame per ``balcony_placement`` entry (None when it cannot be placed)."""
     library = spec.get("balconies") or {}
     frames = _plain_frames(spec, fits)
+    unify_juliet_rail_heights(frames, library)
     link_stacks(frames, library)
     fuse_enclosed_circles(frames, library)
     return frames
@@ -657,7 +734,10 @@ def center_on_windows(
     for f in frames:
         if f is None or f["enclosure"] != "open" or f["structure"] == "rooftop" or f.get("aligned"):
             continue
-        ids = (placements[f["index"]] if f["index"] < len(placements) else {}).get("window_unit_ids") or []
+        place = placements[f["index"]] if f["index"] < len(placements) else {}
+        if place.get("column_aligned"):
+            continue  # its type's column shares one centre (merge_dsl.align_type_columns)
+        ids = place.get("window_unit_ids") or []
         wins = [w for u in ids for w in by_unit.get(str(u), [])]
         if not wins:
             continue
@@ -705,14 +785,94 @@ def seat_on_window_bottoms(
         target = max(0.0, min(bottoms) - drop)
         if target >= f["sill_z"]:
             continue
-        f["sill_z"] = target
-        if f.get("photo_top_z") is not None:
-            # Hung from the box top but floating above its window bottom: floor on the window
-            # bottom, railing up towards the box top.
-            f["photo_rail_h"] = min(PHOTO_RAIL_MAX_M, max(PHOTO_RAIL_MIN_M, f["photo_top_z"] - target - drop))
+        f["sill_z"] = target  # the whole balcony moves down; its railing height stays (1.1 m / the type's juliet height)
         for g in live:
             if g.get("above") == f["index"]:
                 g["top_z"] = f["sill_z"]
+
+
+def _juliet_rail_material(frame: dict[str, Any], library: dict[str, Any]) -> str | None:
+    """'masonry' or 'metal' for an open juliet with an open_work railing, else None."""
+    if frame["structure"] != "juliet" or frame["enclosure"] != "open":
+        return None
+    rail = (library.get(frame["name"]) or {}).get("railing") or {}
+    if str(rail.get("kind") or "open_work").strip().lower() != "open_work":
+        return None
+    material = str(rail.get("material") or "metal").strip().lower()
+    return "masonry" if material in ("masonry", "stone", "concrete_post") else "metal"
+
+
+def _balcony_windows(
+    f: dict[str, Any], placements: Sequence[dict[str, Any]], windows: Sequence[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The wall windows behind an open balcony: its partner windows; without links, the windows on its row that
+    overlap it in x. Not windows on a balcony front or a side wall."""
+    ids = {str(u) for u in (placements[f["index"]] if f["index"] < len(placements) else {}).get("window_unit_ids") or []}
+    wins = [
+        w for w in windows
+        if not w.get("side_face") and w.get("on_balcony") is None and w.get("unit_id") is not None
+        and str(w["unit_id"]) in ids
+    ]
+    if not wins:
+        wins = [
+            w for w in windows
+            if w.get("r") == f["row"] and not w.get("side_face") and w.get("on_balcony") is None
+            and min(f["bx1"], w["ox"] + w["ww"]) - max(f["bx0"], w["ox"]) > 0.0
+        ]
+    return wins
+
+
+def fit_juliet_windows(
+    frames: Sequence[dict[str, Any] | None],
+    placements: Sequence[dict[str, Any]],
+    windows: Sequence[dict[str, Any]],
+    library: dict[str, Any],
+    *,
+    min_window_h: float = 0.35,
+) -> None:
+    """Open balconies (projecting, juliet) and their windows: window bottom = balcony bottom (user, 2026-11-08).
+
+    Balcony bottom = slab top of a projecting balcony, railing bottom of a juliet. A window reaching below a
+    projecting slab moves the whole balcony down onto it (railing stays 1.1 m); a juliet keeps its type's railing
+    height. Then every window is set to the balcony bottom (window top kept; up or down), a masonry open_work juliet's
+    to the top of its bottom rail. Juliets keep their
+    windows as ``juliet_windows`` so the compiler can make the railing as wide as the windows after the window IR fit.
+    Windows are the balcony's partner windows; without links, the windows on its row that overlap it."""
+    bot_h = float(JULIET_MASONRY_DIMS.get("bot_h", 0.0))
+    live = [f for f in frames if f is not None]
+    for f in live:
+        if f["enclosure"] != "open" or f["structure"] not in ("projecting", "juliet"):
+            continue
+        wins = [w for w in _balcony_windows(f, placements, windows) if not w.get("bottom_fitted")]
+        if not wins:
+            continue
+        juliet = f["structure"] == "juliet"
+        material = _juliet_rail_material(f, library)
+        if juliet:
+            f["juliet_windows"] = wins
+            f["juliet_material"] = material
+        drop = 0.0 if juliet else float(f["thick"])
+        floor = float(f["sill_z"]) + drop
+        low = min(float(w["oz"]) for w in wins)
+        if low < floor - 1e-6 and not juliet:
+            # A window reaching below a projecting slab: the whole balcony moves down onto it (railing stays 1.1 m).
+            f["sill_z"] = low - drop
+            floor = low
+            for g in live:
+                if g.get("above") == f["index"]:
+                    g["top_z"] = f["sill_z"]
+        # A juliet keeps its type's railing height: a window reaching lower is raised to the railing bottom (below).
+        rail_kind = str(((library.get(f["name"]) or {}).get("railing") or {}).get("kind") or "open_work").strip().lower()
+        if juliet and (material == "metal" or rail_kind in ("solid", "surface_panel", "panel", "parapet", "concrete")):
+            # Metal, solid and surface-panel juliets go into the opening (window bottom = railing bottom now); solid
+            # and panel ones with their outer face on the wall face (user, 2026-11-08).
+            f["juliet_in_opening"] = True
+        target = floor + (bot_h if juliet and material == "masonry" else 0.0)
+        for w in wins:
+            top = float(w["oz"]) + float(w["hh"])
+            if top - target >= min_window_h:
+                w["oz"], w["hh"] = target, top - target
+            w["bottom_fitted"] = True
 
 
 def front_edge_x(frame: dict[str, Any]) -> tuple[float, float] | None:

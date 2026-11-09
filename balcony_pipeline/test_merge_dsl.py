@@ -484,5 +484,51 @@ class PhotoNormTests(unittest.TestCase):
         )
 
 
+class SharedBayTests(unittest.TestCase):
+    """val30 London way289953461: a juliet over bays 3-4 linked only to window 14, a balcony over bays 2-3."""
+
+    def test_shared_bay_goes_to_wider_cover_and_partners_follow(self) -> None:
+        from merge_dsl import assign_bays_to_balconies
+
+        bay_x = {2: (380, 500), 3: (505, 600), 4: (630, 700)}
+        inst = [
+            {"unit_id": 12, "floor": 2, "bay": 2, "box_xyxy": [387, 554, 437, 683]},
+            {"unit_id": 13, "floor": 2, "bay": 3, "box_xyxy": [514, 556, 561, 687]},
+            {"unit_id": 14, "floor": 2, "bay": 4, "box_xyxy": [644, 560, 686, 719]},
+        ]
+        a = {"floor": 2, "bay_start": 2, "bay_end": 3, "bays": [2, 3], "bays_center": [2], "bay": 2,
+             "box_xyxy": [384, 672, 509, 770], "partner_window_unit_ids": [12], "window_cx_norm": 0.515, "_window_mode": True}
+        b = {"floor": 2, "bay_start": 3, "bay_end": 4, "bays": [3, 4], "bays_center": [4], "bay": 4,
+             "box_xyxy": [510, 673, 796, 772], "partner_window_unit_ids": [14], "window_cx_norm": 0.83, "_window_mode": True}
+        assign_bays_to_balconies([a, b], inst, bay_x, 800.0)
+        self.assertEqual(a["bays"], [2])
+        self.assertEqual((a["bay_start"], a["bay_end"]), (2, 2))
+        self.assertEqual(a["partner_window_unit_ids"], [12])
+        self.assertEqual(b["bays"], [3, 4])
+        self.assertEqual(b["partner_window_unit_ids"], [13, 14])
+        self.assertAlmostEqual(b["window_cx_norm"], (537.5 + 665) / 2 / 800, places=5)
+
+
+class TypeColumnTests(unittest.TestCase):
+    def test_same_type_same_bays_share_median_centre_and_width(self) -> None:
+        from merge_dsl import align_type_columns
+
+        def rec(floor, bays, cx, w, key="cx_norm", typ="balc_type_02"):
+            return {"floor": floor, "bays": bays, "type": typ, key: cx, "width_norm": w}
+
+        col = [rec(0, [0, 1], 0.24, 0.25), rec(1, [0, 1], 0.26, 0.20, "window_cx_norm"), rec(3, [0, 1], 0.27, 0.21)]
+        other_bays = rec(2, [0], 0.10, 0.08)
+        wide = rec(4, [0, 1], 0.40, 0.60)  # 2x wider: not this column
+        other_type = rec(2, [0, 1], 0.5, 0.2, typ="balc_type_01")
+        align_type_columns(col + [other_bays, wide, other_type], 1000.0)
+        for r in col:
+            self.assertAlmostEqual(r.get("cx_norm", r.get("window_cx_norm")), 0.26)
+            self.assertAlmostEqual(r["width_norm"], 0.21)
+            self.assertTrue(r["column_aligned"])
+        self.assertIn("window_cx_norm", col[1])  # keeps its own centre key
+        for r in (other_bays, wide, other_type):
+            self.assertNotIn("column_aligned", r)
+
+
 if __name__ == "__main__":
     unittest.main()
