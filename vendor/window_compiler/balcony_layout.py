@@ -442,8 +442,11 @@ def _open_on_oriel_takes_its_width(
                     lowers.append(g)
                     block.append(g)
                     grown = True
-        lo, hi = min(b["bx0"] for b in block), max(b["bx1"] for b in block)
-        half_cell = 0.5 * statistics.median(b["bx1"] - b["bx0"] for b in block)
+        # Gallery test on photo spans: the oriel's cells may have been narrowed to their windows already
+        # (else a balcony as wide as its oriel on the photo reads as a gallery).
+        lo = min(b.get("photo_bx0", b["bx0"]) for b in block)
+        hi = max(b.get("photo_bx1", b["bx1"]) for b in block)
+        half_cell = 0.5 * statistics.median(b.get("photo_bx1", b["bx1"]) - b.get("photo_bx0", b["bx0"]) for b in block)
         span = own.get(idx)
         gallery = span is not None and (span["bx0"] < lo - half_cell or span["bx1"] > hi + half_cell)
         _align_to(top, _block_footprint(block, span) if gallery else _block_footprint(block))
@@ -667,6 +670,16 @@ def _plain_frames(
             if f is not None and f["name"] in widths:
                 frames[k] = _frame(spec, k, recs[k], library[f["name"]], mirror_x=mirror_x, bottom_m=bottom_m,
                                    x_span=fits.get(k), type_width=widths[f["name"]])
+    recs = spec.get("balcony_placement") or []
+    for k, f in enumerate(frames):
+        if f is None:
+            continue
+        if fits.get(k) is not None:
+            # Span before the window fit narrowed it: what the photo shows (compared with other photo spans).
+            raw = _frame(spec, k, recs[k], library[f["name"]], mirror_x=mirror_x, bottom_m=bottom_m)
+            f["photo_bx0"], f["photo_bx1"] = raw["bx0"], raw["bx1"]
+        else:
+            f["photo_bx0"], f["photo_bx1"] = f["bx0"], f["bx1"]
     return frames
 
 

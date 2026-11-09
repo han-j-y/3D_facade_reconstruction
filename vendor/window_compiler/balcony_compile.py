@@ -1136,41 +1136,44 @@ def add_balcony_meshes(
             # Rooftop: railing on the top edge of its storey, its back face on
             # the wall plane (a coplanar front face would z-fight the wall).
             sx_rail = span_w * 0.98
-            rx0, rx1 = cx - sx_rail / 2.0, cx + sx_rail / 2.0
+            spans = [(cx - sx_rail / 2.0, cx + sx_rail / 2.0)]
             if structure == "juliet":
                 y_rail, z_lo = front_y + JULIET_PROJECTION_M, sill_z
-                wins = frame.get("juliet_windows") or []
+                wins = sorted(frame.get("juliet_windows") or [], key=lambda w: float(w["ox"]))
                 if wins:
-                    # Juliet as wide as its window(s) (user, 2026-11-08).
-                    rx0 = min(float(w["ox"]) for w in wins)
-                    rx1 = max(float(w["ox"]) + float(w["ww"]) for w in wins)
+                    # One railing piece per window it covers, as wide as that window; nothing on the wall between
+                    # (user, 2026-11-08: a juliet over several bays is cut into the window openings).
+                    spans = [(float(w["ox"]), float(w["ox"]) + float(w["ww"])) for w in wins]
                 if wins and kind == "open_work" and rail_material == "masonry":
                     # Post outer faces on the window's left / right edges. The juliet railing is too shallow for the
                     # masonry inset (masonry_inset_rail_frame drops it), so post centres sit on the railing ends.
                     half_post = float(JULIET_MASONRY_DIMS.get("post", MASONRY_POST_M)) / 2.0
-                    rx0, rx1 = rx0 + half_post, rx1 - half_post
+                    spans = [(a + half_post, b - half_post) for a, b in spans]
                 elif wins and frame.get("juliet_in_opening"):
                     # Metal, solid, surface panel: inside the window opening, in front of the recessed window. Metal's
                     # outer face JULIET_METAL_IN_OPENING_M behind the wall face, solid / panel on it.
                     y_rail = front_y - (JULIET_METAL_IN_OPENING_M if kind == "open_work" else 0.0)
-                    rx0, rx1 = rx0 + JULIET_METAL_SIDE_CLEAR_M, rx1 - JULIET_METAL_SIDE_CLEAR_M
+                    spans = [(a + JULIET_METAL_SIDE_CLEAR_M, b - JULIET_METAL_SIDE_CLEAR_M) for a, b in spans]
             else:
                 y_rail, z_lo = front_y + rail_t, (sill_z if frame.get("photo_z") else frame["z1"])
-            _add_front_railing(
-                prefix=prefix,
-                kind=kind,
-                material=rail_material,
-                x0=rx0,
-                x1=rx1,
-                y_front=y_rail,
-                y_wall=front_y,
-                z_lo=z_lo,
-                rail_h=rail_h,
-                rail_t=rail_t,
-                mat_key=rail_mat,
-                parent=balc_coll,
-                masonry_dims=JULIET_MASONRY_DIMS if structure == "juliet" else None,
-            )
+            for k, (rx0, rx1) in enumerate(spans):
+                if rx1 - rx0 <= 0.05:
+                    continue
+                _add_front_railing(
+                    prefix=prefix if len(spans) == 1 else f"{prefix}_w{k}",
+                    kind=kind,
+                    material=rail_material,
+                    x0=rx0,
+                    x1=rx1,
+                    y_front=y_rail,
+                    y_wall=front_y,
+                    z_lo=z_lo,
+                    rail_h=rail_h,
+                    rail_t=rail_t,
+                    mat_key=rail_mat,
+                    parent=balc_coll,
+                    masonry_dims=JULIET_MASONRY_DIMS if structure == "juliet" else None,
+                )
             n += 1
             continue
 

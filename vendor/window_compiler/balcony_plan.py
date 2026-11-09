@@ -18,27 +18,29 @@ TOP_RAIL_DIAMETER_M = 0.05
 # Default projecting slab depth for all balcony types (meters).
 DEFAULT_SLAB_DEPTH_M = 1.5
 
-# open_work + material=masonry catalog proportions (meters).
-MASONRY_POST_M = 0.25
-MASONRY_BALUSTER_DIAMETER_M = 0.15
+# open_work + material=masonry catalog proportions (meters); 0.8 x the catalog (user, 2026-11-08: post 0.25, baluster
+# 0.15 + gap 0.10, top rail 0.30 x 0.15 looked too heavy).
+MASONRY_POST_M = 0.20
+MASONRY_BALUSTER_DIAMETER_M = 0.12
 # Clear gap between baluster faces; center pitch = diameter + gap.
-MASONRY_BALUSTER_GAP_M = 0.10
+MASONRY_BALUSTER_GAP_M = 0.08
 MASONRY_BALUSTER_SPACING_M = MASONRY_BALUSTER_DIAMETER_M + MASONRY_BALUSTER_GAP_M
-MASONRY_TOP_RAIL_WIDTH_M = 0.30
-MASONRY_TOP_RAIL_HEIGHT_M = 0.15
+MASONRY_TOP_RAIL_WIDTH_M = 0.24
+MASONRY_TOP_RAIL_HEIGHT_M = 0.12
 # Inset entire masonry railing (posts + balusters + top rail) from slab edge.
 MASONRY_RAIL_INSET_M = 0.15
 
-# Juliet open_work + masonry (window balustrade): thicker piers, slimmer and denser balusters,
-# lighter top rail than the projecting catalog above. Keys override the MASONRY_* constants.
+# Juliet open_work + masonry (window balustrade): slimmer and denser balusters, lighter rails than the projecting
+# catalog above. Keys override the MASONRY_* constants. 0.8 x the first user values (2026-11-08: post 0.20,
+# baluster 0.10 at pitch 0.16, rails 0.20 x 0.10).
 JULIET_MASONRY_DIMS = {
-    "post": 0.20,
-    "baluster_d": 0.10,
-    "baluster_gap": 0.06,  # pitch 0.16
-    "top_w": 0.20,
-    "top_h": 0.10,
-    "bot_w": 0.20,  # bottom rail under the balusters
-    "bot_h": 0.10,
+    "post": 0.16,
+    "baluster_d": 0.08,
+    "baluster_gap": 0.048,  # pitch 0.128
+    "top_w": 0.16,
+    "top_h": 0.08,
+    "bot_w": 0.16,  # bottom rail under the balusters
+    "bot_h": 0.08,
 }
 # Every window in the wall sits this much deeper than the shallow default recess (reveal visible).
 WALL_WINDOW_RECESS_M = 0.10

@@ -29,7 +29,7 @@ class MasonryLayoutTests(unittest.TestCase):
             MASONRY_BALUSTER_SPACING_M,
             MASONRY_BALUSTER_DIAMETER_M + MASONRY_BALUSTER_GAP_M,
         )
-        self.assertAlmostEqual(MASONRY_BALUSTER_GAP_M, 0.10)
+        self.assertAlmostEqual(MASONRY_BALUSTER_GAP_M, 0.08)  # 0.8 x 0.10 (user, 2026-11-08)
 
     def test_baluster_centers_use_fixed_pitch_and_center(self) -> None:
         pts = masonry_baluster_centers(
