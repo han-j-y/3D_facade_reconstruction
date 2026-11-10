@@ -9,7 +9,9 @@ Replaces the global-axis "freeze" gate (sym_gate.gate_cluster). Steps, each swit
    ``size_ratio``, an extent with a hidden side is only a lower bound). Every axis with at least one real pair is kept
    (one floor is enough), all its pairs are used.
 2. Vertical pairs (``use_vertical``): adjacent floors, centres within a quarter of the narrower width, widths within
-   1.15x and heights within 1.25x for visible extents (hidden sides: lower bound).
+   1.15x and heights within 1.25x for visible extents (hidden sides: lower bound); ``vertical_ratio`` changes the two
+   ratios (1.3 / 1.3 = the fold-pair tolerance; joins windows whose boxes vary floor to floor, e.g. doors behind
+   railings with open shutters, but can chain gradually growing windows over several floors).
 3. Links across box groups (``use_cross``): allowed only when both windows' predicted outlines (rectangle / arched /
    other) match and the horizontal components they belong to share a majority outline; linked box groups merge.
 4. Horizontal must-link: fold pairs tie windows together (within the possibly merged box group).
@@ -17,6 +19,8 @@ Replaces the global-axis "freeze" gate (sym_gate.gate_cluster). Steps, each swit
    least half of the smaller component, and the same majority predicted outline.
 6. Structure split (``use_split``): average-linkage tree over the must-link components on the structure descriptor
    (component distance = mean pairwise cosine distance), cut at ``thr``. Off: every component is a type.
+7. Singleton adoption (``use_adopt``, off by default): a one-member type joins type T when its same-floor mirror and
+   the windows directly above and below are all T and the outline matches (:func:`adopt_singletons`).
 """
 
 from __future__ import annotations
@@ -139,8 +143,9 @@ def fold_pairs(boxes: list[Box], floor: dict[int, int], size_ok, min_iou: float 
 
 # --- 2. vertical pairs ---------------------------------------------------------------------------------------------
 
-def vertical_pairs(boxes: list[Box], floor: dict[int, int], occ: list[set[int]]) -> list[tuple[int, int]]:
-    ok = make_size_ok(occ, 1.15, 1.25)
+def vertical_pairs(boxes: list[Box], floor: dict[int, int], occ: list[set[int]],
+                   ratio_w: float = 1.15, ratio_h: float = 1.25) -> list[tuple[int, int]]:
+    ok = make_size_ok(occ, ratio_w, ratio_h)
     out = []
     for i in floor:
         for j in floor:
@@ -237,6 +242,49 @@ def _split(D, idx, links, thr, use_split):
     return _split(D, side(root.get_left()), links, thr, use_split) + _split(D, side(root.get_right()), links, thr, use_split)
 
 
+# --- 7. singleton adoption -----------------------------------------------------------------------------------------
+
+def adopt_singletons(boxes: list[Box], floor: dict[int, int], outline: dict[int, str], labels: np.ndarray,
+                     axes: list[dict], min_iou: float = 0.3) -> tuple[np.ndarray, list[tuple[int, int, int]]]:
+    """A window that is a one-member type joins type T when three witnesses all say T: its mirror on the same floor
+    (reflection over the floor's fold axes, best IoU >= ``min_iou``, size ignored; all axes must agree) and the single
+    centre-aligned window on the floor above and below. Its outline must be T's majority outline. Returns the new
+    labels and (window, old type, new type) per change."""
+    labels = np.array(labels)
+    n = Counter(labels.tolist())
+    cx = lambda b: (b[0] + b[2]) / 2
+    changes = []
+    for i, b in enumerate(boxes):
+        if n[labels[i]] != 1:
+            continue
+        f = floor[i]
+
+        def column(df):
+            c = [j for j in floor if floor[j] == f + df
+                 and abs(cx(boxes[j]) - cx(b)) <= 0.25 * min(b[2] - b[0], boxes[j][2] - boxes[j][0])]
+            return labels[c[0]] if len(c) == 1 else None
+
+        mirror = set()
+        for a in axes:
+            if a["floor"] != f:
+                continue
+            r = [2 * a["x"] - b[2], b[1], 2 * a["x"] - b[0], b[3]]
+            v, j = max(((box_iou(r, boxes[j]), j) for j in floor if floor[j] == f and j != i), default=(0.0, None))
+            if v >= min_iou:
+                mirror.add(labels[j])
+        if len(mirror) != 1:
+            continue
+        witnesses = [w for w in (column(-1), column(1), next(iter(mirror))) if w is not None]
+        if len(witnesses) < 3 or len(set(witnesses)) != 1:
+            continue
+        t = witnesses[0]
+        if Counter(outline[j] for j in range(len(boxes)) if labels[j] == t).most_common(1)[0][0] != outline[i]:
+            continue
+        changes.append((i, int(labels[i]), int(t)))
+        labels[i] = t
+    return labels, changes
+
+
 def fold_gate(
     boxes: list[Box],
     groups: np.ndarray,
@@ -251,6 +299,8 @@ def fold_gate(
     use_vertical: bool = True,
     use_cross: bool = True,
     use_split: bool = True,
+    vertical_ratio: tuple[float, float] = (1.15, 1.25),
+    use_adopt: bool = False,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Type labels for every box (see module doc) and a JSON-able report."""
     boxes = [list(map(float, b)) for b in boxes]
@@ -258,7 +308,7 @@ def fold_gate(
     size_ok = make_size_ok(occ, size_ratio)
     H, axes = fold_pairs(boxes, floor, size_ok) if use_fold else ({}, [])
     hl = sorted(H)
-    vl = vertical_pairs(boxes, floor, occ) if use_vertical else []
+    vl = vertical_pairs(boxes, floor, occ, *vertical_ratio) if use_vertical else []
     if use_cross:
         hl = cross_group_filter(hl, groups, outline, hl)
         vl = cross_group_filter(vl, groups, outline, hl)
@@ -274,9 +324,13 @@ def fold_gate(
         idx = [int(i) for i in np.where(sgroups == g)[0]]
         for part in _split(D, idx, hl + vm, thr, use_split):
             labels[part] = nxt; nxt += 1
+    adopted = []
+    if use_adopt:
+        labels, adopted = adopt_singletons(boxes, floor, outline, labels, axes)
     report = {"fold_axes": axes, "fold_pairs": [[i, j] for i, j in hl], "vertical_pairs": [[i, j] for i, j in vl],
               "vertical_merges": [[int(a), int(b)] for a, b in vm],
               "box_groups": int(len(set(groups.tolist()))), "merged_groups": int(len(set(sgroups.tolist()))),
+              "adopted": [list(c) for c in adopted],
               "flags": {"fold": use_fold, "vertical": use_vertical, "cross": use_cross, "split": use_split,
-                        "size_ratio": size_ratio}}
+                        "size_ratio": size_ratio, "vertical_ratio": list(vertical_ratio), "adopt": use_adopt}}
     return labels, report

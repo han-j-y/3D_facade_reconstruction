@@ -323,6 +323,12 @@ def parse_args() -> argparse.Namespace:
                     "(ablation: --no-structure-split, every component is a type)")
     ap.add_argument("--fold-size-ratio", type=float, default=1.3,
                     help="fold gate: visible extents of a mirror pair within this ratio (a hidden side is a lower bound)")
+    ap.add_argument("--vertical-size-ratio", type=str, default="1.15,1.25",
+                    help="fold gate: 'w,h' size ratios of a vertical pair (default 1.15,1.25; 1.3,1.3 = the fold-pair "
+                    "tolerance, joins windows whose boxes vary floor to floor but can chain growing windows)")
+    ap.add_argument("--singleton-adopt", action="store_true",
+                    help="fold gate: a one-window type joins type T when its same-floor mirror and the windows above "
+                    "and below are all T (off by default)")
     ap.add_argument(
         "--gate-pairs",
         choices=("global", "local"),
@@ -1837,6 +1843,7 @@ def _fold_gate_labels(
         boxes, np.asarray(clustered["labels_box"]), floor, np.asarray(feat), occ, outline,
         thr=args.struct_split_thr, size_ratio=args.fold_size_ratio, use_fold=args.fold_pairs,
         use_vertical=args.vertical_merge, use_cross=args.cross_group, use_split=args.structure_split,
+        vertical_ratio=tuple(float(v) for v in args.vertical_size_ratio.split(",")), use_adopt=args.singleton_adopt,
     )
     report["occluded_sides"] = {i: sorted(o) for i, o in enumerate(occ) if o}
     report["outline"] = {i: o for i, o in outline.items()}
@@ -1844,7 +1851,8 @@ def _fold_gate_labels(
     clustered["fold_gate"] = report
     print(f"gate (fold): {len(report['fold_axes'])} fold axes, {len(report['fold_pairs'])} fold pairs, "
           f"{len(report['vertical_merges'])} vertical merges, box groups {report['box_groups']} -> "
-          f"{report['merged_groups']}, {len(set(labels.tolist()))} types")
+          f"{report['merged_groups']}, {len(set(labels.tolist()))} types"
+          + (f", adopted {report['adopted']}" if args.singleton_adopt else ""))
     return labels
 
 
