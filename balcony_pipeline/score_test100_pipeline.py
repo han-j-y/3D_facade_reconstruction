@@ -6,7 +6,7 @@ boxes (``sized`` in ``runs/batch/_rows/test100_sam3_stage_boxes.json`` = what
 
 1. ``snap_open_units``: ``filter_balcony_boxes`` (with the window instances) → ``side_wall``
    (DA3 depth resized to the photo) → ``masonry_juliet_split`` (live railing classifier,
-   default ``railing_test100_v4.pt``) → ``merge_adjacent_boxes`` → ``snap_units``.
+   default ``railing_test100_v5.pt``) → ``merge_adjacent_boxes`` → ``snap_units``.
 2. Oriel cells (``preds_official.json`` of the 457 model, = ``detect_enclosed_cells`` at the
    pipeline gate / t) → ``place_enclosed_cells`` → ``drop_open_under_enclosed``.
 

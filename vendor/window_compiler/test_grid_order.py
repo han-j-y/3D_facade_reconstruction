@@ -82,5 +82,40 @@ class GridOrderTest(unittest.TestCase):
             apply_grid_order(d)
 
 
+    def _wide(self) -> dict:
+        # 1 floor x 4 bays (100 px each); a door spans bays 0-3, a window spans bays 2-3 on a second floor
+        return {
+            "meta": {"image_size": [400, 200], "floors_y": [[0, 100], [100, 200]],
+                     "columns_xy": [[0, 100], [100, 200], [200, 300], [300, 400]]},
+            "layout": {
+                "floors": [{"name": "F0", "id": 0, "h_norm": 0.5}, {"name": "F1", "id": 1, "h_norm": 0.5}],
+                "bays": [{"name": f"B{i}", "id": i, "w_norm": 0.25} for i in range(4)],
+                "placement": [[None, None, "win_type_00", None], ["d00", None, None, None]],
+                "placement_spans": [[1, 1, 2, 0], [4, 0, 0, 0]],
+            },
+            "instances": [
+                {"unit_id": 0, "floor": 0, "bay": 2, "colspan": 2, "type_id": 0, "box_xyxy": [220, 20, 280, 70]},
+                {"unit_id": 1, "floor": 1, "bay": 0, "colspan": 4, "kind": "door", "type_id": 0, "box_xyxy": [150, 120, 250, 200]},
+            ],
+        }
+
+    def test_span_grows_over_copies_inserted_inside_it(self) -> None:
+        d = self._wide()
+        d["layout"]["bay_order"] = [0, 1, 2, 1, 2, 3]  # copies of bays 1, 2 inside the door's span
+        out = apply_grid_order(d)
+        self.assertEqual(out["layout"]["placement_spans"][1][0], 6)
+        door = next(u for u in out["instances"] if u.get("kind") == "door")
+        self.assertEqual(door["colspan"], 6)
+        self.assertEqual(door["box_xyxy"][2] - door["box_xyxy"][0], 100)  # keeps its width
+        self.assertEqual(0.5 * (door["box_xyxy"][0] + door["box_xyxy"][2]), 300)  # still centred in its span
+
+    def test_broken_span_covers_its_element_with_empty_slots(self) -> None:
+        d = self._wide()
+        d["layout"]["bay_order"] = [0, 1, 2, 1, 2, 3]  # the window's bay 2 is now followed by bay 1's copy
+        out = apply_grid_order(d)
+        row = out["layout"]["placement_spans"][0]
+        self.assertEqual(row[2], 1)  # 60 px window from x=220 fits in its own 100 px bay
+        self.assertEqual(row[4], 2)  # the copy of bay 2 is still followed by bay 3
+
 if __name__ == "__main__":
     unittest.main()

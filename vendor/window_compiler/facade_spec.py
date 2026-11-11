@@ -360,7 +360,10 @@ def normalize_facade_spec(
                 item[k] = float(rec[k])
         for k in ("bays", "bays_center"):
             if rec.get(k):
-                item[k] = [int(b) for b in rec[k]]
+                # bay ids -> columns, like col0 / col1 (ids differ from columns after a bay_order edit)
+                bay_cols = [bay_id_to_col[int(b)] for b in rec[k] if int(b) in bay_id_to_col]
+                if bay_cols:
+                    item[k] = bay_cols
         if rec.get("structure"):
             item["structure"] = str(rec["structure"])
         if rec.get("column_aligned"):
@@ -393,7 +396,7 @@ def normalize_facade_spec(
             "floors_y": meta.get("floors_y"),
         },
         "wall": {
-            "depth": 0.42,
+            "depth": 6,
             "base_front_y": 0.0,
             "material": "wall",
         },
@@ -407,6 +410,7 @@ def normalize_facade_spec(
         "balcony_placement": balcony_placement,
         "instances": list(spec.get("instances") or []),
         "floor_ids": [int(f["id"]) for f in floors],
+        "bay_ids": [int(b["id"]) for b in bays],  # column -> bay id (they differ after a bay_order edit)
         "image_extent": image_extent,
         "wall_margins": wall_margins_from_region(meta.get("facade_region_xyxy"), image_extent, total_w, total_h),
         "placement_params": {
@@ -722,7 +726,8 @@ def image_cell_bounds_px(
         return None
     if row_idx >= len(floors_y):
         return None
-    bay = int(bay)
+    bay_ids = spec.get("bay_ids") or []
+    bay = bay_ids.index(int(bay)) if int(bay) in bay_ids else int(bay)  # bay id -> column
     end = min(len(columns_xy), bay + max(1, int(colspan)))
     if bay < 0 or bay >= len(columns_xy):
         return None

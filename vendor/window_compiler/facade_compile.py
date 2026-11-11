@@ -424,10 +424,11 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
     # Photo-left ↔ image-left: compiler +Y camera mirrors world X (see get_cell).
     mirror_x = bool((spec.get("placement_params") or {}).get("mirror_x", True))
     floor_ids = spec.get("floor_ids") or []
+    bay_ids = spec.get("bay_ids") or []  # column -> bay id; instances are keyed by bay id
     inst_map = build_instance_map(spec)
 
     n_doors = 0
-    ground_floor_id = max(floor_ids) if floor_ids else None
+    ground_floor_id = floor_ids[-1] if floor_ids else None  # bottom row (copied floors get larger ids)
 
     for r in range(n_rows):
         row = placement[r] if r < len(placement) else []
@@ -456,7 +457,7 @@ def compile_facade_scene(spec: dict[str, Any]) -> dict[str, Any]:
                     cell = get_cell(spec, r, c, mirror_x=mirror_x)
                 fit_row = placement_fit[r] if r < len(placement_fit) else []
                 fit = cell_fit(fit_row[c], slot) if c < len(fit_row) else {}
-                inst = inst_map.get((floor_id, c, slot))
+                inst = inst_map.get((floor_id, int(bay_ids[c]) if c < len(bay_ids) else c, slot))
 
                 if is_door:
                     door_def = dict(doors[tok])

@@ -203,7 +203,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=None,
         help=(
-            "solid/baluster classifier (default: checkpoints/railing_test100_v4.pt if present; "
+            "solid/baluster classifier (default: checkpoints/railing_test100_v5.pt if present; "
             "else opaque-run heuristic)"
         ),
     )

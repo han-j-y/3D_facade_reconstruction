@@ -124,16 +124,50 @@ def apply_grid_order(dsl: dict[str, Any]) -> dict[str, Any]:
 
     olay["placement"] = remap_matrix(lay.get("placement"))
     spans = remap_matrix(lay.get("placement_spans"))
+    # (row, slot) -> extra px for an element whose span grew around copies inserted inside it, and its old span
+    grown: dict[tuple[int, int], tuple[float, float, float]] = {}
     if spans is not None:
-        # a span stays only where the bays it covered still follow it in the new order
+        right_px: dict[tuple[int, int], float] = {}  # (floor id, bay id) -> right edge of its elements
+        for u in dsl.get("instances") or []:
+            key = (int(u["floor"]), int(u["bay"]))
+            right_px[key] = max(right_px.get(key, float("-inf")), float(u["box_xyxy"][2]))
+        place = olay["placement"] or []
+        n = len(b_slots)
         for r in range(len(spans)):
-            for c in range(len(b_slots)):
+            fs = f_slots[r][0]
+            for c in range(n):
                 k = int(spans[r][c] or 1)
-                src = bpos[b_slots[c][0]]
-                ok = all(c + j < len(b_slots) and bpos[b_slots[c + j][0]] == src + j for j in range(k))
-                if not ok:
-                    spans[r][c] = 1
+                if k <= 1:
+                    continue
+                sp = bpos[b_slots[c][0]]
+                last = sp + k - 1
+                # the span keeps its bays when the slots after it are its own bays (copies of inner bays may sit
+                # in between): it grows over the copies and its element keeps its relative place in it
+                run, j = [], c + 1
+                while j < n and sp < bpos[b_slots[j][0]] <= last:
+                    run.append(bpos[b_slots[j][0]])
+                    j += 1
+                if run and run[-1] == last and set(run) == set(range(sp + 1, last + 1)):
+                    nk = len(run) + 1
+                    old_w = bb[last][1] - bb[sp][0]
+                    new_w = new_bb[c + nk - 1][1] - new_bb[c][0]
+                    if nk != k:
+                        grown[(r, c)] = (new_w - old_w, old_w, bb[sp][0])
+                else:
+                    # broken: the element keeps its pixel width, covered by the empty slots that follow it
+                    nk = 1
+                    right = right_px.get((fs, b_slots[c][0]))
+                    if right is not None:
+                        need = new_bb[c][0] + (right - bb[sp][0])
+                        row = place[r] if r < len(place) else []
+                        while (c + nk < n and new_bb[c + nk - 1][1] < need
+                               and (c + nk >= len(row) or not row[c + nk]) and int(spans[r][c + nk] or 0) <= 1):
+                            nk += 1
+                for t in range(1, nk):
+                    spans[r][c + t] = 0
+                spans[r][c] = nk
         olay["placement_spans"] = spans
+    slot_of_floor = {nid: k for k, (_s, nid) in enumerate(f_slots)}
 
     om = out.setdefault("meta", {})
     if isinstance(meta.get("floors_y"), list):
@@ -167,7 +201,15 @@ def apply_grid_order(dsl: dict[str, Any]) -> dict[str, Any]:
             for nb, dx in b_targets.get(bs, []):
                 v = copy.deepcopy(u)
                 v["floor"], v["bay"] = nf, nb
-                v["box_xyxy"] = move_box(u["box_xyxy"], dx, dy)
+                rc = (slot_of_floor[nf], slot_of_bay[nb])
+                ex = 0.0
+                if rc in grown:  # its span grew around inserted copies: same relative place in the wider span
+                    extra, old_w, left = grown[rc]
+                    cx = 0.5 * (float(u["box_xyxy"][0]) + float(u["box_xyxy"][2]))
+                    ex = extra * min(1.0, max(0.0, (cx - left) / max(1e-6, old_w)))
+                v["box_xyxy"] = move_box(u["box_xyxy"], dx + ex, dy)
+                if spans is not None and "colspan" in u and int(spans[rc[0]][rc[1]] or 0) >= 1:
+                    v["colspan"] = int(spans[rc[0]][rc[1]])
                 uid = u.get("unit_id")
                 if (nf, nb) != (fs, bs) and uid is not None:
                     if isinstance(uid, int):

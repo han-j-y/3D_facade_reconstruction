@@ -74,6 +74,9 @@ def main() -> None:
     ap.add_argument("--majority-vote", action="store_true",
                     help="old type vote for kind / material / floor (default: soft, as run_balcony --vote soft)")
     ap.add_argument("--dump", type=Path, default=None, help="write the per-unit label rows of every setup (json)")
+    ap.add_argument("--railing-ckpt", type=Path, default=None,
+                    help="railing classifier for every setup (default: pipeline default, paths.py); "
+                         "--setup args do not change the classifier")
     args = ap.parse_args()
 
     if not args.gt.is_file():
@@ -86,7 +89,7 @@ def main() -> None:
     setups = [("RUN", None)] + [(s.split("=", 1)[0], s.split("=", 1)[1].split()) for s in args.setup]
     need_probs = any(a and "--cluster-label-split" in a for _, a in setups)
     do_labels = not args.no_labels
-    pred = (try_load_predictor(None, device, structure_ckpt=DEFAULT_STRUCTURE_CKPT)
+    pred = (try_load_predictor(args.railing_ckpt, device, structure_ckpt=DEFAULT_STRUCTURE_CKPT)
             if need_probs or do_labels else None)
     label_rows: dict[str, list[dict]] = {name: [] for name, _ in setups}
 

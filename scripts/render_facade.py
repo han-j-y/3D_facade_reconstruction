@@ -183,7 +183,8 @@ def planned_windows(facade: dict) -> list[dict]:
     total_w, total_h = total_grid_size(facade["grid"])
     floor_ids = facade.get("floor_ids") or []
     inst_map = build_instance_map(facade)
-    ground_floor_id = max(floor_ids) if floor_ids else None
+    bay_ids = facade.get("bay_ids") or []
+    ground_floor_id = floor_ids[-1] if floor_ids else None
     out: list[dict] = []
     for r in range(n_rows):
         row = placement[r] if r < len(placement) else []
@@ -210,7 +211,7 @@ def planned_windows(facade: dict) -> list[dict]:
                 fit = cell_fit(fit_row[c], slot) if c < len(fit_row) else {}
                 ratios = type_ratios.get(tok) or {}
                 hr = float(fit.get("height_ratio", ratios.get("height_ratio", default_hr)))
-                inst = inst_map.get((floor_id, c, slot))
+                inst = inst_map.get((floor_id, int(bay_ids[c]) if c < len(bay_ids) else c, slot))
                 if is_door:
                     seg_fit = (
                         placement_fit_for_instance(facade, inst, r, c)

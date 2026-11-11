@@ -91,6 +91,9 @@ def _cube(
 
 SOLID_PARAPET_M = 0.20
 GLASS_PANEL_M = 0.01
+# Oriel glass sits this far inside the slab edge, toward the plan centre (user, 2026-11-10),
+# for rectangle and circle plans. Mullions and transoms stay on the edge.
+ORIEL_GLASS_INSET_M = 0.05
 # Juliet railing: outer face this far in front of the wall, no slab.
 JULIET_PROJECTION_M = 0.15
 
@@ -233,7 +236,7 @@ def _add_enclosed_shell(
                     )
             continue
 
-        a, b = inset_edge(p0, p1, mid, GLASS_PANEL_M / 2.0)
+        a, b = inset_edge(p0, p1, mid, ORIEL_GLASS_INSET_M + GLASS_PANEL_M / 2.0)
         spans = curtain_glass_spans(z_lo, z_hi, mull_w=mull_w)
         for band, (gz0, gz1) in enumerate(spans):
             for i, (s0, s1) in enumerate(
@@ -307,7 +310,10 @@ def _add_curtain_circle_shell(
             p0, p1 = outline[i], outline[i + 1]
             if math.hypot(p1[0] - p0[0], p1[1] - p0[1]) < 1e-3:
                 continue
-            a, b = inset_edge(p0, p1, mid, GLASS_PANEL_M / 2.0)
+            # Move the chord ends toward the centre so neighbouring panes still meet.
+            q0 = inset_point(p0, mid, ORIEL_GLASS_INSET_M)
+            q1 = inset_point(p1, mid, ORIEL_GLASS_INSET_M)
+            a, b = inset_edge(q0, q1, mid, GLASS_PANEL_M / 2.0)
             for span_i, (gz0, gz1) in enumerate(spans):
                 _box_along_xy(
                     name=f"{prefix}_glass_{band}_{i}_{span_i}",
