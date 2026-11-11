@@ -125,46 +125,68 @@ def apply_grid_order(dsl: dict[str, Any]) -> dict[str, Any]:
     olay["placement"] = remap_matrix(lay.get("placement"))
     spans = remap_matrix(lay.get("placement_spans"))
     # (row, slot) -> extra px for an element whose span grew around copies inserted inside it, and its old span
-    grown: dict[tuple[int, int], tuple[float, float, float]] = {}
+    # (row, slot) -> (extra px, old span px, old span left px, stretch) for an element whose span grew: it either
+    # stretches over copies of its own first bay or keeps its relative place among inner copies it had to take in
+    grown: dict[tuple[int, int], tuple[float, float, float, bool]] = {}
+    absorbed: set[tuple[int, int]] = set()  # (row, slot) copies of a bay taken into the element starting before them
     if spans is not None:
-        right_px: dict[tuple[int, int], float] = {}  # (floor id, bay id) -> right edge of its elements
+        left_px: dict[tuple[int, int], float] = {}  # (floor id, bay id) -> left / right edge of its elements
+        right_px: dict[tuple[int, int], float] = {}
         for u in dsl.get("instances") or []:
             key = (int(u["floor"]), int(u["bay"]))
+            left_px[key] = min(left_px.get(key, float("inf")), float(u["box_xyxy"][0]))
             right_px[key] = max(right_px.get(key, float("-inf")), float(u["box_xyxy"][2]))
         place = olay["placement"] or []
         n = len(b_slots)
         for r in range(len(spans)):
             fs = f_slots[r][0]
+            row = place[r] if r < len(place) else []
             for c in range(n):
-                k = int(spans[r][c] or 1)
-                if k <= 1:
+                if (r, c) in absorbed:
                     continue
+                k = int(spans[r][c] or 1)
                 sp = bpos[b_slots[c][0]]
                 last = sp + k - 1
-                # the span keeps its bays when the slots after it are its own bays (copies of inner bays may sit
-                # in between): it grows over the copies and its element keeps its relative place in it
-                run, j = [], c + 1
+                key = (fs, b_slots[c][0])
+                j, ab = c + 1, 0
+                # copies of the element's own first bay right after it: a copy is a duplicate of the element, unless
+                # the element is wider than the copied bay (the duplicate would overlap it); then it stretches
+                if c < len(row) and row[c] and key in left_px:
+                    ew = right_px[key] - left_px[key]
+                    while (j < n and bpos[b_slots[j][0]] == sp and b_slots[j][1] != b_slots[j][0]
+                           and new_bb[j][0] - new_bb[j - 1][0] < ew):
+                        absorbed.add((r, j))
+                        ab += 1
+                        j += 1
+                if k <= 1 and not ab:
+                    continue
+                # then its own bays; copies of inner bays after its last bay are plain wall, copies sitting before
+                # its last bay are taken in (the span grows and its element keeps its relative place)
+                run = []
                 while j < n and sp < bpos[b_slots[j][0]] <= last:
                     run.append(bpos[b_slots[j][0]])
                     j += 1
-                if run and run[-1] == last and set(run) == set(range(sp + 1, last + 1)):
-                    nk = len(run) + 1
+                    if run[-1] == last and set(run) == set(range(sp + 1, last + 1)):
+                        break
+                if k == 1 or (run and run[-1] == last and set(run) == set(range(sp + 1, last + 1))):
+                    nk = 1 + ab + len(run)
                     old_w = bb[last][1] - bb[sp][0]
                     new_w = new_bb[c + nk - 1][1] - new_bb[c][0]
                     if nk != k:
-                        grown[(r, c)] = (new_w - old_w, old_w, bb[sp][0])
+                        grown[(r, c)] = (new_w - old_w, old_w, bb[sp][0], bool(ab))
                 else:
                     # broken: the element keeps its pixel width, covered by the empty slots that follow it
-                    nk = 1
-                    right = right_px.get((fs, b_slots[c][0]))
+                    nk = 1 + ab
+                    right = right_px.get(key)
                     if right is not None:
                         need = new_bb[c][0] + (right - bb[sp][0])
-                        row = place[r] if r < len(place) else []
                         while (c + nk < n and new_bb[c + nk - 1][1] < need
                                and (c + nk >= len(row) or not row[c + nk]) and int(spans[r][c + nk] or 0) <= 1):
                             nk += 1
                 for t in range(1, nk):
                     spans[r][c + t] = 0
+                    if (r, c + t) in absorbed and c + t < len(row):
+                        row[c + t] = None
                 spans[r][c] = nk
         olay["placement_spans"] = spans
     slot_of_floor = {nid: k for k, (_s, nid) in enumerate(f_slots)}
@@ -202,12 +224,18 @@ def apply_grid_order(dsl: dict[str, Any]) -> dict[str, Any]:
                 v = copy.deepcopy(u)
                 v["floor"], v["bay"] = nf, nb
                 rc = (slot_of_floor[nf], slot_of_bay[nb])
-                ex = 0.0
-                if rc in grown:  # its span grew around inserted copies: same relative place in the wider span
-                    extra, old_w, left = grown[rc]
-                    cx = 0.5 * (float(u["box_xyxy"][0]) + float(u["box_xyxy"][2]))
-                    ex = extra * min(1.0, max(0.0, (cx - left) / max(1e-6, old_w)))
+                if rc in absorbed:  # this copy of its bay was taken into the element itself: no duplicate
+                    continue
+                ex, stretch = 0.0, 0.0
+                if rc in grown:
+                    extra, old_w, left, st = grown[rc]
+                    if st:  # stretched over copies of its first bay
+                        stretch = extra
+                    else:  # its span grew around inserted copies: same relative place in the wider span
+                        cx = 0.5 * (float(u["box_xyxy"][0]) + float(u["box_xyxy"][2]))
+                        ex = extra * min(1.0, max(0.0, (cx - left) / max(1e-6, old_w)))
                 v["box_xyxy"] = move_box(u["box_xyxy"], dx + ex, dy)
+                v["box_xyxy"][2] += stretch
                 if spans is not None and "colspan" in u and int(spans[rc[0]][rc[1]] or 0) >= 1:
                     v["colspan"] = int(spans[rc[0]][rc[1]])
                 uid = u.get("unit_id")
@@ -225,30 +253,55 @@ def apply_grid_order(dsl: dict[str, Any]) -> dict[str, Any]:
     for b in lay.get("balconies") or []:
         fs, bs, be = int(b["floor"]), int(b["bay_start"]), int(b["bay_end"])
         width = bpos.get(be, bpos[bs]) - bpos[bs]
+        # a balcony shared by several windows grows over copies of its bays inside its run; one window's balcony
+        # follows its window (copied with it, never stretched)
+        shared = len(b.get("partner_window_unit_ids") or []) > 1
         for nf, dy in f_targets.get(fs, []):
+            covered: set[int] = set()  # slots already inside a grown copy of this balcony on this floor
             for nb, dx in b_targets.get(bs, []):
+                c = [s[1] for s in b_slots].index(nb)
+                if c in covered:
+                    continue
                 v = copy.deepcopy(b)
                 # the balcony keeps its bay run where the same bays still follow in the new order
-                c = [s[1] for s in b_slots].index(nb)
                 run = [b_slots[c + j] for j in range(width + 1) if c + j < len(b_slots)
                        and bpos[b_slots[c + j][0]] == bpos[bs] + j]
+                # like a window span: it grows over copies of its inner bays inserted inside it, when the slots
+                # after it are its own bays only and reach its last bay
+                ext, j = [b_slots[c]], c + 1
+                while shared and j < len(b_slots) and bpos[bs] <= bpos[b_slots[j][0]] <= bpos[bs] + width:
+                    ext.append(b_slots[j])
+                    j += 1
+                if (width and len(ext) > width + 1 and bpos[ext[-1][0]] == bpos[bs] + width
+                        and {bpos[s] for s, _ in ext} == set(range(bpos[bs], bpos[bs] + width + 1))):
+                    run = ext
+                    covered.update(range(c, c + len(run)))
+                grow = (new_bb[c + len(run) - 1][1] - new_bb[c][0]) - (bb[bpos[bs] + width][1] - bb[bpos[bs]][0]) \
+                    if len(run) > width + 1 else 0.0
                 v["floor"], v["bay_start"], v["bay_end"], v["bay"] = nf, nb, run[-1][1], nb
-                ids = {src: new for src, new in run}
+                ids: dict[int, list[int]] = {}
+                for src, new in run:
+                    ids.setdefault(src, []).append(new)
                 for key in ("bays", "bays_center"):
                     if isinstance(b.get(key), list):
-                        v[key] = [ids[x] for x in b[key] if x in ids] or [nb]
+                        v[key] = [n for x in b[key] for n in ids.get(x, [])] or [nb]
                 if b.get("box_xyxy"):
-                    v["box_xyxy"] = [int(round(x)) for x in move_box(b["box_xyxy"], dx, dy)]
+                    bx = move_box(b["box_xyxy"], dx, dy)
+                    bx[2] += grow
+                    v["box_xyxy"] = [int(round(x)) for x in bx]
                 if b.get("width_norm") is not None:
-                    v["width_norm"] = round(float(b["width_norm"]) * iw / niw, 6)
+                    v["width_norm"] = round((float(b["width_norm"]) * iw + grow) / niw, 6)
                 for key in NORM_X:
                     if b.get(key) is not None:
-                        v[key] = round((float(b[key]) * iw + dx) / niw, 6)
+                        v[key] = round((float(b[key]) * iw + dx + grow / 2) / niw, 6)
                 for key in ("partner_window_unit_ids", "far_window_unit_ids"):
                     if b.get(key):
-                        # the copy of that window on this floor, nearest this balcony's bay
-                        v[key] = [min(unit_copies.get((w, nf), [(c, w)]), key=lambda t: abs(t[0] - c))[1]
-                                  for w in b[key]]
+                        if grow:  # every copy of that window inside the grown run
+                            lo, hi = c, c + len(run) - 1
+                            v[key] = [u for w in b[key] for k, u in unit_copies.get((w, nf), [(c, w)]) if lo <= k <= hi]
+                        else:  # the copy of that window on this floor, nearest this balcony's bay
+                            v[key] = [min(unit_copies.get((w, nf), [(c, w)]), key=lambda t: abs(t[0] - c))[1]
+                                      for w in b[key]]
                 balcs.append(v)
     if lay.get("balconies") is not None:
         olay["balconies"] = balcs

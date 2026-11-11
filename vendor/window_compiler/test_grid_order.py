@@ -28,6 +28,72 @@ def _dsl() -> dict:
 
 
 class GridOrderTest(unittest.TestCase):
+    def test_shared_balcony_grows_over_copy_of_its_first_bay(self) -> None:
+        d = _dsl()
+        d["layout"]["balconies"] = [{"floor": 1, "bay_start": 0, "bay_end": 1, "bay": 0, "bays": [0, 1], "type": "balc_type_00",
+                                     "box_xyxy": [40, 170, 360, 200], "width_norm": 0.8, "window_cx_norm": 0.5,
+                                     "partner_window_unit_ids": [2, 3]}]
+        d["layout"]["bay_order"] = [0, 0, 1]
+        (b,) = apply_grid_order(d)["layout"]["balconies"]  # one balcony, not two overlapping copies
+        self.assertEqual((b["bay_start"], b["bay_end"], b["bays"], b["box_xyxy"][2]), (0, 1, [0, 2, 1], 560))
+
+    def test_single_window_balcony_is_copied_with_its_window(self) -> None:
+        d = _dsl()
+        d["layout"]["balconies"][0].update({"bay_end": 1, "bays": [0, 1]})  # one window, box over two bays
+        d["layout"]["bay_order"] = [0, 0, 1]
+        bs = [b for b in apply_grid_order(d)["layout"]["balconies"]]
+        self.assertEqual(sorted(b["box_xyxy"][0] for b in bs), [40, 240])
+
+    def _spanned(self) -> dict:
+        # floor 0: one wide window spanning both bays (box 20..380); floor 1: a narrow window spanning both bays (box 50..150)
+        return {
+            "meta": {"image_size": [400, 300], "floors_y": [[0, 100], [100, 200], [200, 300]], "columns_xy": [[0, 200], [200, 400]]},
+            "layout": {
+                "floors": [{"name": f"F{i}", "id": i, "h_norm": 1 / 3} for i in range(3)],
+                "bays": [{"name": f"B{i}", "id": i, "w_norm": 0.5} for i in range(2)],
+                "placement": [["win_type_00", None], ["win_type_01", None], [None, None]],
+                "placement_spans": [[2, 0], [2, 0], [1, 1]],
+                "balconies": [],
+            },
+            "instances": [{"unit_id": 0, "floor": 0, "bay": 0, "colspan": 2, "type_id": 0, "box_xyxy": [20, 20, 380, 70]},
+                          {"unit_id": 1, "floor": 1, "bay": 0, "colspan": 2, "type_id": 1, "box_xyxy": [50, 120, 150, 170]}],
+        }
+
+    def test_copy_of_first_bay_stretches_an_element_wider_than_it(self) -> None:
+        d = self._spanned()
+        d["layout"]["bay_order"] = [0, 0, 1]
+        out = apply_grid_order(d)
+        top = [u for u in out["instances"] if u["floor"] == 0]
+        self.assertEqual([u["box_xyxy"][0] for u in top], [20])          # one window, not an overlapping duplicate
+        self.assertEqual(top[0]["box_xyxy"][2], 580)                       # stretched by the copied 200 px
+        self.assertEqual(out["layout"]["placement_spans"][0], [3, 0, 0])
+        mid = sorted(u["box_xyxy"][0] for u in out["instances"] if u["floor"] == 1)
+        self.assertEqual(mid, [50, 250])                                   # narrow one: duplicated with its bay
+
+    def test_copy_of_inner_bay_after_the_span_is_wall(self) -> None:
+        d = self._spanned()
+        d["layout"]["bay_order"] = [0, 1, 1]
+        out = apply_grid_order(d)
+        mid = [u for u in out["instances"] if u["floor"] == 1]
+        self.assertEqual([u["box_xyxy"] for u in mid], [[50, 120, 150, 170]])  # stays where it was, same size
+        self.assertEqual(out["layout"]["placement_spans"][1][:2], [2, 0])
+
+    def test_long_balcony_grows_over_copied_inner_bay(self) -> None:
+        # balcony across both bays of floor 1; copying bay 1 after itself puts a copy inside its run
+        d = _dsl()
+        d["layout"]["balconies"] = [{"floor": 1, "bay_start": 0, "bay_end": 1, "bay": 0, "bays": [0, 1], "type": "balc_type_00",
+                                     "box_xyxy": [40, 170, 360, 200], "width_norm": 0.8, "window_cx_norm": 0.5,
+                                     "partner_window_unit_ids": [2, 3]}]
+        d["layout"]["bay_order"] = [0, 1, 1]
+        out = apply_grid_order(d)
+        (b,) = out["layout"]["balconies"]
+        self.assertEqual((b["bay_start"], b["bay_end"], b["bays"]), (0, 2, [0, 1, 2]))
+        self.assertEqual(b["box_xyxy"][2], 560)  # 200 px wider
+        self.assertAlmostEqual(b["width_norm"], 520 / 600, places=5)
+        self.assertAlmostEqual(b["window_cx_norm"], 300 / 600, places=5)
+        partners = {(u["floor"], u["bay"]) for u in out["instances"] if u["unit_id"] in b["partner_window_unit_ids"]}
+        self.assertEqual(partners, {(1, 0), (1, 1), (1, 2)})
+
     def test_no_lists_and_identity_lists_change_nothing(self) -> None:
         d = _dsl()
         self.assertEqual(apply_grid_order(d), d)
