@@ -8,7 +8,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 ROOT_W=$(pwd -W)   # Windows form (C:/...): oblique_ours.py changes its working directory, so paths must be absolute
 PY=/c/Users/hiroo/anaconda3/envs/glodon/python.exe
 BL="/c/Program Files/Blender Foundation/Blender 5.2/blender.exe"
-PH=${1:-/c/Users/hiroo/3D_facade_reconstruction/runs/test100/photos}
+PH=${1:-data/test100/photos}
 OUT=${2:-runs/test100_current}
 export PYTHONIOENCODING=utf-8
 mkdir -p "$OUT/logs" "$OUT/oblique"

@@ -65,7 +65,7 @@ def main() -> None:
         g = gt[s]["boxes"]
         sc = score_photo(g, [], pred, 0.5, True)
 
-        im = Image.open(T100 / "photos" / f"{s}.jpg").convert("RGB")
+        im = Image.open(ROOT / "data" / "test100" / "photos" / f"{s}.jpg").convert("RGB")
         W, H = im.size
         lw = max(3, W // 200)
         left, right = im.copy(), im.copy()

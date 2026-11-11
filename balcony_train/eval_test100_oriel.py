@@ -122,7 +122,7 @@ def table(name: str, r: dict) -> str:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--photos-dir", type=Path, default=TEST100 / "photos")
+    ap.add_argument("--photos-dir", type=Path, default=ROOT / "data" / "test100" / "photos")
     ap.add_argument("--dsl-dir", type=Path, default=TEST100 / "batch_grid2")
     ap.add_argument("--labels", type=Path, default=TEST100 / "oriel_labels.jsonl")
     ap.add_argument("--depth-dir", type=Path, default=TEST100 / "da3_depth")

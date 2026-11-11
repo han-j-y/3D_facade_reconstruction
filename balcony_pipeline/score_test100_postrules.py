@@ -56,7 +56,7 @@ def classify(cache: dict, stems: list[str], ckpt: Path, out: Path, device: str) 
     print(f"classifier {pred.ckpt_path} structure from {pred.structure_ckpt or 'same checkpoint'}", flush=True)
     labels: dict[str, list[dict]] = {}
     for s in stems:
-        img = Image.open(T100 / "photos" / f"{s}.jpg").convert("RGB")
+        img = Image.open(ROOT / "data" / "test100" / "photos" / f"{s}.jpg").convert("RGB")
         labels[s] = [pred.predict_full(img.crop(tuple(b))) for b in cache[s]["filtered"]]
     out.write_text(json.dumps(labels, indent=0), encoding="utf-8")
     return labels

@@ -1,4 +1,4 @@
-"""Cut pipeline crops on the 100 test photos (``runs/test100/photos``) for hand labels.
+"""Cut pipeline crops on the 100 test photos (``data/test100/photos``) for hand labels.
 
 Boxes and crops are made exactly as in ``export_pipeline_crops.py``: SAM3
 ``balcony`` at score >= 0.45, mask clamp, sides under 16 px dropped,
@@ -47,7 +47,7 @@ from balcony_train.label_store import load_labels  # noqa: E402
 from balcony_train.paths import DEFAULT_LABELS_JSONL  # noqa: E402
 
 ROWS = ROOT / "runs" / "batch" / "_rows"
-DEFAULT_PHOTOS = ROOT / "runs" / "test100" / "photos"
+DEFAULT_PHOTOS = ROOT / "data" / "test100" / "photos"
 DEFAULT_OUT = ROOT / "runs" / "test100" / "crops"
 DEFAULT_CACHE = ROWS / "test100_sam3_stage_boxes.json"
 BASE_CACHE = ROWS / "base_jpg_sam3_stage_boxes.json"

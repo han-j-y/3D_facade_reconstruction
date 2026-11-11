@@ -124,7 +124,7 @@ def main() -> None:
     args.img_dir.mkdir(parents=True, exist_ok=True)
     font = ImageFont.truetype("arial.ttf", 22)
     for s in stems:
-        im0 = Image.open(T100 / "photos" / f"{s}.jpg").convert("RGB")
+        im0 = Image.open(ROOT / "data" / "test100" / "photos" / f"{s}.jpg").convert("RGB")
         W, H = im0.size
         lw = max(3, W // 200)
         panels = []

@@ -73,7 +73,7 @@ def main() -> None:
     rows, dropped = [], []
     n_box = n_nolabel = 0
     for s in sorted(cache):
-        if not (T / "photos" / f"{s}.jpg").is_file():
+        if not (ROOT / "data" / "test100" / "photos" / f"{s}.jpg").is_file():
             continue
         if pipe is not None:
             pred = [list(b) for b in pipe.get(s, [])]

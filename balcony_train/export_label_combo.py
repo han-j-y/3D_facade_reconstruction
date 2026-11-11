@@ -31,7 +31,7 @@ from balcony_train.labels import CLASSES, LABEL_STRUCTURES, iter_multitask_sampl
 from balcony_train.paths import DEFAULT_CROPS_DIR, DEFAULT_LABELS_JSONL, DEFAULT_SPLIT_JSON  # noqa: E402
 from balcony_train.splits import indices_from_record, load_split  # noqa: E402
 
-T100_PHOTOS = ROOT / "runs" / "test100" / "photos"
+T100_PHOTOS = ROOT / "data" / "test100" / "photos"
 
 
 def sheet(paths: list[Path], out: Path, tile: int = 220, cols: int = 8) -> None:

@@ -2,7 +2,7 @@
 
 Pool (``balcony_facades.csv``): downloaded, ``|view_angle| <= --max-view-angle``,
 ``num_balconies_filtered >= 1``, not a building of the 100-photo test set
-(``runs/test100/photos``), not one of the facades already annotated in
+(``data/test100/photos``), not one of the facades already annotated in
 ``crops_lsaa``. One facade per building.
 
 Per city quota (``--quota``, e.g. ``Vienna=26``); inside a city, facades with
@@ -30,7 +30,7 @@ if str(ROOT) not in sys.path:
 
 from balcony_train.select_test_lsaa import DEFAULT_CROPS_DIR, DEFAULT_FACADE_DIR, building_of  # noqa: E402
 
-DEFAULT_TEST_PHOTOS = ROOT / "runs" / "test100" / "photos"
+DEFAULT_TEST_PHOTOS = ROOT / "data" / "test100" / "photos"
 DEFAULT_OUT = ROOT / "runs" / "lsaa_juliet"
 DEFAULT_QUOTA = ("Vienna=26", "Paris=18", "Rome=11", "Brussels=3", "Bucharest=2")
 

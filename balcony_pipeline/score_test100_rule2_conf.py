@@ -63,7 +63,7 @@ def class_probs(ckpt: Path, cache: dict, stems: list[str], out: Path, device: st
     res: dict[str, list[dict]] = {}
     with torch.no_grad():
         for s in stems:
-            img = Image.open(T100 / "photos" / f"{s}.jpg").convert("RGB")
+            img = Image.open(ROOT / "data" / "test100" / "photos" / f"{s}.jpg").convert("RGB")
             rows = []
             for b in cache[s]["filtered"]:
                 x = pred.tfm(img.crop(tuple(b))).unsqueeze(0).to(pred.device)
@@ -168,7 +168,7 @@ def main() -> None:
     small = ImageFont.truetype("arial.ttf", 18)
     log = {}
     for s in stems:
-        base = Image.open(T100 / "photos" / f"{s}.jpg").convert("RGB")
+        base = Image.open(ROOT / "data" / "test100" / "photos" / f"{s}.jpg").convert("RGB")
         W, H = base.size
         lw = max(3, W // 200)
         scale = args.panel_height / H

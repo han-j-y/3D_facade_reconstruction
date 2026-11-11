@@ -273,7 +273,7 @@ def main() -> None:
                     default=ROOT / "runs" / "oriel_grid_compare" / "final_457_test100" / "preds_official.json")
     ap.add_argument("--dsl-dir", type=Path, default=T100 / "batch_grid2")
     ap.add_argument("--depth-dir", type=Path, default=T100 / "da3_depth")
-    ap.add_argument("--photos", type=Path, default=T100 / "photos")
+    ap.add_argument("--photos", type=Path, default=ROOT / "data" / "test100" / "photos")
     ap.add_argument("--railing-ckpt", type=Path, default=None, help="default: pipeline default (paths.py)")
     ap.add_argument("--cluster-mode", choices=("appearance", "box"), default="appearance")
     ap.add_argument("--cluster-k1", action=argparse.BooleanOptionalAction, default=True,

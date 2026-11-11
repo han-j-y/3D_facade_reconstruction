@@ -33,7 +33,7 @@ from PIL import Image
 from balcony_train.crop_balconies_xml import balcony_pixel_boxes, scale_box
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_PHOTOS = ROOT / "runs" / "test100" / "photos"
+DEFAULT_PHOTOS = ROOT / "data" / "test100" / "photos"
 DEFAULT_OUT = ROOT / "runs" / "test100" / "balcony_gt_boxes.jsonl"
 DEFAULT_CACHE = ROOT / "runs" / "batch" / "_rows" / "test100_sam3_stage_boxes.json"
 CMP_LABEL_DIRS = {"cmp_b": ROOT / "data" / "base", "cmp_x": ROOT / "data" / "extended"}

@@ -211,7 +211,7 @@ def main() -> None:
     s = sub.add_parser("score-test100")
     s.add_argument("--preds", type=Path, required=True)
     s.add_argument("--labels", type=Path, default=TEST100 / "oriel_labels.jsonl")
-    s.add_argument("--in-dir", type=Path, default=TEST100 / "photos")
+    s.add_argument("--in-dir", type=Path, default=ROOT / "data" / "test100" / "photos")
     s.add_argument("--dsl-dir", type=Path, default=TEST100 / "batch_grid2")
     s.add_argument("--model", type=Path, default=MODEL_PATH)
     s.add_argument("--device", default="cuda")

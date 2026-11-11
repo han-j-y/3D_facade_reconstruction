@@ -88,7 +88,7 @@ def main() -> None:
         sp = score_photo(g, [], prev, 0.5, True)
         sc = score_photo(g, [], now, 0.5, True)
 
-        im = Image.open(T100 / "photos" / f"{s}.jpg").convert("RGB")
+        im = Image.open(ROOT / "data" / "test100" / "photos" / f"{s}.jpg").convert("RGB")
         W, H = im.size
         lw = max(3, W // 200)
         panels = [im.copy(), im.copy(), im.copy()]

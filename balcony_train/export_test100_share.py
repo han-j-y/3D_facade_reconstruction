@@ -11,7 +11,7 @@ Output ``<out>/``:
   red; ``-`` where the crop has no truth for that head). Sheet ``Summary``: accuracy and
   per-class precision / recall / F1 per head.
 * ``photos/combined/<balcony>.jpg``: balcony crop beside its facade with the box drawn in red.
-* ``photos/facade/<facade>.jpg``: raw facade photos (``runs/test100/photos``).
+* ``photos/facade/<facade>.jpg``: raw facade photos (``data/test100/photos``).
 * ``photos/balcony/<balcony>.png``: raw balcony crops as fed to the classifier.
 
 Example::
@@ -113,7 +113,7 @@ def main() -> None:
     for r in rows:
         f = r["facade"]
         if f not in photos:
-            src = T100 / "photos" / f
+            src = ROOT / "data" / "test100" / "photos" / f
             shutil.copy2(src, dirs["facade"] / f)
             photos = {f: Image.open(src).convert("RGB")}
         crop = Image.open(r["crop"]).convert("RGB")

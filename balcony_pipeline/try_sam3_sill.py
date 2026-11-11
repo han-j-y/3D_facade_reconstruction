@@ -59,7 +59,7 @@ def detect_sills(stems: list[str], cache: Path, device: str) -> dict[str, list[d
     processor = Sam3Processor.from_pretrained("facebook/sam3")
     sam = Sam3Model.from_pretrained("facebook/sam3").to(dev).eval()
     for k, s in enumerate(todo, 1):
-        photo = Image.open(T100 / "photos" / f"{s}.jpg").convert("RGB")
+        photo = Image.open(ROOT / "data" / "test100" / "photos" / f"{s}.jpg").convert("RGB")
         with torch.no_grad():
             recs = rp.detect_windows(photo, prompt=PROMPT, threshold=CACHE_THR, min_side=16, max_side_frac=1.0,
                                      device=dev, sam=sam, processor=processor)
@@ -149,7 +149,7 @@ def main() -> None:
     (args.img_dir / "_removed.json").write_text(json.dumps(rem_log, indent=1), encoding="utf-8")
     font = ImageFont.truetype("arial.ttf", 24)
     for s in stems:
-        im0 = Image.open(T100 / "photos" / f"{s}.jpg").convert("RGB")
+        im0 = Image.open(ROOT / "data" / "test100" / "photos" / f"{s}.jpg").convert("RGB")
         W, H = im0.size
         lw = max(3, W // 200)
         left, right = im0.copy(), im0.copy()

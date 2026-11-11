@@ -121,7 +121,7 @@ def main() -> None:
     font = ImageFont.truetype("arial.ttf", 24)
     src = "predicted" if args.oriel_cells == "pred" else "hand-labeled"
     for s in stems:
-        im0 = Image.open(T100 / "photos" / f"{s}.jpg").convert("RGB")
+        im0 = Image.open(ROOT / "data" / "test100" / "photos" / f"{s}.jpg").convert("RGB")
         W, H = im0.size
         lw = max(3, W // 200)
         a, c = im0.copy(), im0.copy()

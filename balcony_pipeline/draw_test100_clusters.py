@@ -88,7 +88,7 @@ def panel(photo: Image.Image, data: dict, truth_of: dict, stage: str | None, tit
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--rows", type=Path, default=T100 / "eval_test100_final_facade_v4.json")
-    ap.add_argument("--photos", type=Path, default=T100 / "photos")
+    ap.add_argument("--photos", type=Path, default=ROOT / "data" / "test100" / "photos")
     ap.add_argument("--out-dir", type=Path, default=T100 / "vote_clusters_all")
     args = ap.parse_args()
 

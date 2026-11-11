@@ -88,7 +88,7 @@ def main() -> None:
     for m in jsonl(args.crops / "manifest.jsonl"):
         crop_of[(Path(m["photo"]).stem, tuple(m["box_xyxy"]))] = Path(m["crop"]).stem
 
-    stems = sorted(p.stem for p in (T100 / "photos").glob("*.jpg"))
+    stems = sorted(p.stem for p in (ROOT / "data" / "test100" / "photos").glob("*.jpg"))
     manifest, prefill = [], []
     for s in stems:
         if s not in cache:
@@ -110,7 +110,7 @@ def main() -> None:
         if not pieces:
             continue
         parents = [b for b in sw if b not in pred]
-        photo = Image.open(T100 / "photos" / f"{s}.jpg").convert("RGB")
+        photo = Image.open(ROOT / "data" / "test100" / "photos" / f"{s}.jpg").convert("RGB")
         count: dict[str, int] = {}
         for b in sorted(pieces, key=lambda b: (b[1], b[0])):
             parent = max(parents, key=lambda p: inside(b, p))
