@@ -49,7 +49,7 @@ Photo → detected elements → typed, voted structure → JSON DSL → parametr
 1. SAM3 `window` detection (or CMP XML). Boxes are clamped to the mask.
 2. Unitize: merge panes into openings.
 3. Structural column layout gives the floor × bay grid (`facade_recovery/column_layout.py`).
-4. Type clustering: box-geometry GMM, then DINOv2 appearance splits, then L–R symmetry repair.
+4. Type clustering (`--cluster-mode gate`, `--gate-mode fold`, `facade_recovery/fold_gate.py`): box-geometry GMM groups, per-floor fold-symmetry pairs and vertical pairs (sizes within 1.3x since 2026-11-10, `--vertical-size-ratio`) as must-links, a structure-descriptor split; then the joint vote (`facade_recovery/joint_vote.py`, default since 2026-11-10, `--no-joint-vote`): floor-symmetry twins and column neighbours pull windows into one type, occlusion-aware (balcony-hidden sides = lower bounds; SAM3 `shutter` along a side = width unknown, `--shutter-uncertain`); then the local-symmetry vote (`local_sym.py`) after the side-facade drop.
 5. A structure model (`window_ast`, `checkpoints/structure_best.pt`) predicts each unit's window IR. A majority vote inside each type on a discrete `structure_view` fingerprint gives one IR per type.
 6. Output: `facade_dsl.json` (`facade_recovery_dsl_v1`), the layout plus the type library. Every later stage reads this grid.
 

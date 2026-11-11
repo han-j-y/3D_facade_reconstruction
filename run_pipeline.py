@@ -92,6 +92,7 @@ from facade_recovery.floor_bays import apply_floor_bays, drop_side_facades  # no
 from facade_recovery.type_fit import fit_types  # noqa: E402
 from facade_recovery.structure_vote import structure_fingerprint, vote_cluster_ir  # noqa: E402,F401
 from facade_recovery.fold_gate import fold_gate, outline_class  # noqa: E402
+from facade_recovery.joint_vote import joint_vote, shutter_width_uncertain  # noqa: E402
 from facade_recovery.local_sym import OCCLUDER_PROMPTS, cut_sides, local_pairs, local_sym_vote, occluded_sides  # noqa: E402
 from facade_recovery.sym_gate import gate_cluster, mirror_partners, mustlink_cluster, refine_axis, two_tier  # noqa: E402
 from facade_recovery.paths import (  # noqa: E402
@@ -323,12 +324,17 @@ def parse_args() -> argparse.Namespace:
                     "(ablation: --no-structure-split, every component is a type)")
     ap.add_argument("--fold-size-ratio", type=float, default=1.3,
                     help="fold gate: visible extents of a mirror pair within this ratio (a hidden side is a lower bound)")
-    ap.add_argument("--vertical-size-ratio", type=str, default="1.15,1.25",
-                    help="fold gate: 'w,h' size ratios of a vertical pair (default 1.15,1.25; 1.3,1.3 = the fold-pair "
-                    "tolerance, joins windows whose boxes vary floor to floor but can chain growing windows)")
-    ap.add_argument("--singleton-adopt", action="store_true",
-                    help="fold gate: a one-window type joins type T when its same-floor mirror and the windows above "
-                    "and below are all T (off by default)")
+    ap.add_argument("--joint-vote", action=argparse.BooleanOptionalAction, default=True,
+                    help="after the fold gate: occlusion-aware vote of floor-symmetry twins and column neighbours "
+                    "(facade_recovery/joint_vote.py); the local-symmetry vote still runs after it (default on since "
+                    "2026-11-10; --no-joint-vote = the previous gate)")
+    ap.add_argument("--shutter-uncertain", action=argparse.BooleanOptionalAction, default=True,
+                    help="with --joint-vote: SAM3 'shutter' marks windows with a shutter along a side as width-uncertain "
+                    "(compared on height and centre only; boxes unchanged; default on, one extra SAM3 pass)")
+    ap.add_argument("--vertical-size-ratio", type=str, default="1.3,1.3",
+                    help="fold gate: 'w,h' size ratios of a vertical pair (default 1.3,1.3 since 2026-11-10 = the "
+                    "fold-pair tolerance; 1.15,1.25 = the previous default; looser joins windows whose boxes vary floor "
+                    "to floor but can chain growing windows)")
     ap.add_argument(
         "--gate-pairs",
         choices=("global", "local"),
@@ -1843,16 +1849,23 @@ def _fold_gate_labels(
         boxes, np.asarray(clustered["labels_box"]), floor, np.asarray(feat), occ, outline,
         thr=args.struct_split_thr, size_ratio=args.fold_size_ratio, use_fold=args.fold_pairs,
         use_vertical=args.vertical_merge, use_cross=args.cross_group, use_split=args.structure_split,
-        vertical_ratio=tuple(float(v) for v in args.vertical_size_ratio.split(",")), use_adopt=args.singleton_adopt,
+        vertical_ratio=tuple(float(v) for v in args.vertical_size_ratio.split(",")),
     )
+    if args.joint_vote:
+        shutter = detect_object_mask(facade, prompts=["shutter"], threshold=0.4, device=device) if args.shutter_uncertain else None
+        unc = shutter_width_uncertain(boxes, shutter)
+        labels, jv = joint_vote(boxes, labels, floor, occ, outline, np.asarray(feat), report["fold_axes"], unc)
+        labels = np.unique(labels, return_inverse=True)[1]
+        report["joint_vote"] = jv
+        print(f"joint vote: {len(jv['moves'])} moves, {len(jv['width_uncertain'])} width-uncertain windows, "
+              f"{len(set(labels.tolist()))} types")
     report["occluded_sides"] = {i: sorted(o) for i, o in enumerate(occ) if o}
     report["outline"] = {i: o for i, o in outline.items()}
     report["index"] = "gate boxes (before the side-facade drop)"
     clustered["fold_gate"] = report
     print(f"gate (fold): {len(report['fold_axes'])} fold axes, {len(report['fold_pairs'])} fold pairs, "
           f"{len(report['vertical_merges'])} vertical merges, box groups {report['box_groups']} -> "
-          f"{report['merged_groups']}, {len(set(labels.tolist()))} types"
-          + (f", adopted {report['adopted']}" if args.singleton_adopt else ""))
+          f"{report['merged_groups']}, {len(set(labels.tolist()))} types")
     return labels
 
 

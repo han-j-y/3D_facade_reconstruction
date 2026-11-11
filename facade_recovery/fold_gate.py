@@ -19,8 +19,6 @@ Replaces the global-axis "freeze" gate (sym_gate.gate_cluster). Steps, each swit
    least half of the smaller component, and the same majority predicted outline.
 6. Structure split (``use_split``): average-linkage tree over the must-link components on the structure descriptor
    (component distance = mean pairwise cosine distance), cut at ``thr``. Off: every component is a type.
-7. Singleton adoption (``use_adopt``, off by default): a one-member type joins type T when its same-floor mirror and
-   the windows directly above and below are all T and the outline matches (:func:`adopt_singletons`).
 """
 
 from __future__ import annotations
@@ -242,48 +240,6 @@ def _split(D, idx, links, thr, use_split):
     return _split(D, side(root.get_left()), links, thr, use_split) + _split(D, side(root.get_right()), links, thr, use_split)
 
 
-# --- 7. singleton adoption -----------------------------------------------------------------------------------------
-
-def adopt_singletons(boxes: list[Box], floor: dict[int, int], outline: dict[int, str], labels: np.ndarray,
-                     axes: list[dict], min_iou: float = 0.3) -> tuple[np.ndarray, list[tuple[int, int, int]]]:
-    """A window that is a one-member type joins type T when three witnesses all say T: its mirror on the same floor
-    (reflection over the floor's fold axes, best IoU >= ``min_iou``, size ignored; all axes must agree) and the single
-    centre-aligned window on the floor above and below. Its outline must be T's majority outline. Returns the new
-    labels and (window, old type, new type) per change."""
-    labels = np.array(labels)
-    n = Counter(labels.tolist())
-    cx = lambda b: (b[0] + b[2]) / 2
-    changes = []
-    for i, b in enumerate(boxes):
-        if n[labels[i]] != 1:
-            continue
-        f = floor[i]
-
-        def column(df):
-            c = [j for j in floor if floor[j] == f + df
-                 and abs(cx(boxes[j]) - cx(b)) <= 0.25 * min(b[2] - b[0], boxes[j][2] - boxes[j][0])]
-            return labels[c[0]] if len(c) == 1 else None
-
-        mirror = set()
-        for a in axes:
-            if a["floor"] != f:
-                continue
-            r = [2 * a["x"] - b[2], b[1], 2 * a["x"] - b[0], b[3]]
-            v, j = max(((box_iou(r, boxes[j]), j) for j in floor if floor[j] == f and j != i), default=(0.0, None))
-            if v >= min_iou:
-                mirror.add(labels[j])
-        if len(mirror) != 1:
-            continue
-        witnesses = [w for w in (column(-1), column(1), next(iter(mirror))) if w is not None]
-        if len(witnesses) < 3 or len(set(witnesses)) != 1:
-            continue
-        t = witnesses[0]
-        if Counter(outline[j] for j in range(len(boxes)) if labels[j] == t).most_common(1)[0][0] != outline[i]:
-            continue
-        changes.append((i, int(labels[i]), int(t)))
-        labels[i] = t
-    return labels, changes
-
 
 def fold_gate(
     boxes: list[Box],
@@ -300,7 +256,6 @@ def fold_gate(
     use_cross: bool = True,
     use_split: bool = True,
     vertical_ratio: tuple[float, float] = (1.15, 1.25),
-    use_adopt: bool = False,
 ) -> tuple[np.ndarray, dict[str, Any]]:
     """Type labels for every box (see module doc) and a JSON-able report."""
     boxes = [list(map(float, b)) for b in boxes]
@@ -324,13 +279,9 @@ def fold_gate(
         idx = [int(i) for i in np.where(sgroups == g)[0]]
         for part in _split(D, idx, hl + vm, thr, use_split):
             labels[part] = nxt; nxt += 1
-    adopted = []
-    if use_adopt:
-        labels, adopted = adopt_singletons(boxes, floor, outline, labels, axes)
     report = {"fold_axes": axes, "fold_pairs": [[i, j] for i, j in hl], "vertical_pairs": [[i, j] for i, j in vl],
               "vertical_merges": [[int(a), int(b)] for a, b in vm],
               "box_groups": int(len(set(groups.tolist()))), "merged_groups": int(len(set(sgroups.tolist()))),
-              "adopted": [list(c) for c in adopted],
               "flags": {"fold": use_fold, "vertical": use_vertical, "cross": use_cross, "split": use_split,
-                        "size_ratio": size_ratio, "vertical_ratio": list(vertical_ratio), "adopt": use_adopt}}
+                        "size_ratio": size_ratio, "vertical_ratio": list(vertical_ratio)}}
     return labels, report
