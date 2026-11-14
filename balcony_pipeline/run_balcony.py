@@ -685,8 +685,9 @@ def cluster_boxes(
     """``windows``: window DSL ``instances`` (``--cluster-links`` uses them for rule B and the Potts weight)."""
     mode = getattr(args, "cluster_mode", "appearance")
     print(f"=== 3 Cluster balcony types ({mode}, {args.dino}) ===")
-    dino = torch.hub.load("facebookresearch/dinov2", args.dino, pretrained=True)
-    dino = dino.to(device).eval()
+    from facade_recovery import model_cache
+
+    dino = model_cache.dinov2(args.dino, device)
     clustered = cluster_balcony_boxes(
         facade,
         boxes,

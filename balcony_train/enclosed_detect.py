@@ -154,8 +154,9 @@ def _dino(device, image: Image.Image, boxes: list[list[int]]) -> np.ndarray:
 
     dev = torch.device(device)
     if _DINO is None or _DINO[0] != str(dev):
-        net = torch.hub.load("facebookresearch/dinov2", "dinov2_vits14", pretrained=True)
-        _DINO = (str(dev), net.to(dev).eval())
+        from facade_recovery import model_cache
+
+        _DINO = (str(dev), model_cache.dinov2("dinov2_vits14", dev))
     if not boxes:
         return np.zeros((0, 384), dtype=np.float64)
     return dino_embed(_DINO[1], dev, image, boxes)

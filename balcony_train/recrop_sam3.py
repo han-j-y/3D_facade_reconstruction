@@ -100,7 +100,9 @@ def detect_balcony_records(
     iw, ih = image.size
     inputs = processor(images=image, text=prompt, return_tensors="pt")
     inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
-    outputs = sam(**inputs)
+    from facade_recovery import model_cache
+
+    outputs = model_cache.sam3_forward(sam, inputs, image)
     results = processor.post_process_instance_segmentation(
         outputs,
         threshold=threshold,

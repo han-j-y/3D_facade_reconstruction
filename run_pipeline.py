@@ -92,6 +92,7 @@ from facade_recovery.floor_bays import apply_floor_bays, drop_side_facades  # no
 from facade_recovery.type_fit import fit_types  # noqa: E402
 from facade_recovery.structure_vote import structure_fingerprint, vote_cluster_ir  # noqa: E402,F401
 from facade_recovery.fold_gate import fold_gate, outline_class  # noqa: E402
+from facade_recovery import model_cache  # noqa: E402
 from facade_recovery.joint_vote import joint_vote, shutter_width_uncertain  # noqa: E402
 from facade_recovery.local_sym import OCCLUDER_PROMPTS, cut_sides, local_pairs, local_sym_vote, occluded_sides  # noqa: E402
 from facade_recovery.sym_gate import gate_cluster, mirror_partners, mustlink_cluster, refine_axis, two_tier  # noqa: E402
@@ -658,9 +659,7 @@ def detect_windows(
     own_model = sam is None or processor is None
     if own_model:
         print(f"loading SAM3 ({model_id})…")
-        processor = Sam3Processor.from_pretrained(model_id)
-        sam = Sam3Model.from_pretrained(model_id).to(device)
-        sam.eval()
+        processor, sam = model_cache.sam3(device, model_id)
     inputs = processor(images=image, text=prompt, return_tensors="pt")
     inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
     # The original SAM3 always appends the geometry encoder's CLS token to the text prompt; HF skips the geometry
@@ -669,7 +668,7 @@ def detect_windows(
     # on the facade_e2e test facades).
     inputs["input_boxes"] = torch.tensor([[[0.5, 0.5, 0.1, 0.1]]], device=device)
     inputs["input_boxes_labels"] = torch.tensor([[-10]], device=device)
-    outputs = sam(**inputs)
+    outputs = model_cache.sam3_forward(sam, inputs, image)
     results = processor.post_process_instance_segmentation(
         outputs,
         threshold=threshold,
@@ -797,14 +796,12 @@ def detect_object_mask(
     from transformers import Sam3Model, Sam3Processor
 
     iw, ih = image.size
-    processor = Sam3Processor.from_pretrained("facebook/sam3")
-    sam = Sam3Model.from_pretrained("facebook/sam3").to(device)
-    sam.eval()
+    processor, sam = model_cache.sam3(device)
     union = np.zeros((ih, iw), dtype=bool)
     for prompt in prompts:
         inputs = processor(images=image, text=prompt, return_tensors="pt")
         inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
-        outputs = sam(**inputs)
+        outputs = model_cache.sam3_forward(sam, inputs, image)
         results = processor.post_process_instance_segmentation(
             outputs,
             threshold=threshold,
@@ -2191,8 +2188,7 @@ def run_one(
 
     # --- 2–3 unitize + cluster ---
     print(f"loading {args.dino}…")
-    dino = torch.hub.load("facebookresearch/dinov2", args.dino, pretrained=True)
-    dino = dino.to(device).eval()
+    dino = model_cache.dinov2(args.dino, device)
     struct_predictor: TreeStructurePredictor | None = None
     gate = args.cluster_mode == "gate"
     if args.cluster_mode in ("gate", "shape_then_struct", "struct"):

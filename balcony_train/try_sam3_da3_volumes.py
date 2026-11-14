@@ -1083,8 +1083,9 @@ def run_sam3(
             f"loading SAM3…  full={len(need_full)} exclude={len(need_ex)}",
             flush=True,
         )
-        processor = Sam3Processor.from_pretrained("facebook/sam3")
-        sam = Sam3Model.from_pretrained("facebook/sam3").to(device).eval()
+        from facade_recovery import model_cache
+
+        processor, sam = model_cache.sam3(device)
         for path in need_full:
             print(path.name, flush=True)
             image = Image.open(path).convert("RGB")

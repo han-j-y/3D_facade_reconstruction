@@ -49,15 +49,16 @@ def detect_facade_boxes(
     """SAM3 boxes for ``prompt`` as ``(box_xyxy, score)``."""
     from transformers import Sam3Model, Sam3Processor
 
-    processor = Sam3Processor.from_pretrained("facebook/sam3")
-    sam = Sam3Model.from_pretrained("facebook/sam3").to(device).eval()
+    from facade_recovery import model_cache
+
+    processor, sam = model_cache.sam3(device)
     inputs = processor(images=image, text=prompt, return_tensors="pt")
     inputs = {k: v.to(device) if hasattr(v, "to") else v for k, v in inputs.items()}
     # Same padding box as run_pipeline.detect_windows, so the geometry encoder runs here too.
     inputs["input_boxes"] = torch.tensor([[[0.5, 0.5, 0.1, 0.1]]], device=device)
     inputs["input_boxes_labels"] = torch.tensor([[-10]], device=device)
     res = processor.post_process_instance_segmentation(
-        sam(**inputs), threshold=threshold, mask_threshold=0.5, target_sizes=inputs["original_sizes"].tolist()
+        model_cache.sam3_forward(sam, inputs, image), threshold=threshold, mask_threshold=0.5, target_sizes=inputs["original_sizes"].tolist()
     )[0]
     boxes = res["boxes"].detach().float().cpu().numpy()
     scores = np.asarray(res["scores"].detach().float().cpu().numpy())
