@@ -1,0 +1,17 @@
+## SAM3 balcony boxes on the 100 test facades (photo | Astra front view)
+raw        898 |  684
+sized      883 |  684
+filtered   764 |  648
+facades with >= 1 filtered box: 90 | 78
+labelled crops: 642 | 621
+hand GT boxes: 690 on 87 photos
+
+## IoU of the 495 crops scored for both with the hand GT boxes
+median 1.00, p10 0.79; >= 0.7 469, >= 0.9 417
+
+## Mean macro F1 of 4 heads per threshold (n | ours | Astra)
+IoU >= 0.0: 495 | 0.868 | 0.890
+IoU >= 0.3: 494 | 0.868 | 0.890
+IoU >= 0.5: 487 | 0.864 | 0.897
+IoU >= 0.7: 469 | 0.870 | 0.904
+IoU >= 0.8: 441 | 0.871 | 0.897

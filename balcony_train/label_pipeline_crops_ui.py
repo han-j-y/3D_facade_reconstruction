@@ -35,6 +35,9 @@ triangle floor (a triangle prefill shows as rectangle).
 ``--dir runs/lsaa_juliet/crops`` (``select_juliet_lsaa.py``) is LSAA training
 crops for structure, also open-only by default. It has no prefill.
 
+``--dir "test_Astra Result/Cropped Balcony"`` is the Astra front-view crops
+(SAM3 balcony boxes, no snap), also open-only by default. It has no prefill.
+
 Example::
 
     C:\\Users\\hiroo\\anaconda3\\envs\\glodon\\python.exe balcony_train/label_pipeline_crops_ui.py
@@ -69,6 +72,9 @@ TEST100_DIR = ROOT / "runs" / "test100" / "crops"
 # LSAA juliet training round (select_juliet_lsaa.py): also open-only.
 JULIET_DIR = ROOT / "runs" / "lsaa_juliet" / "crops"
 TRAIN_DIR = ROOT / "runs" / "balcony_clf" / "crops_pipeline_train"
+# Astra front-view crops (SAM3 balcony boxes): open-only, no enclosure.
+ASTRA_FRONT_DIR = ROOT / "test_Astra Result" / "Cropped Balcony"
+OPEN_ONLY_DIRS = (TEST100_DIR, JULIET_DIR, ASTRA_FRONT_DIR)
 
 
 def load_jsonl(path: Path) -> dict[str, dict]:
@@ -246,7 +252,7 @@ def main() -> None:
     )
     ap.add_argument(
         "--open-only", action="store_true",
-        help="no enclosure row (always open), no triangle floor; on by default for runs/test100/crops and runs/lsaa_juliet/crops",
+        help="no enclosure row (always open), no triangle floor; on by default for runs/test100/crops, runs/lsaa_juliet/crops and test_Astra Result/Cropped Balcony",
     )
     args = ap.parse_args()
     root = tk.Tk()
@@ -265,7 +271,7 @@ def main() -> None:
         not_balcony_path=side / "not_balcony.jsonl",
         review_all=args.review_all,
         structure_pass=args.structure_pass,
-        open_only=args.open_only or Path(args.dir).resolve() in (TEST100_DIR.resolve(), JULIET_DIR.resolve()),
+        open_only=args.open_only or Path(args.dir).resolve() in tuple(d.resolve() for d in OPEN_ONLY_DIRS),
     )
     root.mainloop()
 
